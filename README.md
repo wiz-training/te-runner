@@ -3,12 +3,16 @@
 The one Docker image TE 2.0 labs reference.
 Carries `wizlab` (`/usr/local/bin/wizlab`), AWS CLI v2, Terraform 1.16.2, python 3.12, jq.
 
-Build: CI only — push a `v*` tag to the **`personal`** remote (`eh24905-wiz`),
-whose Actions publish the **public** `ghcr.io/eh24905-wiz/te-runner:<tag>` that
-labs pin (Instruqt pulls anonymously). The build lints the tagged sha, smoke-tests
-the image, and refuses a tag `reap.yml` does not pin, so bump that pin in the
-tagged commit. A tag on `origin` (wiz-training) builds a
-**private** org package labs can't pull — `manifest unknown`/401. Never `latest`.
+Build: CI only — push a `v*` tag to `origin` (`wiz-training/te-runner`), whose
+Actions publish the **public** `ghcr.io/wiz-training/te-runner:<tag>` that labs
+pin (Instruqt pulls anonymously; there is no registry-credential path for GHCR).
+The build lints the tagged sha, smoke-tests the image, and refuses a tag
+`reap.yml` does not pin, so bump that pin in the tagged commit. Never `latest`.
+The package must stay **Public** and list this repo under "Manage Actions
+access" with Write — both live in the package settings, not the workflow, and
+losing either shows up as `manifest unknown`/401 on pull or
+`denied: permission_denied: write_package` on push. Tags through v0.1.50 live
+only at `ghcr.io/eh24905-wiz/te-runner`; v0.1.51+ publish here.
 
 Read tags with `git tag --sort=-v:refname` — the default sort is lexicographic
 and puts `v0.1.9` above `v0.1.36`. There are no GitHub release objects, so the
