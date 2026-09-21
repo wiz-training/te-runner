@@ -56,7 +56,7 @@ ENV TE_RUNNER_TAG=${TE_RUNNER_TAG} \
     TE_RUNNER_REV=${TE_RUNNER_REV}
 LABEL org.opencontainers.image.version=${TE_RUNNER_TAG} \
       org.opencontainers.image.revision=${TE_RUNNER_REV} \
-      org.opencontainers.image.source=https://github.com/eh24905-wiz/te-runner
+      org.opencontainers.image.source=https://github.com/wiz-training/te-runner
 
 COPY bin/wizlab /usr/local/bin/wizlab
 COPY wizlab/*.py /usr/local/lib/python3.12/site-packages/wizlab/
