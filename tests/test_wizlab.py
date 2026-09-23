@@ -981,8 +981,11 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         self.assertEqual((outcome, sent), (wz.DEFERRED, ["uninstall"]))
 
     def test_an_uninstalling_outpost_is_deferred_without_a_second_uninstall(self):
-        outcome, _detail, sent = self._outpost_reap("UNINSTALLING")
-        self.assertEqual((outcome, sent), (wz.DEFERRED, []))
+        # Every status carrying UNINSTALL is in or past the flow, and the second uninstall is the call
+        # that refuses — so a PARTIALLY_UNINSTALLED record defers on its own, not on a refused mutation.
+        for status in ("UNINSTALLING", "PARTIALLY_UNINSTALLED"):
+            outcome, _detail, sent = self._outpost_reap(status)
+            self.assertEqual((outcome, sent), (wz.DEFERRED, []), status)
 
     def test_an_uninstalled_outpost_is_deleted(self):
         for status in wz._OUTPOST_DELETABLE:
@@ -1821,15 +1824,23 @@ class OutpostGrading(unittest.TestCase):
 
     def test_delete_uninstalls_first_waits_then_deletes(self):
         # deleteOutpost on a live Outpost is a server-side internal error, so it is never attempted
-        # first; an already-UNINSTALLED record skips the uninstall.
+        # first; an already-UNINSTALLED record skips the uninstall. A status already carrying UNINSTALL
+        # takes no second uninstall — that call is the one that refuses. PARTIALLY_UNINSTALLED reaches
+        # no deletable state and deleteOutpost refuses it, so it is state (1), never environment (3).
         both = ["uninstallOutpost", "deleteOutpost"]
-        for status, after, want in [("INITIALIZED", ["UNINSTALLING", "UNINSTALLED"], both),
-                                    ("CONNECTED", ["UNINSTALLED"], both),
-                                    ("UNINSTALLED", [], ["deleteOutpost"]),
-                                    (None, [], [])]:
+        for status, after, want, code in [
+            ("INITIALIZED", ["UNINSTALLING", "UNINSTALLED"], both, 0),
+            ("CONNECTED", ["UNINSTALLED"], both, 0),
+            ("UNINSTALLED", [], ["deleteOutpost"], 0),
+            ("UNINSTALLATION_FAILED", [], ["deleteOutpost"], 0),
+            ("UNINSTALLING", ["UNINSTALLED"], ["deleteOutpost"], 0),
+            ("PARTIALLY_UNINSTALLED", [], [], 1),
+            ("INITIALIZED", ["PARTIALLY_UNINSTALLED"], ["uninstallOutpost"], 1),
+            (None, [], [], 0),
+        ]:
             with self.subTest(status=status):
                 wiz = self._wiz(status, after=after)
-                self.assertEqual(self._exit(wz.cmd_outpost_delete, ["--name", "lab-x"], wiz), 0)
+                self.assertEqual(self._exit(wz.cmd_outpost_delete, ["--name", "lab-x"], wiz), code)
                 self.assertEqual(self._mutations(wiz), want)
 
     def test_delete_exits_0_when_uninstall_outlives_the_wait(self):
