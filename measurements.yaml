@@ -1310,7 +1310,7 @@ outpost_lifecycle:
     uninstall_to_uninstalled_min:
       from_initialized: 1.7           # n=1, no real infra to tear down
       from_initializing: 5.9          # n=1, 3.4x slower in the same no-infra case; not a tight bound
-      from_connected: [10, 33]        # n=1, real EKS; still UNINSTALLING at +10, UNINSTALLED by +33. Coarse.
+      from_connected: [20, 33]        # n=2, real EKS; UNINSTALLING persists past +19, UNINSTALLED by +20.
       # `wizlab outpost delete` waits 600s, so a lab's final reap defers a CONNECTED outpost to the
       # out-of-band sweep; a second `outpost delete` after UNINSTALLED completes it in seconds.
     transient_snapshot: true
