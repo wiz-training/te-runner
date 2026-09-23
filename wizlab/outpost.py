@@ -152,6 +152,16 @@ def cmd_outpost_ensure(args):
 
 _OUTPOST_DELETABLE = ("UNINSTALLED", "UNINSTALLATION_FAILED")
 
+# No proven transition reaches UNINSTALLED from here, and deleteOutpost refuses the record, so the
+# terminal behaviour is undecided: report it as state (1), never as an environment fault (3).
+_OUTPOST_STUCK = ("PARTIALLY_UNINSTALLED",)
+
+
+def _uninstall_in_flight(status):
+    """A status already carrying UNINSTALL is in or past the uninstall flow. Re-firing
+    UNINSTALL_OUTPOST on one is the call that errors."""
+    return "UNINSTALL" in (status or "")
+
 
 def cmd_outpost_delete(args):
     """Best-effort reap of the session's Outpost. deleteOutpost on a live Outpost fails with a
@@ -170,17 +180,21 @@ def cmd_outpost_delete(args):
         oid, status = node["id"], node["status"]
     else:
         status = (_outpost_by_id(oid) or {}).get("status")
-    if status not in _OUTPOST_DELETABLE:
-        if status != "UNINSTALLING":
+    if status not in _OUTPOST_DELETABLE and status not in _OUTPOST_STUCK:
+        if not _uninstall_in_flight(status):
             core.api(UNINSTALL_OUTPOST, {"input": {"id": oid}})
             print(f"uninstalling outpost {oid} (was {status})")
         status = _await_uninstalled(oid, args.timeout)
-        if status == "GONE":
-            print(f"outpost {oid} no longer exists; nothing left to delete")
-            return
-        if status not in _OUTPOST_DELETABLE:
-            print(f"outpost {oid} still {status} after the wait; leaving the record for the daily reaper")
-            return
+    if status == "GONE":
+        print(f"outpost {oid} no longer exists; nothing left to delete")
+        return
+    if status in _OUTPOST_STUCK:
+        print(f"outpost {oid} is {status}: the uninstall cannot be re-fired and deleteOutpost refuses "
+              f"the record; it needs an operator")
+        sys.exit(1)
+    if status not in _OUTPOST_DELETABLE:
+        print(f"outpost {oid} still {status} after the wait; leaving the record for the daily reaper")
+        return
     core.api(DELETE_OUTPOST, {"input": {"id": oid}})
     print(f"deleted outpost {oid}")
 
@@ -191,11 +205,12 @@ def _outpost_by_id(oid):
 
 
 def _await_uninstalled(oid, timeout):
-    """Poll until the uninstall reaches a deletable terminal state; returns the last status seen."""
+    """Poll until the uninstall reaches a terminal state; returns the last status seen. A stuck status
+    ends the wait too — polling it out only spends the timeout."""
     deadline, status = time.monotonic() + timeout, "UNINSTALLING"
     while time.monotonic() < deadline:
         time.sleep(20)
         status = (_outpost_by_id(oid) or {}).get("status") or "GONE"
-        if status in _OUTPOST_DELETABLE or status == "GONE":
+        if status in _OUTPOST_DELETABLE or status in _OUTPOST_STUCK or status == "GONE":
             break
     return status

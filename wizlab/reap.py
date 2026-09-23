@@ -29,7 +29,8 @@ def _reap_outpost(tok, dc, _h, oid, name):
     """Outpost delete is a lifecycle, not a mutation: deleteOutpost fails on a live record and on one
     still UNINSTALLING, so the order is uninstall -> UNINSTALLED -> delete. The reaper never waits that
     out inside a cron container, so a record mid-uninstall is DEFERRED — blocking keeps the user, and
-    the audit entry plus the rolling window bring the next daily pass back to it minutes later."""
+    the audit entry plus the rolling window bring the next daily pass back to it minutes later. A
+    status already carrying UNINSTALL takes no second uninstall: that call is what refuses."""
     data, errs = core._gql(tok, dc, outpost.OUTPOST_Q, {"id": oid})
     if errs:
         return FAILED, f"status unreadable ({errs[0].get('message', '?')})"
@@ -39,7 +40,7 @@ def _reap_outpost(tok, dc, _h, oid, name):
     if status in outpost._OUTPOST_DELETABLE:
         _d, derr = core._gql(tok, dc, outpost.DELETE_OUTPOST, {"input": {"id": oid}})
         return (FAILED, derr[0].get("message", "?")) if derr else (REMOVED, None)
-    if status != "UNINSTALLING":
+    if not outpost._uninstall_in_flight(status):
         _d, derr = core._gql(tok, dc, outpost.UNINSTALL_OUTPOST, {"input": {"id": oid}})
         if derr:
             return FAILED, f"uninstall refused ({derr[0].get('message', '?')})"
