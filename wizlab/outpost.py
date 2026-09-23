@@ -17,6 +17,7 @@ OUTPOSTS_Q = """query Outposts($s: String, $after: String) {
     nodes {
       id name status inAccountOutpostType serviceType allowedRegions
       config { ... on OutpostAWSConfig { roleARN } }
+      clusters { id region }
     }
     totalCount pageInfo { hasNextPage endCursor }
   }
@@ -40,6 +41,12 @@ UNINSTALL_OUTPOST = """mutation UninstallOutpost($input: UninstallOutpostInput!)
 
 DELETE_OUTPOST = """mutation DeleteOutpost($input: DeleteOutpostInput!) {
   deleteOutpost(input: $input) { _stub }
+}"""
+
+
+# Takes a CLUSTER id, not the Outpost's: an Outpost carrying no cluster has no provision pass to re-run.
+INVOKE_CLUSTER_UPDATE = """mutation InvokeOutpostClusterUpdate($input: InvokeOutpostClusterUpdateInput!) {
+  invokeOutpostClusterUpdate(input: $input) { requestID }
 }"""
 
 
@@ -126,6 +133,8 @@ def cmd_outpost_ensure(args):
             ("roleARN", (existing.get("config") or {}).get("roleARN"), role_arn),
             ("allowedRegions", existing.get("allowedRegions"), [region] if args.region else None),
         ])
+        if existing["status"] == "ERROR":
+            return _reprovision(existing)
         print(f"outpost {name} already exists ({existing['id']}) status={existing['status']}; nothing to do")
         return
     # allowedRegions pins the scan cluster to the workload region (the EC2's). The capture used []
@@ -148,6 +157,20 @@ def cmd_outpost_ensure(args):
     if not o:
         core.die(3, "createOutpost returned no outpost")
     print(f"created outpost {o['name']} ({o['id']}) status={o.get('status')}")
+
+
+def _reprovision(outpost):
+    """ERROR is terminal on its own: Wiz never retries a failed provision pass, so an Outpost whose
+    cause has since been fixed stays ERROR and its health issue's lastSeenAt stops advancing. The
+    cluster update is the only trigger that re-runs the pass — no uninstall, no redeploy."""
+    clusters = outpost.get("clusters") or []
+    if not clusters:
+        print(f"outpost {outpost['name']} ({outpost['id']}) is ERROR with no cluster to update")
+        sys.exit(1)
+    for c in clusters:
+        data, _ = core.api(INVOKE_CLUSTER_UPDATE, {"input": {"id": c["id"]}})
+        rid = (data.get("invokeOutpostClusterUpdate") or {}).get("requestID")
+        print(f"outpost {outpost['name']}: cluster {c['id']} ({c.get('region')}) re-provisioning, requestID={rid}")
 
 
 _OUTPOST_DELETABLE = ("UNINSTALLED", "UNINSTALLATION_FAILED")

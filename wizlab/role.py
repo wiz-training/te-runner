@@ -71,6 +71,15 @@ def _principals(stmt):
     return []
 
 
+def _service_principals(stmt):
+    """The Service key alone. Flattened across keys the way _principals does it, an AWS principal
+    would satisfy a Service assertion while the service that has to assume the role still cannot."""
+    pr = stmt.get("Principal")
+    if isinstance(pr, dict):
+        return [str(v) for k, vals in pr.items() if str(k).strip().lower() == "service" for v in _as_list(vals)]
+    return []
+
+
 def _trusts_delegator(stmt, delegator):
     principals = _principals(stmt)
     if delegator:
@@ -215,6 +224,27 @@ def _inspect_aws_trust(role, role_obj):
     print(f"role {role}: trust valid (assume-role to {delegator or 'Wiz delegator'}, externalId={tid})")
 
 
+def _inspect_aws_service_trust(role, role_obj, service):
+    """A role Wiz's own backend passes to an AWS service (the Outpost node pool role to EKS) is not
+    trusted by the Wiz delegator at all, so the delegator+externalId assertion cannot grade it: the
+    graded fact is which service principal may assume it. EKS validates this at CreateNodegroup, so a
+    wrong principal creates nothing and leaves no failed resource to read."""
+    policy = _decode_trust_policy(role_obj.get("AssumeRolePolicyDocument"))
+    if policy is None:
+        print(f"role {role} exists but its trust policy could not be decoded")
+        sys.exit(1)
+    want = service.strip().lower()
+    stmts = [s for s in _as_list(policy.get("Statement")) if isinstance(s, dict)]
+    for s in stmts:
+        if _grants_assume_role(s) and want in [p.strip().lower() for p in _service_principals(s)]:
+            print(f"role {role}: trusts service {service} for sts:AssumeRole")
+            return
+    found = sorted({p for s in stmts for p in _service_principals(s)})
+    print(f"role {role}: no Allow statement lets {service} assume it; "
+          f"trusts service {found or 'no service principal'}")
+    sys.exit(1)
+
+
 def cmd_role_inspect(args):
     """Existence is NOT the assertion: a role that trusts nobody is exactly the state a learner
     reaches by creating the role and stopping, and it reports the same connector ERROR forever. So
@@ -222,10 +252,16 @@ def cmd_role_inspect(args):
     center's delegator looks almost identical and does not work."""
     handlers = {"gcp": _role_inspect_gcp, "azure": _role_inspect_azure}
     cloud = args.cloud
+    service = args.trusts_service
+    if service and cloud != "aws":
+        core.die(2, "--trusts-service is aws-only; a service principal is an IAM trust-policy concept")
     if cloud in handlers:
         return handlers[cloud](args)
     role = args.role_name or ROLE_NAME
-    return _inspect_aws_trust(role, _aws_role(role))
+    role_obj = _aws_role(role)
+    if service:
+        return _inspect_aws_service_trust(role, role_obj, service)
+    return _inspect_aws_trust(role, role_obj)
 
 
 def cmd_role_ensure(args):

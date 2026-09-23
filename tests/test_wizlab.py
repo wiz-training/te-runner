@@ -704,11 +704,11 @@ class RoleInspectGrading(unittest.TestCase):
     DELEGATOR = "arn:aws:iam::851725410668:role/prod-us100-AssumeRoleDelegator"
     TID = "6ca852a0-af83-4f2d-9da9-f2f3bd1d23a3"
 
-    def _run(self, aws_proc, delegator=DELEGATOR, tid=TID):
+    def _run(self, aws_proc, delegator=DELEGATOR, tid=TID, argv=()):
         with mock.patch.object(_owner("_aws"), "_aws", return_value=aws_proc), \
              mock.patch.object(_owner("_wiz_delegator"), "_wiz_delegator", return_value=(delegator, tid)), \
              exits() as cm:
-            call(wz.cmd_role_inspect, [])
+            call(wz.cmd_role_inspect, list(argv))
         return cm.code
 
     def test_valid_trust_exit_0(self):
@@ -750,6 +750,23 @@ class RoleInspectGrading(unittest.TestCase):
     def test_the_delegators_own_statement_must_carry_the_condition(self):
         unconditioned = {"Effect": "Allow", "Principal": {"AWS": self.DELEGATOR}, "Action": "sts:AssumeRole"}
         self.assertEqual(self._multi(unconditioned, self._stmt("arn:aws:iam::2:role/O", self.TID)), 1)
+
+    def test_trusts_service_grades_the_service_principal_alone(self):
+        # --trusts-service grades a role Wiz hands to an AWS service, which the delegator never
+        # assumes: the delegator+externalId assertion would fail every correct one. An AWS principal
+        # must not satisfy it either — EKS still cannot assume the role.
+        for principal, effect, want in [
+            ({"Service": "eks.amazonaws.com"}, "Allow", 0),
+            ({"Service": ["ec2.amazonaws.com", "eks.amazonaws.com"]}, "Allow", 0),
+            ({"Service": "ec2.amazonaws.com"}, "Allow", 1),          # the lab's seeded break
+            ({"Service": "eks.amazonaws.com"}, "Deny", 1),
+            ({"AWS": self.DELEGATOR}, "Allow", 1),
+        ]:
+            with self.subTest(principal=principal, effect=effect):
+                stmt = {"Effect": effect, "Principal": principal, "Action": "sts:AssumeRole"}
+                role = {"Role": {"AssumeRolePolicyDocument": {"Statement": [stmt]}}}
+                self.assertEqual(self._run(_proc(0, json.dumps(role)),
+                                           argv=["--trusts-service", "eks.amazonaws.com"]), want)
 
 
 class Naming(unittest.TestCase):
@@ -1179,6 +1196,9 @@ class CloudSelection(unittest.TestCase):
         self.assertEqual(cm.code, 2)
         with exits() as cm:  # provisioning belongs to terraform, not wizlab
             call(wz.cmd_role_ensure, ["--cloud", "gcp"])
+        self.assertEqual(cm.code, 2)
+        with exits() as cm:  # a service principal is an IAM trust-policy concept; GCP has no twin
+            call(wz.cmd_role_inspect, ["--cloud", "gcp", "--trusts-service", "eks.amazonaws.com"])
         self.assertEqual(cm.code, 2)
 
 
@@ -1737,12 +1757,14 @@ class OutpostGrading(unittest.TestCase):
     reorders the reap would silently leave an Outpost record behind, which no lab check would
     catch."""
 
-    def _wiz(self, status, after=None, scans=None):
+    def _wiz(self, status, after=None, scans=None, clusters=()):
         """after: statuses `outpost(id)` returns on successive polls, for the uninstall wait.
-        scans: one (successful, failed) pair per daily bucket the scan-metrics trend reports."""
+        scans: one (successful, failed) pair per daily bucket the scan-metrics trend reports.
+        clusters: the Outpost's region scan clusters — the unit invokeOutpostClusterUpdate takes."""
         seq = list(after or [])
         nodes = [] if status is None else [{"id": "o1", "name": "lab-x", "status": status,
-                                             "allowedRegions": ["us-east-1"], "config": {"roleARN": "a"}}]
+                                             "allowedRegions": ["us-east-1"], "config": {"roleARN": "a"},
+                                             "clusters": list(clusters)}]
         pts = [{"timestamp": f"d{i}", "aggregatedMetrics": {"totalScansCount": s + f, "successfulScansCount": s,
                                                             "failedScansCount": f}}
                for i, (s, f) in enumerate(scans or [])]
@@ -1752,6 +1774,7 @@ class OutpostGrading(unittest.TestCase):
             return None if st == "GONE" else {"id": "o1", "status": st}
         return FakeWiz(outposts={"nodes": nodes, "totalCount": len(nodes)}, outpost=by_id,
                        resourceScanMetricsTrend={"dataPoints": pts},
+                       invokeOutpostClusterUpdate={"requestID": "req-1"},
                        createOutpost={"outpost": {"id": "o1", "name": "lab-x", "status": "INITIALIZING"}})
 
     def _exit(self, fn, argv, wiz):
@@ -1764,7 +1787,7 @@ class OutpostGrading(unittest.TestCase):
 
     @staticmethod
     def _mutations(wiz):
-        return [f for f, _ in wiz.calls if f.startswith(("create", "uninstall", "delete"))]
+        return [f for f, _ in wiz.calls if f.startswith(("create", "uninstall", "delete", "invoke"))]
 
     def test_inspect_grades_the_enum_not_the_ui_word(self):
         for status, require, want in [
@@ -1814,6 +1837,24 @@ class OutpostGrading(unittest.TestCase):
                 wiz = self._wiz("CONNECTED")
                 self.assertEqual(self._exit(wz.cmd_outpost_ensure, argv, wiz), want)
                 self.assertEqual(self._mutations(wiz), [])
+
+    def test_ensure_reprovisions_an_error_outpost_per_cluster(self):
+        # ERROR is terminal on its own — Wiz never retries a failed provision pass — so ensure on an
+        # ERROR Outpost whose cause is fixed must fire the cluster update, the only trigger that
+        # re-runs it. The mutation takes a CLUSTER id, so no cluster means nothing to re-run (1).
+        for clusters, want, code in [
+            ([{"id": "c1", "region": "us-east-1"}], ["invokeOutpostClusterUpdate"], 0),
+            ([{"id": "c1", "region": "us-east-1"}, {"id": "c2", "region": "eu-west-1"}],
+             ["invokeOutpostClusterUpdate"] * 2, 0),
+            ([], [], 1),
+        ]:
+            with self.subTest(clusters=len(clusters)):
+                wiz = self._wiz("ERROR", clusters=clusters)
+                argv = ["--name", "lab-x", "--role-arn", "a"]
+                self.assertEqual(self._exit(wz.cmd_outpost_ensure, argv, wiz), code)
+                self.assertEqual(self._mutations(wiz), want)
+                self.assertEqual([v["input"]["id"] for v in wiz.sent("invokeOutpostClusterUpdate")],
+                                 [c["id"] for c in clusters])
 
     def test_ensure_posts_role_arn_inside_aws_config(self):
         wiz = self._wiz(None)
