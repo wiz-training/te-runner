@@ -1301,6 +1301,9 @@ outpost_lifecycle:
       in_account_CreateCluster: 8
       eks_control_plane_ACTIVE: 20    # 9 node groups
       status_CONNECTED: 22
+    error_to_connected_min: 3.2       # n=1, ERROR -> CONNECTED after the regional-resources re-run on a
+    # repaired node role. An order of magnitude under time_to_connected_min: the EKS control plane already
+    # exists, so only the node groups are built. The re-run against an unrepaired trust re-fails instead.
     # A task grading CONNECTED needs more than 22 min of budget and an idle stop longer than the wait:
     # the learner touches nothing throughout. The docs' "up to 24 hours" is a ceiling, not an expectation.
     time_to_first_scan_min: 5         # n=1, requestConnectorScan -> resourceScanResults SUCCESS
@@ -1336,6 +1339,12 @@ outpost_lifecycle:
       wizlab outpost inspect --require scanned                       # exit 1 -- CONNECTED triggers nothing
       # then requestConnectorScan(id: <connector>, omitDataScan: false) -- spends per-tenant quota
       wizlab outpost inspect --require scanned                       # exit 0 within ~5 min
+      # error_to_connected_min, on an Outpost whose node role EKS could not pass:
+      wizlab outpost inspect --require connected                     # exit 1 -- status=ERROR
+      wizlab role inspect --cloud aws --role-name <nodeRole> --trusts-service ec2.amazonaws.com  # exit 1
+      # repair the trust, then re-run provisioning (menuitem "Update All Clusters Regional Resources")
+      wizlab outpost ensure --role-arn <orchestratorRoleArn> --region us-east-1
+      wizlab outpost inspect --require connected                     # exit 0 within ~4 min
 
 # ---------------------------------------------------------------------------------------------------
 # Tag filtering. The only lease-scoping mechanism that works at all, since AWS-side enumeration is
