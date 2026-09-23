@@ -114,7 +114,7 @@ FLAGS = {
                              "--require": _one_of("exists", "initialized", "connected", "scanned")},
     ("outpost", "ensure"): {**_S, "--name": {}, "--region": {}, "--role-arn": {}},
     ("outpost", "delete"): {**_S, "--id": {}, "--name": {}, "--timeout": _int(600)},
-    ("role", "inspect"): {**_CLOUD, "--account-id": {}, "--role-name": {}},
+    ("role", "inspect"): {**_CLOUD, "--account-id": {}, "--role-name": {}, "--trusts-service": {}},
     ("role", "ensure"): {**_CLOUD, "--external-id": {}, "--role-name": {}},
     ("user", "ensure"): {**_U, "--group": {"default": "global-contributor"}},
     ("user", "inspect"): {**_U, "--group": {"default": "global-contributor"}},
