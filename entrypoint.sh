@@ -1,9 +1,11 @@
 #!/bin/sh
-# Dev-only remote access. When TS_AUTHKEY is injected (dev tracks only), join the tailnet and open a
-# key-based sshd so an operator can reach this grader for live iteration; learner tracks set neither
-# secret, so nothing below runs and no surface is exposed. Never `set -e`: the grader must reach its
-# keepalive even if dev access fails to come up.
-if [ -n "${TS_AUTHKEY:-}" ]; then
+# Dev-only remote access. When a real tailnet key is injected (dev tracks only), join the tailnet and
+# open a key-based sshd so an operator can reach this grader for live iteration. The gate is the key's
+# shape, not its presence: the team store rejects an empty value, so a lab that keeps its dev-access
+# block live holds a placeholder between leases, and `lease ensure` overwrites it with a `tskey-`.
+# Never `set -e`: the grader must reach its keepalive even if dev access fails to come up.
+case "${TS_AUTHKEY:-}" in tskey-*) dev_access=1 ;; *) dev_access= ;; esac
+if [ -n "$dev_access" ]; then
   # No TUN device in a container → userspace networking. Ephemeral state: a fresh node per boot is
   # correct for a throwaway dev lease. Tailscale SSH is deliberately NOT used — it needs a TUN and
   # hangs in userspace mode; we run a real sshd and reach it over the tailnet IP.
@@ -15,7 +17,9 @@ if [ -n "${TS_AUTHKEY:-}" ]; then
   tailscale up --authkey "$TS_AUTHKEY" --hostname "${TS_HOSTNAME:-grader-dev}" \
     || echo "tailscale up failed (see /var/log/tailscaled.log)" >&2
 
-  if [ -n "${TE_DEV_SSH_PUBKEY:-}" ]; then
+  # Same shape gate: a placeholder must not become an authorized_keys line.
+  case "${TE_DEV_SSH_PUBKEY:-}" in ssh-*|ecdsa-*) pubkey=1 ;; *) pubkey= ;; esac
+  if [ -n "$pubkey" ]; then
     install -d -m 700 /root/.ssh
     printf '%s\n' "$TE_DEV_SSH_PUBKEY" > /root/.ssh/authorized_keys
     chmod 600 /root/.ssh/authorized_keys
