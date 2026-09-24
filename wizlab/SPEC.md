@@ -64,9 +64,30 @@ health under `verify`, not a new noun — a floor is not an API fact and would f
 below as `runner inspect`.
 
 ## Nouns
-`session`, `connector`, `role`, `instance`, `user`, `wiz`, `outpost`, for connectorless
-Runtime-Sensor labs `sensor` and `detection`, for Wiz Code labs `serviceaccount` and `code-scan`, and for
-Workflows labs `workflow` and `workflow-run`:
+`session`, `connector`, `role`, `instance`, `user`, `wiz`, `outpost`, for Kubernetes labs `k8sconnector`
+and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`, for Wiz Code labs
+`serviceaccount` and `code-scan`, and for Workflows labs `workflow` and `workflow-run`:
+- `k8sconnector ensure|inspect|delete --cluster <eks name> | --cluster-arn <arn>` — a Kubernetes
+  connector the lab owns. Keyed on `connectors(filterBy:{kubernetesClusterExternalIds})`, where the EKS
+  external id is the cluster ARN taken from `aws eks describe-cluster`, **never from a
+  `KUBERNETES_CLUSTER` graph entity**: in the state these verbs grade (no connector) that entity does not
+  exist. `ensure --enabled true|false` is create-or-correct: `createConnector(type:"eks",
+  authParams:{apiServerEndpoint, authProvider:"service-account", clusterExternalID, tlsConfig:{serverCA},
+  authProviderConfig:{serviceAccountToken}, isOnPrem:false}, extraConfig:{installationType:"Script"})`
+  with a 24 h bound token from `kubectl create token kube-system/wiz-connector` (the lab applies that
+  ServiceAccount and its cluster-admin binding), else `updateConnector(patch:{enabled})`. An
+  auto-onboarded child refuses the patch (`Child connectors cannot be individually disabled/enabled`) and
+  is deleted, not toggled. `inspect --require exists|connected|disabled` reads `status`; `exists` is what
+  a repair check asserts, since INITIAL_SCANNING precedes CONNECTED by ~7 min. Ordering fact the verbs
+  rely on: a cluster created after the cloud connector reaches CONNECTED is never auto-onboarded.
+  kubectl is the fourth CSP-side CLI (operator decision, 2026-09-24, forced by the token mint).
+- `container inspect --account-id <id> [--image-contains S] [--require-image]` — asserts Wiz enumerates
+  ≥1 `CONTAINER` in the account (image substring optional), traversing `INSTANCE_OF` to a
+  `CONTAINER_IMAGE`; `--require-image` makes the traversal required, which is the deployed-image scan
+  observable. Three filters are never emitted: `cloudPlatform` on CONTAINER matches 0 against entities
+  carrying the value; a CONTAINER_IMAGE's `subscriptionExternalId` is the repository owner's account; and
+  `sourceProvider` is null on most scanned private images. Registry counters are not a signal in
+  deployed-only mode, so nothing here reads `containerRegistries`.
 - `outpost ensure|delete|inspect` — a Wiz Outpost (Automated deploy in the customer account). `ensure`
   createsOutpost named on the session stem, given `--role-arn` (the orchestrator TF module output Wiz
   assumes); `inspect --require exists|initialized|connected` asserts the `OutpostStatus` enum and
