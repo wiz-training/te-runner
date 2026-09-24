@@ -1502,3 +1502,46 @@ dev_lab_service_gaps:
       credential-in-state problem that blocked RDS should not exist for Cloud SQL. The same problem is
       solvable on one cloud and not the other, and the asymmetry is the platform's allow-list rather than
       anything about the clouds.
+
+# ---------------------------------------------------------------------------------------------------
+# Kubernetes connector plane, and the EKS-on-Fargate fixture behind it. Two discovery leases on TBCMP
+# (te-dev-aws grader, 4 CPU / 15 GB; the lab grader is 2 CPU / 4 GB and unmeasured). Key PATHS are
+# cited from tracks/silent-scan-mode-dependency-201; reorder freely, do not rename.
+# ---------------------------------------------------------------------------------------------------
+k8s_connector:
+  aws:
+    tenant: TBCMP
+    prerequisites:
+      cluster_authentication_mode: API_AND_CONFIG_MAP   # CONFIG_MAP alone raises the LOW prerequisite SHI
+      endpoint_public_access: true
+      service_account: kube-system/wiz-connector        # cluster-admin ClusterRoleBinding; kubectl create token
+      external_id: cluster ARN                          # from aws eks describe-cluster, never a graph entity
+    failure_states:
+      auto_child_toggle: "Child connectors cannot be individually disabled/enabled"   # updateConnector on an auto-onboarded eks child
+      no_shi_type_covers: cluster without a Kubernetes connector, or a deployed-only registry with nothing to scan
+    convergence:
+      auto_onboard_cluster_before_connector_min: 7      # cluster exists when the cloud connector is created
+      auto_onboard_cluster_after_connector_min: null    # never, over 48 min incl. a forced cloud-connector rescan
+      create_visible_in_connectors_s: 12                # createConnector -> connectors(filterBy:{kubernetesClusterExternalIds})
+      create_to_connected_min: 6.8
+      create_to_all_planes_min: 5.9                     # cluster entity, containerClusterConnected, CONTAINER, CONTAINER_IMAGE, traversal; one poll
+      create_to_new_image_entity_s: 90                  # when cluster + container were already on the graph
+      delete_absent_from_connectors_s: 25
+      graph_retracts_after_delete_min: null             # containerClusterConnected true, CONTAINER + CONTAINER_IMAGE present at 8 min, incl. a parent rescan
+      solver_budget_min: 8
+    verify: |
+      terraform apply template/infra/aws/eks-fargate-deployed-images (name=lab-<sid>) after wizlab connector ensure --cloud aws;
+      wizlab k8sconnector ensure --cluster lab-<sid>; requestConnectorScan on it; poll wizlab container inspect
+      --account-id <acct> --image-contains lab-<sid> --require-image every 60 s
+
+eks_fargate:
+  aws:
+    brick: template/infra/aws/eks-fargate-deployed-images   # 21 resources: VPC, 2+2 subnets, IGW, NAT, cluster, Fargate profile, ECR, 2 roles
+    apply_min: [16.1, 14.3]
+    destroy_min: [5.1, 7.6]
+    seed:
+      crane_copy_s: 5                                   # quay.io/prometheus/busybox:latest; public.ecr.aws answers TOOMANYREQUESTS from a sandbox
+      pod_ready_s: 47                                   # 1-replica Deployment in namespace lab
+    services: [eks, ec2, ecr, iam, sts]                 # what two applies used; a minimum is unproven
+    verify: |
+      time terraform apply -auto-approve -var name=lab-<sid>; time terraform destroy -auto-approve -var name=lab-<sid>

@@ -207,12 +207,23 @@ class InspectContract(unittest.TestCase):
     CONNECTOR: typing.ClassVar = {"id": "c1", "name": "lab-x-connector", "enabled": True, "status": "CONNECTED",
                                   "type": {"id": "aws"},
                                   "config": {"customerRoleARN": "arn:aws:iam::111111111111:role/WizAccess-Role"}}
+    CLUSTER_ARN: typing.ClassVar = "arn:aws:eks:us-east-1:111111111111:cluster/lab-x"
+    K8S: typing.ClassVar = {"id": "k1", "name": "lab-x-k8s", "enabled": True, "status": "CONNECTED",
+                            "type": {"id": "eks"}}
     ROWS: typing.ClassVar = {
         ("connector", "inspect"): {"argv": ["--account-id", "111111111111"],
                                    "present": {"connectors": _conn(CONNECTOR)}, "absent": [{"connectors": _conn()}]},
+        # --cluster-arn keeps the row on the Wiz plane; the --cluster path is K8sConnectorGrading's.
+        ("k8sconnector", "inspect"): {"argv": ["--cluster-arn", CLUSTER_ARN],
+                                      "present": {"connectors": _conn(K8S)}, "absent": [{"connectors": _conn()}]},
         ("instance", "inspect"): {"argv": ["--account-id", "111111111111", "--type", "VIRTUAL_MACHINE"],
                                   "present": {"cloudResources": {"totalCount": 1}},
                                   "absent": [{"cloudResources": {"totalCount": 0}}]},
+        ("container", "inspect"): {"argv": ["--account-id", "111111111111", "--image-contains", "lab-x",
+                                            "--require-image"],
+                                   "present": {"graphSearch": {"totalCount": 1}},
+                                   "absent": [{"graphSearch": {"totalCount": 0}}],
+                                   "invalid": [["--image-contains", "lab-x"]]},
         ("sensor", "inspect"): {"argv": ["--name", "lab-x"],
                                 "present": {"sensors": _conn(SENSOR)}, "absent": [{"sensors": _conn()}]},
         ("serviceaccount", "inspect"): {"argv": ["--name", "lab-x-cli"],
@@ -299,6 +310,7 @@ class EnsureContract(unittest.TestCase):
     OUTPOST: typing.ClassVar = {"id": "o1", "name": "lab-x", "status": "CONNECTED",
                                 "allowedRegions": ["us-east-1"], "config": {"roleARN": "a"}}
     NOT_WIZ: typing.ClassVar = {("role", "ensure"): "CSP CLIs",
+                                ("k8sconnector", "ensure"): "aws + kubectl mint the token, K8sConnectorGrading",
                                 ("user", "ensure"): "Keycloak, KeycloakContract",
                                 ("workflow-run", "ensure"): "fires a test run, converges nothing"}
 
@@ -391,6 +403,8 @@ class DeleteContract(unittest.TestCase):
     ROWS: typing.ClassVar = {
         ("connector", "delete"): {"argv": ["--account-id", "111111111111"], "field": "connectors",
                                   "node": InspectContract.CONNECTOR, "deletes": ["deleteConnector"]},
+        ("k8sconnector", "delete"): {"argv": ["--cluster-arn", InspectContract.CLUSTER_ARN], "field": "connectors",
+                                     "node": InspectContract.K8S, "deletes": ["deleteConnector"]},
         ("sensor", "delete"): {"argv": ["--name", "lab-x-sensor"], "field": "serviceAccounts",
                                "node": EnsureContract.SA, "deletes": ["deleteServiceAccount"]},
         ("serviceaccount", "delete"): {"argv": ["--name", "lab-x-cli"], "field": "deployments",
@@ -767,6 +781,96 @@ class RoleInspectGrading(unittest.TestCase):
                 role = {"Role": {"AssumeRolePolicyDocument": {"Statement": [stmt]}}}
                 self.assertEqual(self._run(_proc(0, json.dumps(role)),
                                            argv=["--trusts-service", "eks.amazonaws.com"]), want)
+
+
+class K8sConnectorGrading(unittest.TestCase):
+    """`k8sconnector` on the CLI side of the join. The ARN comes from describe-cluster, never from a graph
+    entity: in the graded state (no connector) the KUBERNETES_CLUSTER entity does not exist, so a verb that
+    resolved the id through the graph would read every broken cluster as "absent" and grade nothing. The
+    token path (update-kubeconfig, then kubectl create token) is the fourth CLI; a failure there is 3."""
+
+    ARN = InspectContract.CLUSTER_ARN
+    ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "x"}
+    CLUSTER: typing.ClassVar = {"cluster": {"name": "lab-x", "arn": ARN, "endpoint": "https://eks.example",
+                                            "certificateAuthority": {"data": "Q0E="}}}
+
+    def _cli(self, describe=None, token=None):
+        describe = _proc(0, json.dumps(self.CLUSTER)) if describe is None else describe
+        token = _proc(0, "tok\n") if token is None else token
+
+        def fake(binary, *a):
+            if binary == "aws" and a[:2] == ("eks", "describe-cluster"):
+                return describe
+            if binary == "aws" and a[:2] == ("eks", "update-kubeconfig"):
+                return _proc(0, "")
+            if binary == "kubectl":
+                return token
+            raise AssertionError(f"unexpected CLI call {binary} {a}")
+        return fake
+
+    def _run(self, verb, argv, fields, **kw):
+        wiz = FakeWiz(**fields)
+        return exit_code(wz.VERBS[verb], argv, wiz=wiz, env=self.ENV, _cli=kw.pop("cli", self._cli()), **kw), wiz
+
+    def test_the_cluster_name_resolves_to_its_arn_and_absent_creates_with_the_token(self):
+        fields = {"connectors": _conn(), "createConnector": {"connector": InspectContract.K8S}}
+        code, wiz = self._run(("k8sconnector", "ensure"), ["--cluster", "lab-x"], fields)
+        self.assertEqual((code, _mutations(wiz)), (0, ["createConnector"]))
+        self.assertEqual(wiz.sent("connectors")[0]["ids"], [self.ARN])
+        auth = wiz.sent("createConnector")[0]["input"]["authParams"]
+        self.assertEqual((auth["clusterExternalID"], auth["authProviderConfig"]["serviceAccountToken"]),
+                         (self.ARN, "tok"))
+        self.assertEqual(wiz.sent("createConnector")[0]["input"]["type"], "eks")
+
+    def test_present_matching_mutates_nothing_and_a_differing_enabled_is_patched(self):
+        present = {"connectors": _conn(InspectContract.K8S)}
+        code, wiz = self._run(("k8sconnector", "ensure"), ["--cluster", "lab-x"], present)
+        self.assertEqual((code, _mutations(wiz)), (0, []))
+        code, wiz = self._run(("k8sconnector", "ensure"), ["--cluster", "lab-x", "--enabled", "false"],
+                              {**present, "updateConnector": {"connector": dict(InspectContract.K8S, enabled=False,
+                                                                                status="DISABLED")}})
+        self.assertEqual((code, _mutations(wiz)), (0, ["updateConnector"]))
+        self.assertEqual(wiz.sent("updateConnector")[0]["input"]["patch"], {"enabled": False})
+
+    def test_a_missing_cluster_is_learner_state_1_and_a_cli_fault_is_3(self):
+        gone = _proc(254, "", "An error occurred (ResourceNotFoundException) when calling DescribeCluster")
+        code, wiz = self._run(("k8sconnector", "inspect"), ["--cluster", "lab-x"], {}, cli=self._cli(describe=gone))
+        self.assertEqual((code, wiz.calls), (1, []))
+        creds = _proc(255, "", "Unable to locate credentials")
+        code, _ = self._run(("k8sconnector", "inspect"), ["--cluster", "lab-x"], {}, cli=self._cli(describe=creds))
+        self.assertEqual(code, 3)
+        no_token = _proc(1, "", "error: serviceaccounts \"wiz-connector\" not found")
+        code, wiz = self._run(("k8sconnector", "ensure"), ["--cluster", "lab-x"],
+                              {"connectors": _conn(), "createConnector": {"connector": InspectContract.K8S}},
+                              cli=self._cli(token=no_token))
+        self.assertEqual((code, _mutations(wiz)), (3, []))
+
+    def test_require_reads_status(self):
+        for status, require, want in (("CONNECTED", "connected", 0), ("INITIAL_SCANNING", "connected", 1),
+                                      ("INITIAL_SCANNING", "exists", 0), ("DISABLED", "disabled", 0),
+                                      ("CONNECTED", "disabled", 1)):
+            with self.subTest(status=status, require=require):
+                node = dict(InspectContract.K8S, status=status)
+                code, _ = self._run(("k8sconnector", "inspect"), ["--cluster-arn", self.ARN, "--require", require],
+                                    {"connectors": _conn(node)})
+                self.assertEqual(code, want)
+
+    def test_container_inspect_sends_the_traversal_and_never_the_dead_filters(self):
+        wiz = FakeWiz(graphSearch={"totalCount": 1})
+        exit_code(wz.cmd_container_inspect,
+                  ["--account-id", "111111111111", "--image-contains", "lab-x", "--require-image"], wiz=wiz)
+        q = wiz.sent("graphSearch")[0]["q"]
+        self.assertEqual(q["type"], ["CONTAINER"])
+        self.assertEqual(q["where"], {"subscriptionExternalId": {"EQUALS": ["111111111111"]},
+                                      "image": {"CONTAINS": ["lab-x"]}})
+        rel = q["relationships"][0]
+        self.assertEqual((rel["type"], rel["with"]["type"], "optional" in rel),
+                         ([{"type": "INSTANCE_OF"}], ["CONTAINER_IMAGE"], False))
+        for dead in ("cloudPlatform", "sourceProvider"):
+            self.assertNotIn(dead, json.dumps(q))
+        wiz = FakeWiz(graphSearch={"totalCount": 1})
+        exit_code(wz.cmd_container_inspect, ["--account-id", "111111111111"], wiz=wiz)
+        self.assertTrue(wiz.sent("graphSearch")[0]["q"]["relationships"][0]["optional"])
 
 
 class Naming(unittest.TestCase):

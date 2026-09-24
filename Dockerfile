@@ -46,6 +46,17 @@ RUN ARCH=$(dpkg --print-architecture) && \
     curl -sSfL "https://downloads.wiz.io/v1/wizcli/latest/wizcli-linux-${ARCH}" -o /usr/local/bin/wizcli && \
     chmod +x /usr/local/bin/wizcli
 
+# kubectl + crane: `k8sconnector ensure` mints the connector's ServiceAccount token with kubectl, and a
+# Kubernetes lab's setup seeds a private registry with crane (no container runtime in this image).
+# Both pinned: kubectl must sit within one minor of the EKS control plane it talks to (1.31 today;
+# the stable channel is too far ahead), crane by release tag. Bump via a new image tag.
+RUN ARCH=$(dpkg --print-architecture) && KVER=v1.31.11 && CRANE=v0.20.6 && \
+    curl -sSfL "https://dl.k8s.io/release/${KVER}/bin/linux/${ARCH}/kubectl" -o /usr/local/bin/kubectl && \
+    chmod +x /usr/local/bin/kubectl && \
+    CARCH=$([ "$ARCH" = "arm64" ] && echo arm64 || echo x86_64) && \
+    curl -sSfL "https://github.com/google/go-containerregistry/releases/download/${CRANE}/go-containerregistry_Linux_${CARCH}.tar.gz" -o /tmp/crane.tgz && \
+    tar -xzf /tmp/crane.tgz -C /usr/local/bin crane && rm /tmp/crane.tgz
+
 # The image's own identity, passed by CI from the git tag and sha it built. Without it a running
 # grader cannot say what it is: a play pins the HCL at import, so a repo's tag string is evidence of
 # what main held then, not of what this container runs — and `session verify --min-runner` has nothing

@@ -52,10 +52,10 @@ jobs:
       # that no longer execs would otherwise be found by the first lab to repin.
       - name: smoke-test the image
         run: |
-          docker run --rm "$IMG" sh -c 'for b in wizlab aws terraform gcloud az wizcli tailscale tailscaled jq git; do command -v "$b" >/dev/null || { echo "missing $b"; exit 1; }; done'
+          docker run --rm "$IMG" sh -c 'for b in wizlab aws terraform gcloud az wizcli tailscale tailscaled jq git kubectl crane; do command -v "$b" >/dev/null || { echo "missing $b"; exit 1; }; done'
           docker run --rm "$IMG" sh -c 'test "$TE_RUNNER_TAG" = "${{ github.ref_name }}" && test "$TE_RUNNER_REV" = "${{ github.sha }}"'
           rc=0; docker run --rm "$IMG" wizlab >/dev/null 2>&1 || rc=$?; test "$rc" -eq 2
           docker run --rm "$IMG" python3 -c 'import ast, sys; ast.parse(open("/opt/reaper/reap_orphans.py").read())'
           # Unpinned CLIs float: this log line is where a rebuilt tag's versions are on record.
-          docker run --rm "$IMG" sh -c 'aws --version; terraform version -json | jq -r .terraform_version; gcloud --version | head -1; az version -o tsv 2>/dev/null | cut -f1; wizcli version; tailscale version | head -1'
+          docker run --rm "$IMG" sh -c 'aws --version; terraform version -json | jq -r .terraform_version; gcloud --version | head -1; az version -o tsv 2>/dev/null | cut -f1; wizcli version; tailscale version | head -1; kubectl version --client -o json | jq -r .clientVersion.gitVersion; crane version'
       - run: docker push "$IMG"
