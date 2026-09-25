@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 # The package is installed beside python in the image; from a checkout it sits one directory up.
+import os
 import pathlib
 import sys
+
+# A non-root caller is the learner shell: it holds no operator credential, so the call is re-issued
+# as root through the sudoers-scoped wrapper, which admits only the verbs the lab granted.
+LEARNER_WRAPPER = "/usr/local/bin/wizlab-learner"
+if os.geteuid() != 0 and os.path.exists(LEARNER_WRAPPER):
+    os.execvp("sudo", ["sudo", "-n", LEARNER_WRAPPER, *sys.argv[1:]])
 
 try:
     from wizlab.cli import main

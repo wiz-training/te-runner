@@ -20,7 +20,7 @@ on:
 jobs:
   reap:
     runs-on: ubuntu-latest
-    container: ghcr.io/wiz-training/te-runner:v0.1.54 # build.yml refuses a tag this line does not pin
+    container: ghcr.io/wiz-training/te-runner:v0.1.55 # build.yml refuses a tag this line does not pin
     steps:
       - name: reap orphans
         env:

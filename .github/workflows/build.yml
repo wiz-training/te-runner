@@ -55,6 +55,10 @@ jobs:
           docker run --rm "$IMG" sh -c 'for b in wizlab aws terraform gcloud az wizcli tailscale tailscaled jq git kubectl crane; do command -v "$b" >/dev/null || { echo "missing $b"; exit 1; }; done'
           docker run --rm "$IMG" sh -c 'test "$TE_RUNNER_TAG" = "${{ github.ref_name }}" && test "$TE_RUNNER_REV" = "${{ github.sha }}"'
           rc=0; docker run --rm "$IMG" wizlab >/dev/null 2>&1 || rc=$?; test "$rc" -eq 2
+          # The learner shell: no grant → the wrapper refuses with 2 (never a traceback, never a credential);
+          # a grant admits the listed pair and nothing else.
+          rc=0; docker run --rm --user learner "$IMG" wizlab session verify >/dev/null 2>&1 || rc=$?; test "$rc" -eq 2
+          docker run --rm "$IMG" sh -c 'WIZ_TENANT=T WIZ_T_CLIENT_ID=i WIZ_T_CLIENT_SECRET=s wizlab-grant "session verify" && su -s /bin/bash learner -c "wizlab connector inspect" >/dev/null 2>&1; test $? -eq 2 && su -s /bin/bash learner -c "printenv WIZ_T_CLIENT_SECRET" >/dev/null 2>&1; test $? -ne 0'
           docker run --rm "$IMG" python3 -c 'import ast, sys; ast.parse(open("/opt/reaper/reap_orphans.py").read())'
           # Unpinned CLIs float: this log line is where a rebuilt tag's versions are on record.
           docker run --rm "$IMG" sh -c 'aws --version; terraform version -json | jq -r .terraform_version; gcloud --version | head -1; az version -o tsv 2>/dev/null | cut -f1; wizcli version; tailscale version | head -1; kubectl version --client -o json | jq -r .clientVersion.gitVersion; crane version'

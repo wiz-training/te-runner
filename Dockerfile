@@ -69,11 +69,20 @@ LABEL org.opencontainers.image.version=${TE_RUNNER_TAG} \
       org.opencontainers.image.revision=${TE_RUNNER_REV} \
       org.opencontainers.image.source=https://github.com/wiz-training/te-runner
 
-COPY bin/wizlab /usr/local/bin/wizlab
+# The learner shell: a non-root user whose only road to wizlab is a sudoers-scoped wrapper reading a
+# 0600 credential snapshot (bin/wizlab-grant writes it from a setup exec's own environment map). The
+# container env then carries no operator secret, and a `terminal` opened as `learner` inherits none
+# (te-labkit-v2 authoring/instruqt-2.0.md §Secrets and scripts).
+RUN apt-get update && apt-get install -y --no-install-recommends sudo && rm -rf /var/lib/apt/lists/* && \
+    useradd -m -s /bin/bash learner && \
+    printf 'Defaults!/usr/local/bin/wizlab-learner !requiretty\nlearner ALL=(root) NOPASSWD: /usr/local/bin/wizlab-learner\n' \
+      > /etc/sudoers.d/learner && chmod 440 /etc/sudoers.d/learner
+
+COPY bin/wizlab bin/wizlab-learner bin/wizlab-grant /usr/local/bin/
 COPY wizlab/*.py /usr/local/lib/python3.12/site-packages/wizlab/
 COPY reaper/reap_orphans.py /opt/reaper/reap_orphans.py
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod 755 /usr/local/bin/wizlab /entrypoint.sh
+RUN chmod 755 /usr/local/bin/wizlab /usr/local/bin/wizlab-learner /usr/local/bin/wizlab-grant /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["sleep", "infinity"]

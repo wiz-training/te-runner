@@ -1,0 +1,24 @@
+#!/bin/bash
+# The learner shell's only road to wizlab. Runs as root through the sudoers rule the image ships, so
+# the operator credential never sits in the learner's environment: it is read here from the 0600
+# snapshot `wizlab-grant` wrote, and only for a `<noun> <verb>` pair that grant listed. Everything
+# else is invocation error 2 -- the learner is told what is not permitted, never handed a traceback.
+set -eu
+verbs=/run/lab/learner-verbs
+snapshot=/run/lab/wiz.env
+if [ ! -r "$verbs" ] || [ ! -r "$snapshot" ]; then
+  echo "wizlab: this lab grants the learner shell no wizlab verbs (wizlab-grant did not run)" >&2
+  exit 2
+fi
+args=("$@")
+[ "${args[0]:-}" = "--check" ] && args=("${args[@]:1}")
+pair="${args[0]:-} ${args[1]:-}"
+if ! grep -qxF -- "$pair" "$verbs"; then
+  echo "wizlab: '$pair' is not permitted from the learner shell in this lab; permitted: $(paste -sd, "$verbs")" >&2
+  exit 2
+fi
+set -a
+# shellcheck disable=SC1090
+. "$snapshot"
+set +a
+exec /usr/local/bin/wizlab "$@"
