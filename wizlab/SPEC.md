@@ -36,7 +36,7 @@ verb cannot make that true it exits 3 naming the difference and mutates nothing.
 | noun | object exists | rule |
 |---|---|---|
 | sensor, serviceaccount | any | delete, re-mint, emit credentials: the secret is shown once and not re-fetchable |
-| connector (aws), workflow, user | drifted | patch / reset / rotate to the requested state |
+| connector (aws), workflow, user | drifted, or connector `--reauth` | patch / reset / rotate to the requested state; `--reauth` patches `authParams` unchanged, which re-inits the connector |
 | connector (gcp, azure) | any | left as found, exit 0: nothing in it can drift |
 | policy | flags differ from the live params | exit 3, no mutation: a shared tenant fixture other labs grade against changes deliberately |
 | outpost | `--role-arn`/`--region` differ | exit 3, no mutation: a role change is a knowing delete-and-recreate |
@@ -116,6 +116,12 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   name's plain meaning.
 - `connector ensure|inspect|delete` — a Cloud Connector. `ensure` converges only on AWS: it creates
   the connector if absent, else corrects a drifted `authParams.customerRoleARN` (the repair path).
+  `--reauth` patches `authParams` even when nothing drifted: the patch is synchronous, drops the
+  connector to `INITIAL_SCANNING` and re-runs the assume-role. It is the only lever for a trust rotated
+  AFTER `CONNECTED` — rotation alone leaves `CONNECTED`, `errorCode` null, no System Health Issue,
+  `lastActivity` frozen, and `requestConnectorScan` (Rescan) changes none of that. On a broken trust the
+  connector holds `INITIAL_SCANNING`; on a matching one it reaches `CONNECTED` in ~4 min. AWS only; an
+  Outpost-bound connector needs the outpost flags with it or the patch drops the binding (exit 2).
   GCP and Azure `ensure` are create-if-absent — the connector carries no ARN to drift, so an existing
   one is left as found and exits 0. AWS `ensure` sets
   `authParams.customerRoleARN`; `--outpost-id`, or `--outpost-name` (default: the session stem, the name

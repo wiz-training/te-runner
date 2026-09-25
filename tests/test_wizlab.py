@@ -379,6 +379,26 @@ class EnsureContract(unittest.TestCase):
                 code, wiz = self._run(verb, row["argv"], row["present"])
                 self.assertEqual((code, _mutations(wiz)), (0, row.get("present_mutates", [])))
 
+    def test_connector_reauth_patches_authparams_unchanged(self):
+        """A trust rotated after CONNECTED is invisible: status CONNECTED, errorCode null, no health issue,
+        lastActivity frozen, and Rescan changes nothing (tracks/aws-connector-auth-break-201
+        AUTH-ROTATE-SILENT-001, AUTH-RESCAN-NOOP-021). The one lever is a patch that re-submits the stored
+        authParams, so --reauth must send updateConnector on a connector `ensure` would otherwise leave
+        alone, with the customerRoleARN it already holds."""
+        present = {"connectors": _conn(self.CONNECTOR),
+                   "updateConnector": {"connector": dict(self.CONNECTOR, status="INITIAL_SCANNING")}}
+        argv = ["--account-id", "111111111111", "--reauth"]
+        code, wiz = self._run(("connector", "ensure"), argv, present)
+        self.assertEqual((code, _mutations(wiz)), (0, ["updateConnector"]))
+        self.assertEqual(wiz.sent("updateConnector")[0]["input"]["patch"],
+                         {"authParams": {"customerRoleARN": self.CONNECTOR["config"]["customerRoleARN"]}})
+        # gcp carries no authParams to re-submit; an outpost-bound connector's binding lives in authParams.
+        code, wiz = self._run(("connector", "ensure"), ["--cloud", "gcp", *argv], present)
+        self.assertEqual((code, _mutations(wiz)), (2, []))
+        bound = {"connectors": _conn(dict(self.CONNECTOR, outpost={"id": "o1", "name": "lab-x"}))}
+        code, wiz = self._run(("connector", "ensure"), argv, bound)
+        self.assertEqual((code, _mutations(wiz)), (2, []))
+
     def test_a_tenant_error_mutates_nothing_and_is_3(self):
         for verb, row in self.rows().items():
             with self.subTest(verb=verb):

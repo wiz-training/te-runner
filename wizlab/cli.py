@@ -89,7 +89,7 @@ FLAGS = {
     ("connector", "inspect"): {**_S, **_CLOUD, "--account-id": {}, "--outpost-id": {}, "--outpost-name": {},
                                "--require": _one_of("exists", "healthy", "outpost-bound")},
     ("connector", "ensure"): {**_S, **_CLOUD, "--account-id": {}, "--outpost-id": {}, "--outpost-name": {},
-                              "--role-arn": {}, "--scanner-role-arn": {}, "--tenant-id": {}},
+                              "--reauth": _SWITCH, "--role-arn": {}, "--scanner-role-arn": {}, "--tenant-id": {}},
     ("connector", "delete"): {**_S, **_CLOUD, "--account-id": {}},
     ("instance", "inspect"): {"--account-id": {}, "--type": {"default": "VIRTUAL_MACHINE"}},
     # --cluster is the EKS name (default: the session stem), resolved to its ARN by describe-cluster;
