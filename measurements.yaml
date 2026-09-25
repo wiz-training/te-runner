@@ -1519,6 +1519,7 @@ k8s_connector:
     failure_states:
       auto_child_toggle: "Child connectors cannot be individually disabled/enabled"   # updateConnector on an auto-onboarded eks child
       no_shi_type_covers: cluster without a Kubernetes connector, or a deployed-only registry with nothing to scan
+      rescan_within_10min_of_create: "Cannot initiate on-demand scan, please allow at least 10 minutes between requests for this connector"   # createConnector starts INITIAL_SCANNING; requestConnectorScan inside that window is refused, per connector
     convergence:
       auto_onboard_cluster_before_connector_min: 7      # cluster exists when the cloud connector is created
       auto_onboard_cluster_after_connector_min: null    # never, over 48 min incl. a forced cloud-connector rescan
