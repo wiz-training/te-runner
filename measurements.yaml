@@ -1525,7 +1525,7 @@ k8s_connector:
       auto_onboard_cluster_after_connector_min: null    # never, over 48 min incl. a forced cloud-connector rescan
       create_visible_in_connectors_s: 12                # createConnector -> connectors(filterBy:{kubernetesClusterExternalIds})
       create_to_connected_min: 6.8
-      create_to_all_planes_min: 5.9                     # cluster entity, containerClusterConnected, CONTAINER, CONTAINER_IMAGE, traversal; one poll
+      create_to_all_planes_min: [5.9, 6.6, 6.2]         # cluster entity, containerClusterConnected, CONTAINER, CONTAINER_IMAGE, traversal; one poll; three plays
       create_to_new_image_entity_s: 90                  # when cluster + container were already on the graph
       delete_absent_from_connectors_s: 25
       graph_retracts_after_delete_min: null             # containerClusterConnected true, CONTAINER + CONTAINER_IMAGE present at 8 min, incl. a parent rescan
@@ -1538,7 +1538,7 @@ k8s_connector:
 eks_fargate:
   aws:
     brick: template/infra/aws/eks-fargate-deployed-images   # 21 resources: VPC, 2+2 subnets, IGW, NAT, cluster, Fargate profile, ECR, 2 roles
-    apply_min: [16.1, 14.3]
+    apply_min: [16.1, 14.3]                             # dev grader 4 CPU / 15 GB; the 2 CPU / 4 GB lab grader stages the whole scenario in 26-29 min
     destroy_min: [5.1, 7.6]
     seed:
       crane_copy_s: 5                                   # quay.io/prometheus/busybox:latest; public.ecr.aws answers TOOMANYREQUESTS from a sandbox
