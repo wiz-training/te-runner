@@ -250,11 +250,42 @@ def _aws_auth_params(args, account):
     return auth
 
 
+def _reauth_guard(args, node):
+    """--reauth re-submits authParams. An Outpost binding lives in those same authParams, so a patch
+    built without the outpost flags would silently drop it."""
+    if (node.get("outpost") or {}).get("id") and not (args.outpost_id or args.outpost_name):
+        core.die(2, "connector ensure --reauth on an outpost-bound connector needs --outpost-id or "
+                    "--outpost-name with --scanner-role-arn, or the patch drops the binding")
+
+
+def _patch_aws(args, node, auth, same):
+    """A patch is a re-init whether or not a value changes: the response already reads INITIAL_SCANNING
+    and Wiz re-runs the assume-role. A trust rotated AFTER CONNECTED never shows otherwise — CONNECTED,
+    errorCode null, no health issue, lastActivity frozen — and Rescan does not re-authenticate. Proven:
+    create, and this same-value patch. A patch that ADDS outpostId to an existing connector is
+    unexercised."""
+    if same:
+        _reauth_guard(args, node)
+    data, _ = core.api(UPDATE, {"input": {"id": node["id"], "patch": {"authParams": auth}}})
+    status = (((data.get("updateConnector") or {}).get("connector")) or {}).get("status")
+    cur = (node.get("config") or {}).get("customerRoleARN") or "(none)"
+    cur_outpost = (node.get("outpost") or {}).get("id") or "(none)"
+    outpost_id = auth.get("outpostId")
+    what = "re-authenticating" if same else f"customerRoleARN {cur} -> {auth['customerRoleARN']}"
+    print(f"connector {node['name']}: {what}"
+          + (f", outpost {cur_outpost} -> {outpost_id}" if outpost_id else "")
+          + f", status={status}")
+
+
 def cmd_connector_ensure(args):
     """Idempotent converge: create the connector if absent, else correct its customerRoleARN if it
-    drifted (this is also the repair path — a lab seeds a wrong ARN, `ensure` fixes it)."""
+    drifted (this is also the repair path — a lab seeds a wrong ARN, `ensure` fixes it). --reauth
+    patches even when nothing drifted (_patch_aws)."""
     cloud = args.cloud
     account = core._account_id(args, "connector ensure")
+    if args.reauth and cloud != "aws":
+        core.die(2, f"connector ensure --reauth is aws only: a {cloud} connector carries no authParams "
+                    "the tenant re-runs")
     # gcp/azure are create-if-absent (no ARN to drift); only aws falls through to the repair path.
     if cloud == "gcp":
         return _ensure_gcp(args, account)
@@ -267,15 +298,11 @@ def cmd_connector_ensure(args):
         n = matches[0]
         cur = (n.get("config") or {}).get("customerRoleARN") or ""
         cur_outpost = (n.get("outpost") or {}).get("id") or ""
-        if cur == role_arn and (not outpost_id or cur_outpost == outpost_id):
+        same = cur == role_arn and (not outpost_id or cur_outpost == outpost_id)
+        if same and not args.reauth:
             print(f"connector {n['name']} already targets {account} with {role_arn}; nothing to do")
             return
-        # Only the create path above is proven against the API; a patch that adds outpostId to an
-        # existing connector is the repair case and is unexercised.
-        core.api(UPDATE, {"input": {"id": n["id"], "patch": {"authParams": auth}}})
-        print(f"connector {n['name']}: customerRoleARN {cur or '(none)'} -> {role_arn}"
-              + (f", outpost {cur_outpost or '(none)'} -> {outpost_id}" if outpost_id else ""))
-        return
+        return _patch_aws(args, n, auth, same)
     name = f"{core._lab_stem(core._session_id(args))}-connector"
     # customerRoleARN goes in authParams, NOT extraConfig; extraConfig carries only
     # skipOrganizationScan. The role need not exist yet — the connector sits in ERROR until task 2
