@@ -1,0 +1,21 @@
+#!/bin/bash
+# Run from a lab's setup exec, as root, with the operator secrets in THIS process's environment (the
+# exec's own `environment` map): snapshots them to a 0600 file and lists the `<noun> <verb>` pairs the
+# learner shell may run through `wizlab-learner`. The container env carries no secret, so this
+# snapshot is the only place the learner-side wrapper can find one.
+#   wizlab-grant "k8sconnector ensure" "container inspect"
+set -eu
+[ "$#" -ge 1 ] || { echo "usage: wizlab-grant '<noun> <verb>' ..." >&2; exit 2; }
+install -d -m 700 /run/lab
+umask 077
+: > /run/lab/wiz.env
+for k in WIZ_TENANT INSTRUQT_SESSION_ID; do
+  [ -n "${!k:-}" ] && printf '%s=%q\n' "$k" "${!k}" >> /run/lab/wiz.env
+done
+while IFS='=' read -r k v; do
+  printf '%s=%q\n' "$k" "$v" >> /run/lab/wiz.env
+done < <(env | grep -E '^(WIZ_[A-Z0-9_]+_CLIENT_(ID|SECRET)|LAB_KEYCLOAK_[A-Z_]+|GIT_CONFIG_[A-Z0-9_]+)=' || true)
+printf '%s\n' "$@" > /run/lab/learner-verbs
+n=$(grep -c -E '^WIZ_[A-Z0-9_]+_CLIENT_ID=' /run/lab/wiz.env || true)
+[ "$n" -ge 1 ] || echo "wizlab-grant: no WIZ_<TENANT>_CLIENT_ID in this exec's environment; the learner wrapper will exit 3" >&2
+echo "granted $# verb pair(s) to the learner shell; snapshot holds $(wc -l < /run/lab/wiz.env) variable(s)"

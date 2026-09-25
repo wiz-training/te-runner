@@ -63,6 +63,19 @@ are not rejected), so the repin is what activates the gate. Operator decision, 2
 health under `verify`, not a new noun — a floor is not an API fact and would fail the API-level bar
 below as `runner inspect`.
 
+### The learner shell (v0.1.55+)
+The image ships a non-root `learner` user, `sudo`, and one sudoers rule: `learner` may run
+`/usr/local/bin/wizlab-learner` without a password, nothing else. A lab keeps every operator secret
+out of `container.environment` (a `terminal` opened as `learner` inherits that env whole) and passes
+them through exec and task `environment` maps instead. The setup exec calls
+`wizlab-grant "<noun> <verb>" …`, which snapshots its own `WIZ_*`, `LAB_KEYCLOAK_*` and `GIT_CONFIG_*`
+to `/run/lab/wiz.env` (0600) and lists the admitted pairs in `/run/lab/learner-verbs`. `bin/wizlab`
+re-issues a non-root call as `sudo -n wizlab-learner`, which admits a listed pair, sources the
+snapshot, and execs wizlab; an unlisted pair or no grant is exit 2 with the permitted list on stderr,
+never a traceback and never a value. Checks and solves run as root with their task's map and call
+wizlab directly. Operator decision, 2026-09-25, forced by the shared tenant's service account being
+readable from every learner terminal.
+
 ## Nouns
 `session`, `connector`, `role`, `instance`, `user`, `wiz`, `outpost`, for Kubernetes labs `k8sconnector`
 and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`, for Wiz Code labs
