@@ -259,11 +259,12 @@ def _reauth_guard(args, node):
 
 
 def _patch_aws(args, node, auth, same):
-    """A patch is a re-init whether or not a value changes: the response already reads INITIAL_SCANNING
-    and Wiz re-runs the assume-role. A trust rotated AFTER CONNECTED never shows otherwise — CONNECTED,
-    errorCode null, no health issue, lastActivity frozen — and Rescan does not re-authenticate. Proven:
-    create, and this same-value patch. A patch that ADDS outpostId to an existing connector is
-    unexercised."""
+    """A patch is a re-init whether or not a value changes: the response already reads INITIAL_SCANNING.
+    It is NOT a recovery — from ERROR on a corrected trust the connector holds INITIAL_SCANNING past
+    30 min, with every UpdateConnectorPatch field re-submitted as well as authParams alone. Repair is
+    delete then ensure (CONNECTED in ~4 min). A trust rotated AFTER CONNECTED shows nothing at all —
+    CONNECTED, errorCode null, no health issue, lastActivity frozen — and Rescan does not
+    re-authenticate. A patch that ADDS outpostId to an existing connector is unexercised."""
     if same:
         _reauth_guard(args, node)
     data, _ = core.api(UPDATE, {"input": {"id": node["id"], "patch": {"authParams": auth}}})
