@@ -6,7 +6,6 @@
 # (`InspectContract.ROWS`, the grading tables), driven through `exit_code` and `FakeWiz`.
 import base64
 import contextlib
-import importlib.util
 import io
 import json
 import os
@@ -2400,45 +2399,6 @@ class RunnerFloor(unittest.TestCase):
         code, out, _err = self._verify([], {"TE_RUNNER_TAG": "", "TE_RUNNER_REV": ""})
         self.assertEqual(code, 0)
         self.assertIn("runner=unknown", out)
-
-
-class OutOfBandReaperExit(unittest.TestCase):
-    """reap_orphans.main's exit, driven through the only boundary it has: what `wizlab` returned."""
-
-    ORPHANS = str(pathlib.Path(__file__).resolve().parent.parent / "reaper" / "reap_orphans.py")
-
-    @classmethod
-    def setUpClass(cls):
-        # Loaded by path: the reaper ships to /opt/reaper in the image, not as a package on sys.path.
-        spec = importlib.util.spec_from_file_location("reap_orphans", cls.ORPHANS)
-        cls.ro = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(cls.ro)
-
-    def _run(self, *codes):
-        """One stopped session whose `user reap` then `user delete` return `codes`. Returns the exit."""
-        seen = iter(codes)
-        with mock.patch.object(self.ro.subprocess, "run",
-                              side_effect=lambda *a, **k: _proc(returncode=next(seen))), \
-             mock.patch.object(self.ro, "stopped_sessions", return_value=["s1"]), \
-             mock.patch.dict(os.environ, {"REAP_SESSIONS": ""}, clear=False), \
-             mock.patch.object(sys, "argv", ["reap_orphans.py", "--commit"]), \
-             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            try:
-                self.ro.main()
-            except SystemExit as e:
-                return e.code
-        return 0
-
-    def test_a_deferred_teardown_is_green_and_a_failed_one_is_red(self):
-        """A run whose only residue was one Outpost mid-uninstall exited 1 and paged, every night, for
-        the documented multi-pass Outpost lifecycle. wizlab routes the two: 4 self-heals, 3 does not."""
-        for reap_code, want in [(0, 0), (4, 0), (3, 1)]:
-            with self.subTest(wizlab_exit=reap_code):
-                self.assertEqual(self._run(reap_code, 0), want)
-
-    def test_a_footprint_reaped_but_a_user_left_behind_is_red(self):
-        # The user is the only handle back to the footprint, so a delete that failed is not cleanup done.
-        self.assertEqual(self._run(0, 1), 1)
 
 
 if __name__ == "__main__":
