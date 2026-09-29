@@ -1362,7 +1362,10 @@ outpost_lifecycle:
     # the learner touches nothing throughout. The docs' "up to 24 hours" is a ceiling, not an expectation.
     time_to_first_scan_min: 5         # n=1, requestConnectorScan -> resourceScanResults SUCCESS
     uninstall_to_uninstalled_min:
-      from_initialized: 1.7           # n=1, no real infra to tear down
+      from_initialized: [1.7, ">24"]  # n=3. 1.7 on an Outpost uninstalled minutes after createOutpost; two
+      # STALE ones, days old with clusters null and "No activity yet", were still UNINSTALLING past +24 and
+      # are not bounded here. Age, not infra, is what the wait tracks -- so a GUI teardown of tenant
+      # clutter is not a wait an operator can sit through.
       from_initializing: 5.9          # n=1, 3.4x slower in the same no-infra case; not a tight bound
       from_connected: [20, 33]        # n=2, real EKS; UNINSTALLING persists past +19, UNINSTALLED by +20.
       # `wizlab outpost delete` waits 600s, so a lab's final reap defers a CONNECTED outpost to the
