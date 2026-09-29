@@ -974,7 +974,7 @@ class ConnectorAndReaperSafety(unittest.TestCase):
             outcome, review = wz._reap_one("tok", "dc", "CreateWidget", "lab-s1-w", True)
         self.assertEqual(outcome, wz.UNKNOWN)
         self.assertIn("no handler", review)
-        self.assertNotIn(wz.UNKNOWN, wz._REAP_BLOCKING)
+        self.assertEqual(wz._reap_exit(wz.Counter({wz.UNKNOWN: 1})), 0)
 
     def test_an_audit_entry_with_no_name_is_unknown(self):
         outcome, review = wz._reap_one("tok", "dc", "CreateWidget", None, True)
@@ -1018,7 +1018,7 @@ class ConnectorAndReaperSafety(unittest.TestCase):
             outcome, detail = wz._reap_service_account("tok", "dc", self.SA_HANDLER, "sa1", name)
         self.assertEqual(outcome, wz.UNKNOWN)
         self.assertIn("lab-s1-cli", detail)
-        self.assertNotIn(wz.UNKNOWN, wz._REAP_BLOCKING)
+        self.assertEqual(wz._reap_exit(wz.Counter({wz.UNKNOWN: 1})), 0)
 
     def test_reap_enumeration_surfaces_graphql_errors(self):
         with mock.patch.object(_owner("_gql"), "_gql", return_value=({}, [{"message": "denied"}])):
@@ -1049,13 +1049,17 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         self.assertEqual(cm.code, 3)
 
     def test_which_outcomes_keep_the_user_and_the_retry(self):
-        # Exit 3 is the only signal the reaper acts on: DEFERRED and FAILED earn one more daily pass.
-        # Residue we cannot act on (UNKNOWN) is not cleanup that failed, or the reaper would retain
-        # every lab-<sid>@ user it was built to delete.
-        for outcome, want in [(wz.REMOVED, 0), (wz.ABSENT, 0), (wz.UNKNOWN, 0), (wz.DEFERRED, 3), (wz.FAILED, 3)]:
+        # DEFERRED and FAILED both earn one more daily pass, and they exit differently because only one
+        # of them needs a human: a deferred Outpost uninstall is the documented lifecycle, and sharing
+        # exit 3 with FAILED made every night of a normal multi-pass teardown page. Residue we cannot
+        # act on (UNKNOWN) is not cleanup that failed, or the reaper would retain every lab-<sid>@ user
+        # it was built to delete.
+        for outcome, want in [(wz.REMOVED, 0), (wz.ABSENT, 0), (wz.UNKNOWN, 0), (wz.DEFERRED, 4), (wz.FAILED, 3)]:
             with self.subTest(outcome=outcome):
                 self.assertEqual(self._reap(outcome), want)
         self.assertEqual(self._reap(None, sweep=wz.Counter({wz.FAILED: 1})), 3)  # a sweep that did not finish
+        # A failure outranks a deferral: the pass that needs an operator must not read as self-healing.
+        self.assertEqual(self._reap(wz.DEFERRED, sweep=wz.Counter({wz.FAILED: 1})), 3)
 
     def test_reap_one_reports_failed_when_delete_does_not_remove_resource(self):
         found = [("id1", 1, None), ("id1", 1, None)]
@@ -1123,10 +1127,18 @@ class ConnectorAndReaperSafety(unittest.TestCase):
 
     def test_an_uninstalling_outpost_is_deferred_without_a_second_uninstall(self):
         # Every status carrying UNINSTALL is in or past the flow, and the second uninstall is the call
-        # that refuses — so a PARTIALLY_UNINSTALLED record defers on its own, not on a refused mutation.
-        for status in ("UNINSTALLING", "PARTIALLY_UNINSTALLED"):
-            outcome, _detail, sent = self._outpost_reap(status)
-            self.assertEqual((outcome, sent), (wz.DEFERRED, []), status)
+        # that refuses — so the record defers on its own, not on a refused mutation.
+        outcome, _detail, sent = self._outpost_reap("UNINSTALLING")
+        self.assertEqual((outcome, sent), (wz.DEFERRED, []))
+
+    def test_a_stuck_outpost_is_failed_not_deferred_and_issues_nothing(self):
+        """A PARTIALLY_UNINSTALLED Outpost reported as `delete deferred to the next pass` kept the
+        reaper red every night: the uninstall refuses a second call and deleteOutpost refuses the
+        record, so no pass it promised could ever clear it."""
+        for status in wz._OUTPOST_STUCK:
+            outcome, detail, sent = self._outpost_reap(status)
+            self.assertEqual((outcome, sent), (wz.FAILED, []), status)
+            self.assertIn("operator", detail)
 
     def test_an_uninstalled_outpost_is_deleted(self):
         for status in wz._OUTPOST_DELETABLE:

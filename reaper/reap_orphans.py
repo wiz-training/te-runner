@@ -20,9 +20,9 @@ TEAM = os.getenv("INSTRUQT_TEAM", "wiz")
 # Rolling window, so a session is seen by several consecutive runs. That is safe only because an
 # already-reaped resource is a no-op, not a failure. It must span enough daily runs to finish a
 # multi-pass teardown: an Outpost uninstalls before it can be deleted, so a pass that finds it
-# `uninstalling` or `partially_uninstalled` defers the delete and only a LATER pass completes it. A
-# session that ages out mid-teardown leaves its footprint orphaned, and connectors accumulating past
-# what a lookup can page break every lab's staging (wizlab find_connector).
+# `uninstalling` defers the delete and only a LATER pass completes it. A session that ages out
+# mid-teardown leaves its footprint orphaned, and connectors accumulating past what a lookup can page
+# break every lab's staging (wizlab find_connector).
 WINDOW_H = int(os.getenv("REAP_WINDOW_HOURS", "48"))
 # tenant key (the WIZ_TENANT value wizlab keys creds on) -> the lab's Instruqt tag. Extend as tenants onboard.
 TENANTS = {"TBCMP": "tid:tbcmp"}
@@ -83,24 +83,38 @@ def _wizlab(tenant, *args):
     return r.returncode
 
 
+# What a session's reap leaves behind. DEFERRED is not a failure: a teardown still in flight is the
+# documented Outpost lifecycle, and the next pass inside WINDOW_H finishes it, so a run reporting only
+# deferrals is green. FAILED is cleanup no later pass can finish on its own.
+DONE, DEFERRED, FAILED = "done", "deferred", "failed"
+
+
 def _reap_session(tenant, sid, commit):
     if not commit:
         print(f"DRY-RUN {tenant}: reap lab-{sid}* + delete lab-{sid}@")
-        return True
+        return DONE
     # Footprint first, user last: the user is the only handle back to the leftover objects, so keep it
     # when the footprint survives. Only a run inside WINDOW_H retries on its own — past that the sid
     # has aged out of labPlayReports and an operator must pass it via REAP_SESSIONS.
-    if _wizlab(tenant, "user", "reap", "--session", sid, "--commit") != 0:
-        # Exit 3 means failed OR deferred (a multi-pass teardown mid-flight); the preceding wizlab
-        # output names which. Either way the handle stays until a pass proves the footprint gone.
+    rc = _wizlab(tenant, "user", "reap", "--session", sid, "--commit")
+    if rc != 0:
+        # wizlab routes it: 4 finishes on its own, 3 does not (wizlab.reap._reap_exit). Either way the
+        # handle stays until a pass proves the footprint gone.
         print(f"reap_orphans: retaining lab-{sid}@ because Wiz cleanup is incomplete", file=sys.stderr)
-        return False
-    return _wizlab(tenant, "user", "delete", "--session", sid) == 0
+        return DEFERRED if rc == 4 else FAILED
+    return DONE if _wizlab(tenant, "user", "delete", "--session", sid) == 0 else FAILED
+
+
+def _tally(outcome, sid, failed, deferred):
+    if outcome == FAILED:
+        failed.append(sid)
+    elif outcome == DEFERRED:
+        deferred.append(sid)
 
 
 def main():
     commit = "--commit" in sys.argv
-    total, failed = 0, []
+    total, failed, deferred = 0, [], []
     # Manual override: reap explicit sids regardless of tag/window. For orphans that predate a track's
     # tid:<tenant> tag (labPlayReports captures tags at play time, so a late tag never back-fills), or
     # any one-off. `REAP_SESSIONS="sid1,sid2"`; reaped under REAP_SESSIONS_TENANT (default TBCMP).
@@ -110,17 +124,16 @@ def main():
         print(f"# manual: {len(manual)} session(s) under {mtenant}")
         for sid in manual:
             total += 1
-            if not _reap_session(mtenant, sid, commit):
-                failed.append(sid)
+            _tally(_reap_session(mtenant, sid, commit), sid, failed, deferred)
     for tenant, tag in TENANTS.items():
         sids = stopped_sessions(tag)
         print(f"# tenant {tenant} ({tag}): {len(sids)} stopped session(s) in last {WINDOW_H}h")
         for sid in sids:
             total += 1
-            if not _reap_session(tenant, sid, commit):
-                failed.append(sid)
-    completed = total - len(failed)
-    print(f"# {completed}/{total} session(s) {'reaped' if commit else 'ready to reap (dry-run)'}", file=sys.stderr)
+            _tally(_reap_session(tenant, sid, commit), sid, failed, deferred)
+    completed = total - len(failed) - len(deferred)
+    print(f"# {completed}/{total} session(s) {'reaped' if commit else 'ready to reap (dry-run)'}"
+          f"{f', {len(deferred)} deferred to the next pass' if deferred else ''}", file=sys.stderr)
     if failed:
         _die(f'{len(failed)} session(s) left cleanup incomplete; see preceding wizlab output, then retry with '
              f'REAP_SESSIONS="{",".join(failed)}"')

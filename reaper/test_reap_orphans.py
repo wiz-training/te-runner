@@ -34,28 +34,38 @@ class SessionDiscovery(unittest.TestCase):
 
 
 class ReapOrdering(unittest.TestCase):
-    def test_failed_wiz_cleanup_retains_keycloak_user(self):
-        with mock.patch.object(rp, "_wizlab", return_value=3) as wizlab:
-            self.assertFalse(rp._reap_session("T", "s1", True))
-        self.assertEqual(wizlab.call_count, 1)
-        self.assertEqual(wizlab.call_args.args[1:3], ("user", "reap"))
+    def test_what_each_wizlab_exit_leaves_behind(self):
+        """A run whose only residue was one Outpost mid-uninstall exited 1 and paged every night, for
+        what is the documented multi-pass Outpost lifecycle. wizlab routes the two apart: 4 is cleanup a
+        later pass finishes on its own, 3 needs a human (wizlab.reap._reap_exit)."""
+        reap, delete = ("user", "reap"), ("user", "delete")
+        for codes, want, calls in [((0, 0), rp.DONE, [reap, delete]),
+                                   ((4,), rp.DEFERRED, [reap]),
+                                   ((3,), rp.FAILED, [reap]),
+                                   # The user is the only handle back to the footprint, so a delete that
+                                   # failed is not cleanup done.
+                                   ((0, 1), rp.FAILED, [reap, delete])]:
+            with self.subTest(codes=codes), mock.patch.object(rp, "_wizlab", side_effect=codes) as wizlab:
+                self.assertEqual(rp._reap_session("T", "s1", True), want)
+                self.assertEqual([c.args[1:3] for c in wizlab.call_args_list], calls)
 
-    def test_successful_wiz_cleanup_deletes_user_second(self):
-        with mock.patch.object(rp, "_wizlab", side_effect=[0, 0]) as wizlab:
-            self.assertTrue(rp._reap_session("T", "s1", True))
-        self.assertEqual([c.args[1:3] for c in wizlab.call_args_list], [("user", "reap"), ("user", "delete")])
-
-    def test_main_exits_nonzero_and_names_the_sids_to_retry(self):
-        # A retained user only self-heals inside WINDOW_H; past that the sid is the only way back in.
-        with mock.patch.object(rp, "TENANTS", {}), \
-             mock.patch.object(rp, "_reap_session", return_value=False), \
-             mock.patch.dict(rp.os.environ, {"REAP_SESSIONS": "s1,s2"}, clear=True), \
-             mock.patch.object(rp.sys, "argv", ["reap_orphans.py", "--commit"]), \
-             mock.patch.object(rp.sys, "stderr", io.StringIO()) as err, \
-             self.assertRaises(SystemExit) as cm:
-            rp.main()
-        self.assertEqual(cm.exception.code, 1)
-        self.assertIn('REAP_SESSIONS="s1,s2"', err.getvalue())
+    def test_main_goes_red_only_for_cleanup_a_later_pass_cannot_finish(self):
+        # A retained user only self-heals inside WINDOW_H; past that the sid is the only way back in, so
+        # the red run names it. A deferral is inside the window by construction and names nothing.
+        for outcome, want in [(rp.DONE, None), (rp.DEFERRED, None), (rp.FAILED, 1)]:
+            with self.subTest(outcome=outcome), \
+                 mock.patch.object(rp, "TENANTS", {}), \
+                 mock.patch.object(rp, "_reap_session", return_value=outcome), \
+                 mock.patch.dict(rp.os.environ, {"REAP_SESSIONS": "s1,s2"}, clear=True), \
+                 mock.patch.object(rp.sys, "argv", ["reap_orphans.py", "--commit"]), \
+                 mock.patch.object(rp.sys, "stderr", io.StringIO()) as err:
+                code = None
+                try:
+                    rp.main()
+                except SystemExit as e:
+                    code = e.code
+                self.assertEqual(code, want)
+                self.assertEqual('REAP_SESSIONS="s1,s2"' in err.getvalue(), want is not None)
 
 
 if __name__ == "__main__":
