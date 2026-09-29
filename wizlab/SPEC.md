@@ -116,12 +116,15 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   name's plain meaning.
 - `connector ensure|inspect|delete` — a Cloud Connector. `ensure` converges only on AWS: it creates
   the connector if absent, else corrects a drifted `authParams.customerRoleARN` (the repair path).
-  `--reauth` patches `authParams` even when nothing drifted: the patch is synchronous, drops the
-  connector to `INITIAL_SCANNING` and re-runs the assume-role. It is the only lever for a trust rotated
-  AFTER `CONNECTED` — rotation alone leaves `CONNECTED`, `errorCode` null, no System Health Issue,
-  `lastActivity` frozen, and `requestConnectorScan` (Rescan) changes none of that. On a broken trust the
-  connector holds `INITIAL_SCANNING`; on a matching one it reaches `CONNECTED` in ~4 min. AWS only; an
-  Outpost-bound connector needs the outpost flags with it or the patch drops the binding (exit 2).
+  `--reauth` patches `authParams` even when nothing drifted: the patch is synchronous and drops the
+  connector to `INITIAL_SCANNING` with `errorCode` and `lastActivity` null. It does NOT recover a
+  connector: from `ERROR` on a corrected trust it holds `INITIAL_SCANNING` past 30 min, and a patch
+  carrying all four `UpdateConnectorPatch` fields behaves the same. `delete` then `ensure` reaches
+  `CONNECTED` in ~4 min on the same trust, and is the repair path. `--reauth` surfaces a rotated trust
+  as a state change, nothing more — rotation alone leaves `CONNECTED`, `errorCode` null, no System
+  Health Issue, `lastActivity` frozen, and `requestConnectorScan` (Rescan) changes none of that. AWS
+  only; an Outpost-bound connector needs the outpost flags with it or the patch drops the binding
+  (exit 2).
   GCP and Azure `ensure` are create-if-absent — the connector carries no ARN to drift, so an existing
   one is left as found and exits 0. AWS `ensure` sets
   `authParams.customerRoleARN`; `--outpost-id`, or `--outpost-name` (default: the session stem, the name
