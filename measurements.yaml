@@ -1272,6 +1272,18 @@ outpost_lifecycle:
       clusters: null
       scans_attempted: 0              # 0 successful AND 0 failed -- all-zero is the tell it never tried
       shi: medium                     # "Outpost With No Connected Connectors ... this Outpost is in idle mode"
+    shi_severity_splits_by_object: true
+    # The Outpost's own Health Issues cell carries the medium above and nothing else. A failed provision
+    # raises its critical on the OUTPOST CLUSTER, one object down, reachable only from the Outpost
+    # drawer's Details > "Outpost Clusters" table or Settings > System Health:
+    provision_error_shi:
+      title: Unexpected Provision Error
+      severity: critical
+      lifecycle_state_in_body: provision  # "Failed to provision cluster during initialization"
+      remediation_names_menuitem: true    # verbatim "Update All Clusters Regional Resources"
+      clears_on_success: false            # stays Open after the Outpost reaches CONNECTED
+    # On success the Outpost's cell goes EMPTY, not to 0, and the cluster's critical is untouched -- so
+    # neither surface confirms the repair, and only the OutpostStatus enum does.
     ui_active_is_not_connected: true
     # The GUI reads Active while the API holds INITIALIZED with clusters null: UI wording tracks the
     # connector and `enabled`, not OutpostStatus. Grade the enum, and never publish a learner-facing
@@ -1301,9 +1313,15 @@ outpost_lifecycle:
       in_account_CreateCluster: 8
       eks_control_plane_ACTIVE: 20    # 9 node groups
       status_CONNECTED: 22
-    error_to_connected_min: 3.2       # n=1, ERROR -> CONNECTED after the regional-resources re-run on a
+    reprovision_trigger: invokeOutpostClusterUpdate   # input.id is the CLUSTER id, not the Outpost's
+    # The Outpost-row menuitem "Update All Clusters Regional Resources" -> confirm dialog "Update" posts
+    # operationName UpdateOutpostCluster wrapping this same mutation with the same cluster id, so the GUI
+    # path and `wizlab outpost ensure` on an ERROR Outpost are one operation, not two.
+    error_to_connected_min: [3.2, 4.3] # n=2, ERROR -> CONNECTED after the regional-resources re-run on a
     # repaired node role. An order of magnitude under time_to_connected_min: the EKS control plane already
-    # exists, so only the node groups are built. The re-run against an unrepaired trust re-fails instead.
+    # exists, so only the node groups are built. The re-run against an unrepaired trust re-fails instead,
+    # and so does one fired ~2 min after the repair is written: the pass is one-shot and never retried, so
+    # a too-early trigger costs the whole wait (no convergence at +21 min; a second trigger, +4.3).
     # A task grading CONNECTED needs more than 22 min of budget and an idle stop longer than the wait:
     # the learner touches nothing throughout. The docs' "up to 24 hours" is a ceiling, not an expectation.
     time_to_first_scan_min: 5         # n=1, requestConnectorScan -> resourceScanResults SUCCESS
