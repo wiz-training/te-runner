@@ -928,7 +928,7 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         def side(query, variables):
             if query == wz.FIND:
                 return {"connectors": {"nodes": find_nodes}}, "tid"
-            if query == wz.BY_TYPE:
+            if query == wz.BY_TYPE:  # no pageInfo => a single, complete page
                 return {"connectors": {"nodes": bytype_nodes or []}}, "tid"
             return {}, "tid"
         return side
@@ -1430,14 +1430,21 @@ class ConnectorLookupLayers(unittest.TestCase):
                             "status": "CONNECTED", "type": {"id": "gcp"},
                             "config": {"projectId": "proj-1"}}
 
-    def _api(self, find=None, search=None, bytype=None, total=0):
+    def _api(self, find=None, search=None, bytype=None, pages=None):
+        """`pages` is [(nodes, next_cursor_or_None), ...] — the BY_TYPE walk, one entry per page."""
+        walk = pages if pages is not None else [(bytype or [], None)]
+        cursors = [c for _, c in walk]
+
         def side(query, variables):
             if query == wz.FIND:
                 return {"connectors": {"nodes": find or []}}, "tid"
             if query == wz.SEARCH:
                 return {"connectors": {"nodes": search or [], "totalCount": len(search or [])}}, "tid"
             if query == wz.BY_TYPE:
-                return {"connectors": {"nodes": bytype or [], "totalCount": total}}, "tid"
+                after = variables.get("after")
+                nodes, nxt = walk[0 if after is None else cursors.index(after) + 1]
+                return {"connectors": {"nodes": nodes,
+                                       "pageInfo": {"hasNextPage": nxt is not None, "endCursor": nxt}}}, "tid"
             return {}, "tid"
         return side
 
@@ -1451,7 +1458,7 @@ class ConnectorLookupLayers(unittest.TestCase):
     def test_search_result_must_still_target_the_account(self):
         # A same-stem connector for a DIFFERENT project is not this lab's connector.
         other = {**self.GCP, "config": {"projectId": "proj-2"}}
-        with mock.patch.object(_owner("api"), "api", side_effect=self._api(search=[other], total=1)):
+        with mock.patch.object(_owner("api"), "api", side_effect=self._api(search=[other])):
             self.assertEqual(wz.find_connector("proj-1", "gcp", "lab-s1"), [])
 
     def test_search_ignores_child_deployments(self):
@@ -1460,16 +1467,24 @@ class ConnectorLookupLayers(unittest.TestCase):
         with mock.patch.object(_owner("api"), "api", side_effect=self._api(search=[child, self.GCP])):
             self.assertEqual([n["id"] for n in wz.find_connector("proj-1", "gcp", "lab-s1")], ["g"])
 
-    def test_beyond_the_page_is_environment_3_not_learner_1(self):
-        # Past BY_TYPE_PAGE, "no match" stops meaning "absent". Reporting 1 would tell a learner they
-        # did nothing; it would also let `ensure` create a duplicate of a connector it cannot see.
-        with mock.patch.object(_owner("api"), "api", side_effect=self._api(total=wz.BY_TYPE_PAGE + 1)), \
+    def test_by_type_walks_past_the_first_page(self):
+        """A tenant holding 104 aws connectors made `connector delete` exit 3 on every freshly leased
+        account, because BY_TYPE read one page and refused to conclude. Staging calls delete before
+        ensure, so every lab in the family failed to start."""
+        with mock.patch.object(_owner("api"), "api",
+                               side_effect=self._api(pages=[([], "p2"), ([self.GCP], None)])):
+            self.assertEqual([n["id"] for n in wz.find_connector("proj-1", "gcp", None)], ["g"])
+
+    def test_a_walk_that_cannot_be_trusted_is_environment_3_not_learner_1(self):
+        # hasNextPage with no endCursor: "no match" stops meaning "absent". Reporting 1 would tell a
+        # learner they did nothing; it would also let `ensure` duplicate a connector it cannot see.
+        with mock.patch.object(_owner("api"), "api", side_effect=self._api(pages=[([], "")])), \
              exits() as cm:
             wz.find_connector("proj-1", "gcp", None)
         self.assertEqual(cm.code, 3)
 
-    def test_within_the_page_absence_is_still_learner_state(self):
-        with mock.patch.object(_owner("api"), "api", side_effect=self._api(total=wz.BY_TYPE_PAGE)):
+    def test_a_complete_walk_finding_nothing_is_still_learner_state(self):
+        with mock.patch.object(_owner("api"), "api", side_effect=self._api(bytype=[])):
             self.assertEqual(wz.find_connector("proj-1", "gcp", None), [])
 
     def test_stem_is_optional_and_never_dies(self):

@@ -16,16 +16,13 @@ FIND = f"""query FindConnector($ids: [String!]) {{
 }}"""
 
 
-BY_TYPE = f"""query ConnectorsByType($t: [String!]) {{
-  connectors(filterBy: {{ connectorType: $t }}, first: 100) {{
+BY_TYPE = f"""query ConnectorsByType($t: [String!], $after: String) {{
+  connectors(filterBy: {{ connectorType: $t }}, first: 100, after: $after) {{
     nodes {{{core._NODE}
     }}
-    totalCount
+    pageInfo {{ hasNextPage endCursor }}
   }}
 }}"""
-
-
-BY_TYPE_PAGE = 100  # the page BY_TYPE asks for; past it, "not found" stops meaning "absent"
 
 
 # Server-side substring search on name (the Deployments page's own filter; `search` also backs the
@@ -92,10 +89,11 @@ def find_connector(account_id, cloud="aws", stem=None):
     2. name search, when the caller knows this session's stem — server-side, bounded by a
        session-unique name, so it covers the pre-link window with no page-size cliff.
     3. BY_TYPE — matches the connector's own config for anything NOT named on the stem (a learner who
-       typed a different name, a pre-existing connector). This one pages at BY_TYPE_PAGE: past that,
-       "no match" no longer means "absent", so say so with exit 3 instead of reporting learner state.
-       Without that guard `ensure` would also create a duplicate of a connector it merely couldn't
-       see."""
+       typed a different name, a pre-existing connector). It walks every page: a tenant holds far more
+       connectors than one page, and stopping at the first would make "no match" stop meaning "absent",
+       which reports learner state that was never read and lets `ensure` create a duplicate of a
+       connector it merely couldn't see. A walk that cannot be trusted to be complete exits 3
+       (core._all_nodes) rather than concluding."""
     data, _ = core.api(FIND, {"ids": [account_id]})
     parents = _parents(((data.get("connectors") or {}).get("nodes")) or [], cloud)
     if not parents and stem:
@@ -103,13 +101,8 @@ def find_connector(account_id, cloud="aws", stem=None):
         nodes = [n for n in (((data.get("connectors") or {}).get("nodes")) or []) if _targets(n, account_id)]
         parents = _parents(nodes, cloud)
     if not parents:
-        data, _ = core.api(BY_TYPE, {"t": [cloud]})
-        conn = (data.get("connectors") or {})
-        nodes = [n for n in (conn.get("nodes") or []) if _targets(n, account_id)]
-        parents = _parents(nodes, cloud)
-        if not parents and (conn.get("totalCount") or 0) > BY_TYPE_PAGE:
-            core.die(3, f"tenant holds {conn['totalCount']} {cloud} connectors, more than the {BY_TYPE_PAGE} "
-                   f"this lookup can page; cannot prove whether one targets {account_id}")
+        nodes = core._all_nodes(BY_TYPE, {"t": [cloud]}, "connectors")
+        parents = _parents([n for n in nodes if _targets(n, account_id)], cloud)
     # An active connector outweighs a stale ERROR one left on a recycled account.
     return sorted(parents, key=lambda n: not (n.get("enabled") and n.get("status") != "ERROR"))
 
