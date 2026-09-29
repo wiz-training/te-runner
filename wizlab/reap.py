@@ -10,16 +10,22 @@ from . import core, outpost, serviceaccount
 # across ~34 of 36 create types; correlation (find by name) is per-type — the generic handler
 # (plural+search, hard verify) covers the norm, _REAP_OVERRIDES holds the exceptions.
 
-# One outcome per resource. The exit code answers one question — must a human come back? — because the
-# reaper keeps the session's Keycloak user, its only handle back to leftovers, on anything but 0. So
-# FAILED and DEFERRED block and UNKNOWN does not: handler coverage is partial by construction (the
-# generic handler misses most of the ~34 create types), so blocking a miss would fail every reap and
-# retain every user the reaper exists to delete. Guaranteed types are _SWEEP_TYPES; outside that set
-# the audit layer is opportunistic, and a miss is a record, not a verdict.
+# One outcome per resource; _reap_exit routes them. UNKNOWN is not one of the two that keep the user:
+# handler coverage is partial by construction (the generic handler misses most of the ~34 create
+# types), so blocking a miss would fail every reap and retain every user the reaper exists to delete.
+# Guaranteed types are _SWEEP_TYPES; outside that set the audit layer is opportunistic, and a miss is
+# a record, not a verdict.
 REMOVED, ABSENT, DEFERRED, UNKNOWN, FAILED = "removed", "absent", "deferred", "unknown", "failed"
 
 
-_REAP_BLOCKING = (FAILED, DEFERRED)
+def _reap_exit(tally):
+    """Answers one question: must a human come back? 3 is cleanup a later pass cannot finish on its own;
+    4 is a teardown still in flight, which the rolling window brings the next daily pass back to.
+    Anything but 0 keeps the session's Keycloak user, the only handle back to the leftovers — so
+    collapsing 3 and 4 made a multi-pass Outpost uninstall page as a failure every night."""
+    if tally[FAILED]:
+        return 3
+    return 4 if tally[DEFERRED] else 0
 
 
 _REAP_NEEDS_REVIEW = (FAILED, DEFERRED, UNKNOWN)
@@ -30,7 +36,8 @@ def _reap_outpost(tok, dc, _h, oid, name):
     still UNINSTALLING, so the order is uninstall -> UNINSTALLED -> delete. The reaper never waits that
     out inside a cron container, so a record mid-uninstall is DEFERRED — blocking keeps the user, and
     the audit entry plus the rolling window bring the next daily pass back to it minutes later. A
-    status already carrying UNINSTALL takes no second uninstall: that call is what refuses."""
+    status already carrying UNINSTALL takes no second uninstall: that call is what refuses — which is
+    why _OUTPOST_STUCK is FAILED and not DEFERRED: no later pass has a call left to make."""
     data, errs = core._gql(tok, dc, outpost.OUTPOST_Q, {"id": oid})
     if errs:
         return FAILED, f"status unreadable ({errs[0].get('message', '?')})"
@@ -40,6 +47,9 @@ def _reap_outpost(tok, dc, _h, oid, name):
     if status in outpost._OUTPOST_DELETABLE:
         _d, derr = core._gql(tok, dc, outpost.DELETE_OUTPOST, {"input": {"id": oid}})
         return (FAILED, derr[0].get("message", "?")) if derr else (REMOVED, None)
+    if status in outpost._OUTPOST_STUCK:
+        return FAILED, f"{status.lower()}; the uninstall cannot be re-fired and deleteOutpost refuses " \
+                       f"the record — it needs an operator, not another pass"
     if not outpost._uninstall_in_flight(status):
         _d, derr = core._gql(tok, dc, outpost.UNINSTALL_OUTPOST, {"input": {"id": oid}})
         if derr:
@@ -178,7 +188,7 @@ def _reap_delete(tok, dc, h, rid, name):
 
 
 def _reap_one(tok, dc, action, name, commit):
-    """Reap one caught Create*. Returns (outcome, review_msg_or_None) — see _REAP_BLOCKING for which
+    """Reap one caught Create*. Returns (outcome, review_msg_or_None) — see _reap_exit for which
     outcomes keep the session's user alive."""
     x = action[len("Create"):]
     if not name:
@@ -237,8 +247,8 @@ def cmd_reap(args):
     service-account creates the audit layer can't attribute. Pair with `user delete`. Exit 0 promises
     only this: every _SWEEP_TYPES resource named for the session, and every audit-attributed create
     with a handler and a name, is removed or absent. It does NOT promise the session created nothing
-    else — that residue is counted as unknown. Exit 3 (failed or deferred) is the reaper's signal to
-    keep the user and come back."""
+    else — that residue is counted as unknown. Exit 3 and exit 4 are both the reaper's signal to keep
+    the user and come back; _reap_exit says which of the two, and whether anyone need look."""
     sid = core._session_id(args)
     email = args.email or core._lab_user_email(args)[0]
     stem = core._lab_stem(sid)
@@ -268,4 +278,4 @@ def cmd_reap(args):
     counts = ", ".join(f"{tally[o]} {o}" for o in (ABSENT, DEFERRED, UNKNOWN, FAILED))
     print(f"# {tally[REMOVED]} {verb} ({audit_only} audit-only), {counts} for {email} / {stem}*",
           file=sys.stderr)
-    sys.exit(3 if commit and any(tally[o] for o in _REAP_BLOCKING) else 0)
+    sys.exit(_reap_exit(tally) if commit else 0)
