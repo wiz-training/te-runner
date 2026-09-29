@@ -17,9 +17,13 @@ import urllib.request
 from datetime import UTC, datetime, timedelta
 
 TEAM = os.getenv("INSTRUQT_TEAM", "wiz")
-# Rolling window, so a session stopped near the cron hour is seen by two consecutive runs. That is
-# safe only because an already-reaped resource is a no-op, not a failure.
-WINDOW_H = int(os.getenv("REAP_WINDOW_HOURS", "25"))
+# Rolling window, so a session is seen by several consecutive runs. That is safe only because an
+# already-reaped resource is a no-op, not a failure. It must span enough daily runs to finish a
+# multi-pass teardown: an Outpost uninstalls before it can be deleted, so a pass that finds it
+# `uninstalling` or `partially_uninstalled` defers the delete and only a LATER pass completes it. A
+# session that ages out mid-teardown leaves its footprint orphaned, and connectors accumulating past
+# what a lookup can page break every lab's staging (wizlab find_connector).
+WINDOW_H = int(os.getenv("REAP_WINDOW_HOURS", "48"))
 # tenant key (the WIZ_TENANT value wizlab keys creds on) -> the lab's Instruqt tag. Extend as tenants onboard.
 TENANTS = {"TBCMP": "tid:tbcmp"}
 PAGE_SIZE = 500
