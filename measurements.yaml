@@ -32,6 +32,16 @@ meta:
     python3 bricks/connector.py --cloud aws create --account-id <acct>
     # then poll both planes from the connector-created timestamp; see research/kitchen-sink/wiz-sweep.md
 
+# The shared tenant a lab lands in, which is not empty and decides whether a lookup can find anything.
+tenant_scale:
+  ts_prod:
+    aws_connectors: 107
+    # Past 100 a single unpaged CloudConnectors query cannot see the lab's own connector, and `connector
+    # delete` exits 3 with "tenant holds 107 aws connectors, more than the 100 this lookup can page" --
+    # staging then fails and the lab cannot start. Every connector lookup pages, and a lab pins an image
+    # whose find_connector does. Reproducer: `wizlab connector delete --account-id <acct>` against an
+    # account with no connector, on an image below v0.1.59 -> exit 3 with that message.
+
 # ---------------------------------------------------------------------------------------------------
 # The planes. Which one a check queries is worth more than any per-kind figure: the same resource is
 # ~5 minutes cheaper on the graph than on the inventory table.
@@ -71,10 +81,16 @@ planes:
       # role already trusted, the connector went INITIAL_SCANNING -> CONNECTED and never touched ERROR.
       # ERROR is what a connector shows when Wiz cannot assume the role (missing/untrusted); role-first
       # skips it. CONNECTED is AWS's healthy status; wizlab `connector inspect --require healthy` asserts it.
-      connected_min: [1.4, 3.0]    # INITIAL_SCANNING at +0, CONNECTED by +1.4m (30s polls), +2.3m and +3m (60s polls). n=3.
-      solver_budget_min: 5         # covers the observed ceiling + margin; the connector self-heals, no rescan.
+      connected_min: [1.4, 3.9]    # INITIAL_SCANNING at +0, then CONNECTED at +1.4m (30s polls), +2.3m, +3m,
+      # +3.8m and +3.9m (60s polls). n=5, the last two from lab plays rather than a bare lease.
+      solver_budget_min: 8         # covers the observed ceiling + margin; the connector self-heals, no rescan.
       # verify: after `role ensure`, `connector ensure --account-id <acct>`, then poll
       #   wizlab connector inspect --account-id <acct> --require healthy   # exit 1 until CONNECTED
+      shi_close_after_connected_min: [13, 19]
+      # A System Health Issue closes on Wiz's own evaluation cycle, not when its condition ends: "Unable to
+      # Assume AWS IAM Role" stayed Open/Critical 10 and 13 min past the connector returning to CONNECTED,
+      # and past the VM reaching inventory. n=2. Grade the connector status; never grade an issue clearing,
+      # and never write a page that promises one clears.
       arn_patch_connected_min: [5.3, 9]  # REPAIR path only: ARN corrected on an existing ERROR connector →
       # ERROR→INITIAL_SCANNING→CONNECTED. ~2-5x slower than role-first, n=2. A repair-path solver budget
       # must be >= 15 min: solve→re-check completes in 13.5.
@@ -1272,6 +1288,18 @@ outpost_lifecycle:
       clusters: null
       scans_attempted: 0              # 0 successful AND 0 failed -- all-zero is the tell it never tried
       shi: medium                     # "Outpost With No Connected Connectors ... this Outpost is in idle mode"
+    shi_severity_splits_by_object: true
+    # The Outpost's own Health Issues cell carries the medium above and nothing else. A failed provision
+    # raises its critical on the OUTPOST CLUSTER, one object down, reachable only from the Outpost
+    # drawer's Details > "Outpost Clusters" table or Settings > System Health:
+    provision_error_shi:
+      title: Unexpected Provision Error
+      severity: critical
+      lifecycle_state_in_body: provision  # "Failed to provision cluster during initialization"
+      remediation_names_menuitem: true    # verbatim "Update All Clusters Regional Resources"
+      clears_on_success: false            # stays Open after the Outpost reaches CONNECTED
+    # On success the Outpost's cell goes EMPTY, not to 0, and the cluster's critical is untouched -- so
+    # neither surface confirms the repair, and only the OutpostStatus enum does.
     ui_active_is_not_connected: true
     # The GUI reads Active while the API holds INITIALIZED with clusters null: UI wording tracks the
     # connector and `enabled`, not OutpostStatus. Grade the enum, and never publish a learner-facing
@@ -1291,6 +1319,26 @@ outpost_lifecycle:
     daily_reaper_covers_outposts: false
     # The out-of-band audit-log reaper derives delete<Type> generically, so it hits that same internal
     # error and ALERTS instead of reaping. A leftover Outpost is a human alert, not a silent leak.
+    # Clearing that alert by hand is GUI work on Settings > Deployments#~(type~'OUTPOST), whose row menu
+    # carries the same two steps the API takes:
+    gui_teardown:
+      row_menu_is_state_dependent: true
+      # A live Outpost holding a cluster offers Outpost info / View connector deployment / Update All
+      # Clusters Regional Resources / Edit / Disable / Uninstall / Outpost Id. One with no cluster omits
+      # the regional-resources item and disables View connector deployment. An UNINSTALLED one swaps
+      # Uninstall for Delete and gains View related system activity, so the menu is the state readout the
+      # Status cell is not.
+      uninstall_is_type_to_confirm: true   # the Outpost's name into a textbox before the button enables
+      delete_ignores_open_critical: true
+      # The Delete dialog warns "there is a Critical System Health Issue impacting this Outpost" with a
+      # Review button and deletes anyway -- no type-to-confirm. An Unexpected Provision Error left Open by
+      # clears_on_success: false does not gate the delete.
+      status_cell_tracks_uninstall: true
+      # Unlike ui_active_is_not_connected, the Status cell does read Uninstalling then Uninstalled, so it
+      # is the only poll surface a GUI teardown has.
+      uninstalled_row_shows_critical: true
+      # A row empty of health issues while CONNECTED carries 1 Critical once UNINSTALLED: the count is not
+      # a teardown-progress signal in either direction.
 
     # -- Convergence & latencies -------------------------------------------------------------------
     create_status: INITIALIZING       # returned synchronously by createOutpost
@@ -1301,14 +1349,23 @@ outpost_lifecycle:
       in_account_CreateCluster: 8
       eks_control_plane_ACTIVE: 20    # 9 node groups
       status_CONNECTED: 22
-    error_to_connected_min: 3.2       # n=1, ERROR -> CONNECTED after the regional-resources re-run on a
+    reprovision_trigger: invokeOutpostClusterUpdate   # input.id is the CLUSTER id, not the Outpost's
+    # The Outpost-row menuitem "Update All Clusters Regional Resources" -> confirm dialog "Update" posts
+    # operationName UpdateOutpostCluster wrapping this same mutation with the same cluster id, so the GUI
+    # path and `wizlab outpost ensure` on an ERROR Outpost are one operation, not two.
+    error_to_connected_min: [3.2, 4.3] # n=2, ERROR -> CONNECTED after the regional-resources re-run on a
     # repaired node role. An order of magnitude under time_to_connected_min: the EKS control plane already
-    # exists, so only the node groups are built. The re-run against an unrepaired trust re-fails instead.
+    # exists, so only the node groups are built. The re-run against an unrepaired trust re-fails instead,
+    # and so does one fired ~2 min after the repair is written: the pass is one-shot and never retried, so
+    # a too-early trigger costs the whole wait (no convergence at +21 min; a second trigger, +4.3).
     # A task grading CONNECTED needs more than 22 min of budget and an idle stop longer than the wait:
     # the learner touches nothing throughout. The docs' "up to 24 hours" is a ceiling, not an expectation.
     time_to_first_scan_min: 5         # n=1, requestConnectorScan -> resourceScanResults SUCCESS
     uninstall_to_uninstalled_min:
-      from_initialized: 1.7           # n=1, no real infra to tear down
+      from_initialized: [1.7, ">24"]  # n=3. 1.7 on an Outpost uninstalled minutes after createOutpost; two
+      # STALE ones, days old with clusters null and "No activity yet", were still UNINSTALLING past +24 and
+      # are not bounded here. Age, not infra, is what the wait tracks -- so a GUI teardown of tenant
+      # clutter is not a wait an operator can sit through.
       from_initializing: 5.9          # n=1, 3.4x slower in the same no-infra case; not a tight bound
       from_connected: [20, 33]        # n=2, real EKS; UNINSTALLING persists past +19, UNINSTALLED by +20.
       # `wizlab outpost delete` waits 600s, so a lab's final reap defers a CONNECTED outpost to the
@@ -1525,7 +1582,7 @@ k8s_connector:
       auto_onboard_cluster_after_connector_min: null    # never, over 48 min incl. a forced cloud-connector rescan
       create_visible_in_connectors_s: 12                # createConnector -> connectors(filterBy:{kubernetesClusterExternalIds})
       create_to_connected_min: 6.8
-      create_to_all_planes_min: [5.9, 6.6, 6.2]         # cluster entity, containerClusterConnected, CONTAINER, CONTAINER_IMAGE, traversal; one poll; three plays
+      create_to_all_planes_min: [5.8, 5.9, 6.2, 6.6]    # cluster entity, containerClusterConnected, CONTAINER, CONTAINER_IMAGE, traversal; one poll; four plays
       create_to_new_image_entity_s: 90                  # when cluster + container were already on the graph
       delete_absent_from_connectors_s: 25
       graph_retracts_after_delete_min: null             # containerClusterConnected true, CONTAINER + CONTAINER_IMAGE present at 8 min, incl. a parent rescan
@@ -1538,7 +1595,7 @@ k8s_connector:
 eks_fargate:
   aws:
     brick: template/infra/aws/eks-fargate-deployed-images   # 21 resources: VPC, 2+2 subnets, IGW, NAT, cluster, Fargate profile, ECR, 2 roles
-    apply_min: [16.1, 14.3]                             # dev grader 4 CPU / 15 GB; the 2 CPU / 4 GB lab grader stages the whole scenario in 26-29 min
+    apply_min: [16.1, 14.3]                             # dev grader 4 CPU / 15 GB; the 2 CPU / 4 GB lab grader stages the whole scenario in 25-29 min, n=3
     destroy_min: [5.1, 7.6]
     seed:
       crane_copy_s: 5                                   # quay.io/prometheus/busybox:latest; public.ecr.aws answers TOOMANYREQUESTS from a sandbox
