@@ -201,6 +201,7 @@ class InspectContract(unittest.TestCase):
                             "steps": [{"status": "COMPLETED", "outboundEdge": "x",
                                        "step": {"name": "Route", "type": "SWITCH_CASE"}}]}
     DEPLOYMENT: typing.ClassVar = {"id": "dep1", "name": "lab-x-cli", "type": "WIZ_CLI"}
+    MCP: typing.ClassVar = {"id": "int1", "name": "lab-x-mcp", "status": "INITIALIZING"}
     SCAN: typing.ClassVar = {"id": "c1", "status": {"state": "DONE", "verdict": "FAILED_BY_POLICY"}}
     POLICY: typing.ClassVar = {"id": "pol-1", "name": "block-root"}
     OUTPOST: typing.ClassVar = {"id": "o1", "name": "lab-x", "status": "CONNECTED"}
@@ -229,6 +230,10 @@ class InspectContract(unittest.TestCase):
         ("serviceaccount", "inspect"): {"argv": ["--name", "lab-x-cli"],
                                         "present": {"deployments": _conn(DEPLOYMENT)},
                                         "absent": [{"deployments": _conn()}]},
+        # INITIALIZING satisfies `exists`: that is what createIntegration returns, and ACTIVE only
+        # follows first use — `--require active` on a healthy fresh integration is MCPGrading's row.
+        ("mcp", "inspect"): {"argv": ["--name", "lab-x-mcp"],
+                             "present": {"integrations": _conn(MCP)}, "absent": [{"integrations": _conn()}]},
         ("code-scan", "inspect"): {"argv": ["--timeout", "0"],
                                    "present": {"cicdScans": _conn(SCAN)}, "absent": [{"cicdScans": _conn()}],
                                    "invalid": [["--tag-value", "bad value!"]]},
@@ -307,6 +312,10 @@ class EnsureContract(unittest.TestCase):
     POLICY: typing.ClassVar = {"id": "pol-1", "name": "block-root", "params": {
         "severityThreshold": "HIGH", "countThreshold": 1, "cloudConfigurationRules": [{"id": "ctl-1"}]}}
     CTL: typing.ClassVar = {"id": "ctl-1", "name": "Last User Is 'root'", "severity": "HIGH"}
+    MCP: typing.ClassVar = {"integration": {
+        "id": "int1", "name": "lab-x-mcp", "status": "INITIALIZING",
+        "serviceAccount": {"clientId": "cid", "clientSecret": "sec", "scopes": ["read:all"],
+                           "type": "INTEGRATION"}}}
     OUTPOST: typing.ClassVar = {"id": "o1", "name": "lab-x", "status": "CONNECTED",
                                 "allowedRegions": ["us-east-1"], "config": {"roleARN": "a"}}
     NOT_WIZ: typing.ClassVar = {("role", "ensure"): "CSP CLIs",
@@ -343,6 +352,13 @@ class EnsureContract(unittest.TestCase):
                 "absent": {"deployments": _conn(), "createCliDeployment": self.CLI},
                 "present": {"deployments": _conn(self.CLI["deployment"]), "createCliDeployment": self.CLI},
                 "creates": ["createCliDeployment"], "present_mutates": ["deleteCliDeployment", "createCliDeployment"]},
+            ("mcp", "ensure"): {
+                "argv": ["--name", "lab-x-mcp"],
+                "absent": {"integrations": _conn(), "createIntegration": self.MCP},
+                "present": {"integrations": _conn(InspectContract.MCP), "createIntegration": self.MCP},
+                "creates": ["createIntegration"],
+                "present_mutates": ["deleteIntegration", "createIntegration"],
+                "invalid": [["--name", "lab-x-mcp", "--scopes", "readall"]]},
             ("policy", "ensure"): {
                 "argv": ["--name", "block-root"],
                 "absent": {"cicdScanPolicies": _conn(), "cloudConfigurationRules": _conn(self.CTL),
@@ -429,6 +445,8 @@ class DeleteContract(unittest.TestCase):
                                "node": EnsureContract.SA, "deletes": ["deleteServiceAccount"]},
         ("serviceaccount", "delete"): {"argv": ["--name", "lab-x-cli"], "field": "deployments",
                                        "node": EnsureContract.CLI["deployment"], "deletes": ["deleteCliDeployment"]},
+        ("mcp", "delete"): {"argv": ["--name", "lab-x-mcp"], "field": "integrations",
+                            "node": InspectContract.MCP, "deletes": ["deleteIntegration"]},
         ("policy", "delete"): {"argv": ["--name", "block-root"], "field": "cicdScanPolicies",
                                "node": EnsureContract.POLICY, "deletes": ["deleteCICDScanPolicy"]},
         ("outpost", "delete"): {"argv": ["--name", "lab-x"], "field": "outposts",
@@ -1003,12 +1021,36 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         self.assertTrue(any("deleteCliDeployment" in q for q in sent))
         self.assertFalse(any("deleteServiceAccount" in q for q in sent))
 
-    def test_a_non_cli_service_account_still_takes_the_uniform_delete(self):
-        # The sensor account comes from createServiceAccount and is deletable directly.
-        with mock.patch.object(_owner("_reap_delete_uniform"), "_reap_delete_uniform",
+    def test_a_service_account_nobody_owns_still_takes_the_uniform_delete(self):
+        # The sensor account comes from createServiceAccount and is deletable directly; what routes it
+        # there is the record's own null `integration`, not its name.
+        with mock.patch.object(_owner("_gql"), "_gql",
+                               return_value=({"serviceAccount": {"id": "sa1", "integration": None}}, None)), \
+             mock.patch.object(_owner("_reap_delete_uniform"), "_reap_delete_uniform",
                                return_value=(wz.REMOVED, None)) as uni:
             wz._reap_service_account("tok", "dc", self.SA_HANDLER, "sa1", "lab-s1-sensor")
         uni.assert_called_once()
+
+    def test_an_integrations_service_account_is_reaped_through_its_integration(self):
+        # deleteServiceAccount refuses a type:INTEGRATION account with an opaque internal error, so the
+        # owning integration is the only handle and the uniform path is a permanent FAILED.
+        sent = []
+
+        def _gql(_tok, _dc, query, variables=None):
+            sent.append(query)
+            if "serviceAccount(" in query:
+                return {"serviceAccount": {"id": "sa1", "name": "lab-s1-mcp_%s" % ("a" * 36),
+                                           "type": "INTEGRATION",
+                                           "integration": {"id": "int1", "name": "lab-s1-mcp"}}}, None
+            return {}, None
+
+        with mock.patch.object(_owner("_gql"), "_gql", side_effect=_gql), \
+             mock.patch.object(_owner("_reap_find"), "_reap_find", return_value=(None, 0, None)):
+            outcome, detail = wz._reap_service_account("tok", "dc", self.SA_HANDLER, "sa1",
+                                                       "lab-s1-mcp_" + "a" * 36)
+        self.assertEqual((outcome, detail), (wz.REMOVED, None))
+        self.assertTrue(any("deleteIntegration" in q for q in sent))
+        self.assertFalse(any("deleteServiceAccount" in q for q in sent))
 
     def test_a_cli_service_account_whose_deployment_is_gone_does_not_block(self):
         # Nothing left can delete the record, so blocking would retain the user with no pass able to
@@ -1580,13 +1622,24 @@ class AzureRoleInspect(unittest.TestCase):
 
 
 class WizTenantFacts(unittest.TestCase):
-    def _run(self, params, tid="tid-1"):
+    def _run(self, params, tid="tid-1", dc="us17"):
         with mock.patch.object(_owner("api"), "api", return_value=({"managedIdentityParameters": params}, tid)), \
+             mock.patch.object(_owner("token_and_dc"), "token_and_dc", return_value=("tok", dc, tid)), \
              mock.patch.dict(wz.os.environ, {}, clear=True), \
              mock.patch.object(wz.sys, "stdout", io.StringIO()) as out, \
              exits() as cm:
             call(wz.cmd_wiz_tenant, [])
         return cm.code, out.getvalue()
+
+    def test_endpoint_keys_are_emitted_from_the_token_for_a_client_that_authenticates_itself(self):
+        """An agent, an SDK or an MCP client authenticates on its own and cannot be handed the data
+        center any other way — the Wiz MCP server reads it as the `Wiz-DataCenter` header, and a wrong
+        or missing one falls back to browser OAuth with no error at all."""
+        code, text = self._run({"aws": {}, "gcp": {}, "azure": {}}, dc="us17")
+        self.assertEqual(code, 0)
+        for line in ("WIZ_DATA_CENTER=us17", "WIZ_API_URL=https://api.us17.app.wiz.io/graphql",
+                     f"WIZ_AUTH_URL={wz.AUTH_URL}", "WIZ_AUDIENCE=wiz-api"):
+            self.assertIn(line, text)
 
     def test_emits_gcp_service_account(self):
         code, text = self._run({"aws": {}, "gcp": {"serviceAccountEmail": "wizabc@prod-us100.iam.gserviceaccount.com"}})
@@ -2213,6 +2266,48 @@ class ServiceAccountGrading(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(wiz.sent("deleteCliDeployment"), [{"id": hostile}])
         self.assertNotIn(hostile, "".join(wiz.docs))
+
+
+class MCPGrading(unittest.TestCase):
+    """The Wiz MCP integration mints the agent's read-only account, and `clientSecret` is readable only
+    in the create payload. Lock the scope list the call names, and the status a fresh one really has."""
+
+    ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "x"}
+    SA: typing.ClassVar = {"clientId": "cidM", "clientSecret": "secM", "scopes": ["read:all"],
+                           "type": "INTEGRATION"}
+
+    def _wiz(self, status="INITIALIZING", existing=False):
+        node = {"id": "int1", "name": "lab-x-mcp", "status": status}
+        return FakeWiz(integrations={"nodes": [node] if existing else []},
+                       createIntegration={"integration": {**node, "serviceAccount": self.SA}},
+                       deleteIntegration={"_stub": None})
+
+    def _run(self, fn, argv, wiz):
+        out = io.StringIO()
+        return exit_code(fn, argv, wiz=wiz, env=self.ENV, out=out), out.getvalue(), wiz
+
+    def test_ensure_overrides_the_type_default_scopes_and_emits_the_credentials(self):
+        """The WIZ_MCP default is 11 read scopes without read:vulnerabilities or
+        read:ai_security_findings, and remote-MCP tool visibility is filtered by the account's
+        permissions: on the default list the agent sees no tool rather than an error. Any list other
+        than the default is refused unless overrideScopes says so."""
+        code, out, wiz = self._run(wz.cmd_mcp_ensure, [], self._wiz())
+        self.assertEqual(code, 0)
+        self.assertIn("WIZ_CLIENT_ID=cidM", out)
+        self.assertIn("WIZ_CLIENT_SECRET=secM", out)
+        sent = wiz.sent("createIntegration")[0]["input"]
+        self.assertEqual((sent["type"], sent["serviceAccountScopes"], sent["overrideScopes"]),
+                         ("WIZ_MCP", ["read:all"], True))
+        self.assertNotIn("serviceAccountExpiresAt", sent)
+
+    def test_require_active_fails_a_fresh_integration_and_exists_passes_it(self):
+        """createIntegration returns INITIALIZING and ACTIVE only follows first use, so a check
+        requiring ACTIVE fails every freshly built lab while the environment is healthy."""
+        self.assertEqual(self._run(wz.cmd_mcp_inspect, [], self._wiz(existing=True))[0], 0)
+        self.assertEqual(self._run(wz.cmd_mcp_inspect, ["--require", "active"],
+                                   self._wiz(existing=True))[0], 1)
+        self.assertEqual(self._run(wz.cmd_mcp_inspect, ["--require", "active"],
+                                   self._wiz(status="ACTIVE", existing=True))[0], 0)
 
 
 class CodeScanGrading(unittest.TestCase):

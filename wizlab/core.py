@@ -13,6 +13,16 @@ import urllib.request
 AUTH_URL = "https://auth.app.wiz.io/oauth/token"
 
 
+# The token audience, and the API host pattern every data-center shares. A lab that hands an
+# agent or an SDK its own Wiz credential needs both spelled the same way wizlab spells them
+# (`wiz tenant`), so they are constants here rather than literals at each call site.
+AUDIENCE = "wiz-api"
+
+
+def api_url(dc):
+    return f"https://api.{dc}.app.wiz.io/graphql"
+
+
 CLOUDS = ("aws", "gcp", "azure")
 
 
@@ -138,7 +148,7 @@ def token_and_dc():
     payload = urllib.parse.urlencode(
         {
             "grant_type": "client_credentials",
-            "audience": "wiz-api",
+            "audience": AUDIENCE,
             "client_id": cid,
             "client_secret": sec,
         }
@@ -231,7 +241,7 @@ def _delete_doc(mutation, select="_stub"):
 def _graphql(tok, dc, query, variables=None):
     """(data, errors) for one document, sent within its own submission budget."""
     body = {"query": query} if variables is None else {"query": query, "variables": variables}
-    res = _post(f"https://api.{dc}.app.wiz.io/graphql", body,
+    res = _post(api_url(dc), body,
                 {"Content-Type": "application/json", "Authorization": f"Bearer {tok}"},
                 attempts=_submissions(query))
     return res.get("data") or {}, res.get("errors") or []

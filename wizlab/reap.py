@@ -63,12 +63,20 @@ def _reap_outpost(tok, dc, _h, oid, name):
 _CLI_SA_SUFFIX = re.compile(r"^(?P<dep>.+)-deployment-[0-9a-fA-F-]{36}$")
 
 
+# The owning integration of a `type: INTEGRATION` account, by the account's own id. Unlike a CLI
+# deployment there IS a reverse lookup, so this needs no name convention: the sweep already holds the id.
+SA_OWNER_Q = """query ServiceAccountOwner($id: ID!) {
+  serviceAccount(id: $id) { id name type integration { id name } }
+}"""
+
+
 def _reap_service_account(tok, dc, h, rid, name):
-    """`deleteServiceAccount` rejects a CLI deployment's account, so the owning deployment is the only
-    handle; on the uniform path it is a permanent FAILED that retains the session's user forever."""
+    """`deleteServiceAccount` rejects an account it did not mint — a CLI deployment's or an
+    integration's — with an opaque internal error, so the owner is the only handle; on the uniform path
+    each is a permanent FAILED that retains the session's user forever."""
     m = _CLI_SA_SUFFIX.match(name)
     if not m:
-        return _reap_delete_uniform(tok, dc, h, rid, name)
+        return _reap_integration_or_uniform(tok, dc, h, rid, name)
     dep = m.group("dep")
     data, errs = core._gql(tok, dc, serviceaccount.CLI_DEPLOYMENTS_Q, {"f": {"type": ["WIZ_CLI"], "search": dep}})
     if errs:
@@ -87,6 +95,25 @@ def _reap_service_account(tok, dc, h, rid, name):
     return FAILED, "still present after deleting its CLI deployment"
 
 
+def _reap_integration_or_uniform(tok, dc, h, rid, name):
+    """An integration-owned account goes through `deleteIntegration`, which cascades to it; anything
+    else (the sensor's, minted by createServiceAccount) is deletable directly. Which one this is comes
+    from the record, not from its name: a Wiz MCP account is `<integration name>_<uuid>` today, and a
+    sweep that trusted the suffix would silently start failing if that changed."""
+    data, errs = core._gql(tok, dc, SA_OWNER_Q, {"id": rid})
+    if errs:
+        return FAILED, f"owner lookup failed ({errs[0].get('message', '?')})"
+    owner = ((data.get("serviceAccount") or {}).get("integration")) or {}
+    if not owner.get("id"):
+        return _reap_delete_uniform(tok, dc, h, rid, name)
+    _d, derr = core._gql(tok, dc, core._delete_doc("deleteIntegration"), {"id": owner["id"]})
+    if derr:
+        return FAILED, derr[0].get("message", "?")
+    if _reap_find(tok, dc, h, name)[1] == 0:
+        return REMOVED, None
+    return FAILED, f"still present after deleting its integration {owner.get('name')!r}"
+
+
 _REAP_OVERRIDES = {
     "ServiceAccount": {"list": "serviceAccounts", "filter": "name", "soft": True,
                        "deleter": _reap_service_account},
@@ -97,8 +124,11 @@ _REAP_OVERRIDES = {
 # Types the prefix sweep checks by name. Verified delete<X>({id}) + search/name filter, or an override
 # with its own deleter; the lease-unique lab-<account> stem is a safe prefix match. This list is the
 # guarantee: a lookup or delete failure here is FAILED, not UNKNOWN. Extend as labs create new types.
+# Integration before ServiceAccount: deleting an integration cascades to the account it minted, so the
+# sweep reaches that record as ABSENT rather than through the owner lookup _reap_service_account keeps
+# for an account whose integration is named outside the session stem.
 _SWEEP_TYPES = ["Connector", "Project", "Report", "Control", "SavedGraphQuery",
-                "AutomationWorkflow", "ServiceAccount", "Outpost"]
+                "AutomationWorkflow", "Integration", "ServiceAccount", "Outpost"]
 
 
 def _plural(x):
