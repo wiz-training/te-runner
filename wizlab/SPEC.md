@@ -13,7 +13,7 @@ wrappers (one `wizlab` call + an exit-code remap). Change it only within this co
 | delete | remove one resource (reapers) |
 | verify | env/session health (check 1) |
 | reap | audit + prefix cleanup of a session's footprint |
-| tenant | (`wiz`) emit live tenant connector facts as `KEY=value` (+ `$EXEC_OUTPUT`) for a script/terraform; grow by adding keys, never removing |
+| tenant | (`wiz`) emit live tenant connector + endpoint facts as `KEY=value` (+ `$EXEC_OUTPUT`) for a script/terraform; grow by adding keys, never removing |
 
 Exit codes: 0 satisfied · 1 not · 2 invocation error · 3 environment error. Learner checks remap 2/3→1:
 `wizlab --check <noun> <verb> …` does the remap and prints the real code on stderr. A flag the verb does
@@ -35,7 +35,7 @@ verb cannot make that true it exits 3 naming the difference and mutates nothing.
 
 | noun | object exists | rule |
 |---|---|---|
-| sensor, serviceaccount | any | delete, re-mint, emit credentials: the secret is shown once and not re-fetchable |
+| sensor, serviceaccount, mcp | any | delete, re-mint, emit credentials: the secret is shown once and not re-fetchable |
 | connector (aws), workflow, user | drifted, or connector `--reauth` | patch / reset / rotate to the requested state; `--reauth` patches `authParams` unchanged, which re-inits the connector |
 | connector (gcp, azure) | any | left as found, exit 0: nothing in it can drift |
 | policy | flags differ from the live params | exit 3, no mutation: a shared tenant fixture other labs grade against changes deliberately |
@@ -80,7 +80,7 @@ readable from every learner terminal.
 ## Nouns
 `session`, `connector`, `role`, `instance`, `user`, `wiz`, `outpost`, for Kubernetes labs `k8sconnector`
 and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`, for Wiz Code labs
-`serviceaccount` and `code-scan`, and for Workflows labs `workflow` and `workflow-run`:
+`serviceaccount` and `code-scan`, for agent labs `mcp`, and for Workflows labs `workflow` and `workflow-run`:
 - `k8sconnector ensure|inspect|delete --cluster <eks name> | --cluster-arn <arn>` — a Kubernetes
   connector the lab owns. Keyed on `connectors(filterBy:{kubernetesClusterExternalIds})`, where the EKS
   external id is the cluster ARN taken from `aws eks describe-cluster`, **never from a
@@ -202,6 +202,26 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   No `delete` verb: `AutomationWorkflow` is already a `_SWEEP_TYPES` member, so the generic prefix sweep
   reaches it and a second path would be two places holding one fact. Never `TRIGGER_BLUE_AGENT` in a lab
   flow: manual Blue Agent runs are 5/day/tenant and a cohort exhausts them on learner two.
+- `mcp ensure|inspect|delete` — the Wiz MCP integration an agent in a lab reads the tenant through.
+  `ensure` names it `<stem>-mcp` and converges to one fresh integration (delete-then-mint: `clientSecret`
+  is readable only in the create payload), emitting `WIZ_CLIENT_ID` / `WIZ_CLIENT_SECRET` to stdout +
+  `$EXEC_OUTPUT`. `createIntegration(input:{name, type: WIZ_MCP, serviceAccountScopes, overrideScopes,
+  isAccessibleToAllProjects, serviceAccountExpiresAt})`; the type takes no `params`. `--scopes` defaults
+  to the single string `read:all` and a value that is not `<verb>:<object>` is invocation error 2 — the
+  API accepts an unknown scope silently and the agent then sees a tool short, not an error, because
+  remote-MCP tool visibility is filtered by the account's permissions. `overrideScopes: true` always
+  rides along: the WIZ_MCP type default is 11 read scopes omitting `read:vulnerabilities` and
+  `read:ai_security_findings`, and any other list is refused without it. `inspect --require exists|active`
+  — **`exists` is what a setup check asserts**: `createIntegration` returns `INITIALIZING` and `ACTIVE`
+  follows first use, so `active` fails every freshly built lab while the environment is healthy.
+  `delete --id|--name` is `deleteIntegration`, which **cascades to the service account** — one call is the
+  whole inverse. Lookup is `integrations(filterBy:{search, type:[WIZ_MCP]})`, substring, with no
+  exact-name field, so the caller matches `==`. The minted account is `<integration name>_<uuid>`, inside
+  the reaper's `ServiceAccount` prefix sweep; `deleteServiceAccount` refuses it (`type: INTEGRATION`) with
+  an opaque internal error, so the sweep routes it back through `deleteIntegration` — resolved from
+  `serviceAccount(id).integration`, the reverse lookup a CLI deployment does not have. `Integration` is a
+  `_SWEEP_TYPES` member ahead of `ServiceAccount`, so the ordinary path deletes the owner first and finds
+  the account already absent.
 - `policy ensure|inspect|delete --name N` — the BLOCK CI/CD IaC scan policy a code-scan gate needs.
   `ensure` is idempotent by name (§What `ensure` promises); absent, it creates a `type:IAC` policy with `enforcementMethod
   BLOCK` on `deploymentLifecycle CLI`, scoped (`iacParams.cloudConfigurationRules`) to the builtin
