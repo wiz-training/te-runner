@@ -33,6 +33,17 @@ class SessionDiscovery(unittest.TestCase):
         self.assertEqual(cm.exception.code, 1)
 
 
+class TenantSelection(unittest.TestCase):
+    def test_each_listed_tenant_selects_its_own_tag(self):
+        """The dict was baked, so a second tenant was a code edit plus an image release; its tag is a
+        pure function of the key wizlab keys creds on, so the list is the only input."""
+        for spec, want in [("TBCMP", {"TBCMP": "tid:tbcmp"}),
+                           ("TBCMP, te", {"TBCMP": "tid:tbcmp", "TE": "tid:te"}),
+                           ("", {})]:
+            with self.subTest(spec=spec):
+                self.assertEqual(rp._tenants(spec), want)
+
+
 class ReapOrdering(unittest.TestCase):
     def test_what_each_wizlab_exit_leaves_behind(self):
         """A run whose only residue was one Outpost mid-uninstall exited 1 and paged every night, for
