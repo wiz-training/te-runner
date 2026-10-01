@@ -6,7 +6,8 @@ session id (objects are named lab-<session_id>). DRY-RUN by default; --commit de
 Stopped is Instruqt's own done-signal (immune to long/paused labs). The session id is the join:
 it's the labPlayReports id AND the naming stem. No account, no Keycloak attributes, no age heuristic.
 
-Env: INSTRUQT_TOKEN (API key); for --commit also WIZ_<TENANT>_CLIENT_ID/SECRET + LAB_KEYCLOAK_*.
+Env: INSTRUQT_TOKEN (API key); REAP_TENANTS, the comma-separated tenant keys to sweep (default TBCMP);
+for --commit also WIZ_<TENANT>_CLIENT_ID/SECRET per listed tenant + LAB_KEYCLOAK_*.
 """
 import json
 import os
@@ -24,8 +25,16 @@ TEAM = os.getenv("INSTRUQT_TEAM", "wiz")
 # mid-teardown leaves its footprint orphaned, and connectors accumulating past what a lookup can page
 # break every lab's staging (wizlab find_connector).
 WINDOW_H = int(os.getenv("REAP_WINDOW_HOURS", "48"))
-# tenant key (the WIZ_TENANT value wizlab keys creds on) -> the lab's Instruqt tag. Extend as tenants onboard.
-TENANTS = {"TBCMP": "tid:tbcmp"}
+
+
+def _tenants(spec):
+    """tenant key (the WIZ_TENANT value wizlab keys creds on) -> the lab's Instruqt tag, tid:<key lower-cased>.
+    Env-driven so a tenant onboards with a workflow line and its secret pair, not a rebuild."""
+    keys = [k.strip().upper() for k in spec.split(",") if k.strip()]
+    return {k: f"tid:{k.lower()}" for k in keys}
+
+
+TENANTS = _tenants(os.getenv("REAP_TENANTS", "TBCMP"))
 PAGE_SIZE = 500
 MAX_PAGES = 20  # a server that ignores `skip` would otherwise page forever inside the cron container
 
@@ -117,10 +126,11 @@ def main():
     total, failed, deferred = 0, [], []
     # Manual override: reap explicit sids regardless of tag/window. For orphans that predate a track's
     # tid:<tenant> tag (labPlayReports captures tags at play time, so a late tag never back-fills), or
-    # any one-off. `REAP_SESSIONS="sid1,sid2"`; reaped under REAP_SESSIONS_TENANT (default TBCMP).
+    # any one-off. `REAP_SESSIONS="sid1,sid2"`; reaped under REAP_SESSIONS_TENANT (default: the first
+    # REAP_TENANTS key).
     manual = [s.strip() for s in os.getenv("REAP_SESSIONS", "").split(",") if s.strip()]
     if manual:
-        mtenant = os.getenv("REAP_SESSIONS_TENANT", "TBCMP")
+        mtenant = os.getenv("REAP_SESSIONS_TENANT") or next(iter(TENANTS), "TBCMP")
         print(f"# manual: {len(manual)} session(s) under {mtenant}")
         for sid in manual:
             total += 1
