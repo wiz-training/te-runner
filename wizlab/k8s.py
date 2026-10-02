@@ -2,7 +2,7 @@
 import json
 import sys
 
-from . import core
+from . import connector, core
 
 # A Kubernetes connector is keyed on the cluster's external id, which for EKS is the cluster ARN.
 # The ARN comes from `aws eks describe-cluster`, never from a KUBERNETES_CLUSTER graph entity: in the
@@ -15,18 +15,10 @@ BY_CLUSTER = """query K8sConnectors($ids: [String!]) {
 }"""
 
 
-CREATE = """mutation CreateConnector($input: CreateConnectorInput!) {
-  createConnector(input: $input) { connector { id name status } }
-}"""
-
-
+# Create and delete are the cloud connector's own documents (connector.CREATE / DELETE); only the
+# patch differs, selecting `enabled` so the toggle's result is read back.
 UPDATE = """mutation UpdateConnector($input: UpdateConnectorInput!) {
   updateConnector(input: $input) { connector { id name enabled status } }
-}"""
-
-
-DELETE = """mutation DeleteConnector($input: DeleteConnectorInput!) {
-  deleteConnector(input: $input) { _stub }
 }"""
 
 
@@ -109,7 +101,7 @@ def _create(args, arn, cluster):
         "isOnPrem": False,
     }
     name = args.name or f"{core._lab_stem(core._session_id(args))}-k8s"
-    data, _ = core.api(CREATE, {"input": {"name": name, "type": "eks", "enabled": args.enabled == "true",
+    data, _ = core.api(connector.CREATE, {"input": {"name": name, "type": "eks", "enabled": args.enabled == "true",
                                           "authParams": auth, "extraConfig": {"installationType": "Script"}}})
     c = (data.get("createConnector") or {}).get("connector") or {}
     if not c:
@@ -162,7 +154,7 @@ def cmd_k8sconnector_delete(args):
         print(f"no Kubernetes connector for {arn}; nothing to delete")
         return
     for n in nodes:
-        core.api(DELETE, {"input": {"id": n["id"]}})
+        core.api(connector.DELETE, {"input": {"id": n["id"]}})
         print(f"deleted k8s connector {n['name']} ({n['id']})")
 
 

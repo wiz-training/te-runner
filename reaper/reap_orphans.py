@@ -7,7 +7,9 @@ Stopped is Instruqt's own done-signal (immune to long/paused labs). The session 
 it's the labPlayReports id AND the naming stem. No account, no Keycloak attributes, no age heuristic.
 
 Env: INSTRUQT_TOKEN (API key); REAP_TENANTS, the comma-separated tenant keys to sweep (default TBCMP);
-for --commit also WIZ_<TENANT>_CLIENT_ID/SECRET per listed tenant + LAB_KEYCLOAK_*.
+for --commit also WIZ_<TENANT>_CLIENT_ID/SECRET per listed tenant + LAB_KEYCLOAK_*. REAP_DOMAIN is the
+Keycloak user's domain when labs do not use wizlab's default: unset, a user on another domain is
+"absent" and the reap reads as done.
 """
 import json
 import os
@@ -109,6 +111,11 @@ def _wizlab(tenant, *args):
 DONE, DEFERRED, FAILED = "done", "deferred", "failed"
 
 
+def _domain_args():
+    d = os.getenv("REAP_DOMAIN")
+    return ["--domain", d] if d else []
+
+
 def _reap_session(tenant, sid, commit):
     if not commit:
         print(f"DRY-RUN {tenant}: reap lab-{sid}* + delete lab-{sid}@")
@@ -116,13 +123,13 @@ def _reap_session(tenant, sid, commit):
     # Footprint first, user last: the user is the only handle back to the leftover objects, so keep it
     # when the footprint survives. Only a run inside WINDOW_H retries on its own — past that the sid
     # has aged out of labPlayReports and an operator must pass it via REAP_SESSIONS.
-    rc = _wizlab(tenant, "user", "reap", "--session", sid, "--commit")
+    rc = _wizlab(tenant, "user", "reap", "--session", sid, "--commit", *_domain_args())
     if rc != 0:
         # wizlab routes it: 4 finishes on its own, 3 does not (wizlab.reap._reap_exit). Either way the
         # handle stays until a pass proves the footprint gone.
         print(f"reap_orphans: retaining lab-{sid}@ because Wiz cleanup is incomplete", file=sys.stderr)
         return DEFERRED if rc == 4 else FAILED
-    return DONE if _wizlab(tenant, "user", "delete", "--session", sid) == 0 else FAILED
+    return DONE if _wizlab(tenant, "user", "delete", "--session", sid, *_domain_args()) == 0 else FAILED
 
 
 def _tally(outcome, sid, failed, deferred):
