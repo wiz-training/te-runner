@@ -11,13 +11,21 @@ set -eu
 install -d -m 700 /run/lab
 umask 077
 : > /run/lab/wiz.env
-for k in WIZ_TENANT INSTRUQT_SESSION_ID; do
-  [ -n "${!k:-}" ] && printf '%s=%q\n' "$k" "${!k}" >> /run/lab/wiz.env
-done
-while IFS='=' read -r k v; do
-  printf '%s=%q\n' "$k" "$v" >> /run/lab/wiz.env
-done < <(env | grep -E '^(WIZ_[A-Z0-9_]+_CLIENT_(ID|SECRET)|LAB_KEYCLOAK_[A-Z_]+|GIT_CONFIG_[A-Z0-9_]+|AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN|DEFAULT_REGION|ACCOUNT_ID)|GOOGLE_(CREDENTIALS|PROJECT)|ARM_[A-Z_]+)=' || true)
+# NUL-delimited, so a value carrying a newline (a GOOGLE_CREDENTIALS key) survives whole; `%q` re-quotes
+# it for the wrapper's `.`. The names are every one wizlab reads through core._tenant_env plus the
+# session, lease and Keycloak inputs — a verb granted here fails 3 if its name is missing below.
+while IFS= read -r -d '' kv; do
+  k=${kv%%=*}
+  case "$k" in
+    WIZ_TENANT|INSTRUQT_SESSION_ID|WIZLAB_SESSION_PREFIX|WIZ_CLIENT_ID|WIZ_CLIENT_SECRET) ;;
+    WIZ_*_CLIENT_ID|WIZ_*_CLIENT_SECRET|WIZ_*_AZURE_APP_OBJECT_ID|WIZ_*_LOGIN_URL) ;;
+    LAB_KEYCLOAK_*|GIT_CONFIG_*|ARM_*|GOOGLE_CREDENTIALS|GOOGLE_PROJECT) ;;
+    AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|AWS_DEFAULT_REGION|AWS_ACCOUNT_ID) ;;
+    *) continue ;;
+  esac
+  printf '%s=%q\n' "$k" "${kv#*=}" >> /run/lab/wiz.env
+done < <(env -0)
 printf '%s\n' "$@" > /run/lab/learner-verbs
-n=$(grep -c -E '^WIZ_[A-Z0-9_]+_CLIENT_ID=' /run/lab/wiz.env || true)
+n=$(grep -c -E '^WIZ_([A-Z0-9_]+_)?CLIENT_ID=' /run/lab/wiz.env || true)
 [ "$n" -ge 1 ] || echo "wizlab-grant: no WIZ_<TENANT>_CLIENT_ID in this exec's environment; the learner wrapper will exit 3" >&2
 echo "granted $# verb pair(s) to the learner shell; snapshot holds $(wc -l < /run/lab/wiz.env) variable(s)"

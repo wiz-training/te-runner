@@ -60,6 +60,17 @@ class ReapOrdering(unittest.TestCase):
                 self.assertEqual(rp._reap_session("T", "s1", True), want)
                 self.assertEqual([c.args[1:3] for c in wizlab.call_args_list], calls)
 
+    def test_a_hung_wizlab_costs_one_session_not_the_run(self):
+        # Unhandled, TimeoutExpired left main() by traceback: every later session and tenant was skipped
+        # and the REAP_SESSIONS retry hint never printed. 3 is what _reap_session reads as FAILED.
+        boom = rp.subprocess.TimeoutExpired(["wizlab"], rp.WIZLAB_TIMEOUT_S, output="partial\n", stderr="")
+        with mock.patch.object(rp.subprocess, "run", side_effect=boom), \
+             mock.patch.object(rp.sys, "stdout", io.StringIO()) as out, \
+             mock.patch.object(rp.sys, "stderr", io.StringIO()) as err:
+            self.assertEqual(rp._wizlab("T", "user", "reap", "--session", "s1", "--commit"), 3)
+        self.assertEqual(out.getvalue(), "partial\n")
+        self.assertIn("no result within", err.getvalue())
+
     def test_main_goes_red_only_for_cleanup_a_later_pass_cannot_finish(self):
         # A retained user only self-heals inside WINDOW_H; past that the sid is the only way back in, so
         # the red run names it. A deferral is inside the window by construction and names nothing.

@@ -140,11 +140,11 @@ def cmd_workflow_ensure(args):
     issues = _validate_definition(definition)
     for i in issues:
         print(_issue_line(i))
-    if args.dry_run:
-        print(f"{len(issues)} validation issue(s); nothing submitted")
-        sys.exit(1 if issues else 0)
     if issues:
         core.die(2, f"definition has {len(issues)} validation issue(s); not submitted")
+    if args.dry_run:
+        print("0 validation issues; nothing submitted")
+        return
     live = _resolve_workflows(name, exact=args.exact_name)
     for stale in live[1:]:
         core.api(DELETE_WORKFLOW, {"input": {"id": stale["id"]}})

@@ -87,9 +87,13 @@ def _emit(lines):
 
 
 def _claims(tok):
-    pad = tok.split(".")[1]
-    pad += "=" * (-len(pad) % 4)
-    return json.loads(base64.urlsafe_b64decode(pad))
+    """The JWT's payload. An opaque or truncated token is the auth server's state (3), never a bug (2)."""
+    try:
+        pad = tok.split(".")[1]
+        pad += "=" * (-len(pad) % 4)
+        return json.loads(base64.urlsafe_b64decode(pad))
+    except (IndexError, ValueError) as e:
+        die(3, f"access token is not a JWT: {type(e).__name__}")
 
 
 def _post(url, data, headers, attempts=3):
@@ -158,7 +162,8 @@ def token_and_dc():
     if not tok:
         die(3, f"no token returned: {res.get('message') or res}")
     claims = _claims(tok)
-    _TOKENS[tenant] = (tok, claims["dc"], claims.get("tid"), claims.get("exp", 0))
+    dc = claims.get("dc") or die(3, "access token carries no dc claim; cannot address the API")
+    _TOKENS[tenant] = (tok, dc, claims.get("tid"), claims.get("exp", 0))
     return _TOKENS[tenant][:3]
 
 
