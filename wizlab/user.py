@@ -116,7 +116,8 @@ def _gen_password(length=14):
 
 # Per-tenant SSO constants that CANNOT be derived: the suffix Wiz appends to the tenant id in its
 # Cognito domain, and the SSO app client id. The tenant id itself IS derived (JWT `tid`), so it is
-# not stored here — one source, no drift.
+# not stored here — one source, no drift. WIZ_<T>_COGNITO_SUFFIX / WIZ_<T>_SSO_CLIENT_ID override
+# so a new tenant is an env pair, like its credential, not an image release.
 _TENANT_SSO = {
     "TBCMP": {"cognito_suffix": "34dq", "client_id": "4lgopniht2g4j58sirh4kh5gtl"},
     "TE": {"cognito_suffix": "o8cy", "client_id": "54snbgo7lek43ct9ph3coc5484"},
@@ -136,17 +137,19 @@ def _wiz_login_url():
     override = core._tenant_env("LOGIN_URL")
     if override:
         return override
-    sso = _TENANT_SSO.get(core._tenant())
-    if not sso:
+    sso = _TENANT_SSO.get(core._tenant(), {})
+    suffix = core._tenant_env("COGNITO_SUFFIX") or sso.get("cognito_suffix")
+    client_id = core._tenant_env("SSO_CLIENT_ID") or sso.get("client_id")
+    if not suffix or not client_id:
         return None
     _tok, _dc, tid = core.token_and_dc()
     if not tid:
         return None
     callback = urllib.parse.quote(f"https://auth.app.wiz.io/api/oidc/idp-init-callback/{tid}", safe="")
     return (
-        f"https://{tid}-{sso['cognito_suffix']}.auth.{_COGNITO_REGION}.amazoncognito.com"
+        f"https://{tid}-{suffix}.auth.{_COGNITO_REGION}.amazoncognito.com"
         f"/oauth2/authorize?response_type=code&identity_provider=Keycloak"
-        f"&client_id={sso['client_id']}&redirect_uri={callback}"
+        f"&client_id={client_id}&redirect_uri={callback}"
     )
 
 

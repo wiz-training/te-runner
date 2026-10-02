@@ -257,9 +257,14 @@ def api(query, variables, attempts=3):
     for i in range(attempts):
         tok, dc, tid = token_and_dc()
         data, errors = _graphql(tok, dc, query, variables)
-        if not errors or any(data.get(k) is not None for k in data):
+        if not errors:
             return data, tid
         msg = "; ".join(e.get("message", "?") for e in errors)
+        if any(data.get(k) is not None for k in data):
+            # A field-level error beside data is tolerated (a mutation's warning), but a page it
+            # truncated must not read as the whole set in silence.
+            print(f"wizlab: {len(errors)} GraphQL error(s) beside data, ignored: {msg}", file=sys.stderr)
+            return data, tid
         # One rule for both layers: whatever may not be resubmitted over HTTP may not be replayed here
         # either, so a transient GraphQL fault is retried for reads and fatal for everything else.
         is_read = _submissions(query) > 1

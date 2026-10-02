@@ -558,6 +558,12 @@ class AuthorTools(unittest.TestCase):
         self.assertEqual(exit_code(wz.cmd_user_login_url, [], wiz=FakeWiz(tid="t1"), env={}, out=out), 0)
         self.assertIn("t1-34dq.auth.us-east-1.amazoncognito.com", out.getvalue())
         self.assertEqual(exit_code(wz.cmd_user_login_url, [], env={"WIZ_TENANT": "NOPE"}), 3)
+        # A tenant outside the baked table is an env pair, like its credential — not an image release.
+        out = io.StringIO()
+        env = {"WIZ_TENANT": "NEW", "WIZ_NEW_COGNITO_SUFFIX": "zz9", "WIZ_NEW_SSO_CLIENT_ID": "cid9"}
+        self.assertEqual(exit_code(wz.cmd_user_login_url, [], wiz=FakeWiz(tid="t1"), env=env, out=out), 0)
+        self.assertIn("t1-zz9.auth.", out.getvalue())
+        self.assertIn("client_id=cid9", out.getvalue())
 
 
 class PureParsing(unittest.TestCase):
@@ -1028,6 +1034,30 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         self.assertEqual(outcome, wz.UNKNOWN)
         self.assertIn("no name in input", review)
 
+    # The Wiz type each `ensure` leaves on the session stem, or None with the reason the sweep need not
+    # reach it. A verb shipped without a row fails; a type the sweep lacks fails. The CLI deployment's
+    # account and the integration's account are ServiceAccount records the override routes to their owner.
+    FOOTPRINT: typing.ClassVar = {
+        ("connector", "ensure"): "Connector",
+        ("k8sconnector", "ensure"): "Connector",
+        ("sensor", "ensure"): "ServiceAccount",
+        ("apiaccount", "ensure"): "ServiceAccount",
+        ("serviceaccount", "ensure"): "ServiceAccount",
+        ("mcp", "ensure"): "Integration",
+        ("workflow", "ensure"): "AutomationWorkflow",
+        ("outpost", "ensure"): "Outpost",
+        ("workflow-run", "ensure"): None,   # a test run, not a resource
+        ("policy", "ensure"): None,         # shared persistent fixture, never session-scoped
+        ("role", "ensure"): None,           # AWS IAM in the lease account, which dies with the lease
+        ("user", "ensure"): None,           # Keycloak; `user delete` is the inverse the reaper calls
+    }
+
+    def test_every_ensure_verb_names_what_the_sweep_reaches(self):
+        self.assertEqual({v for v in wz.VERBS if v[1] == "ensure"}, set(self.FOOTPRINT))
+        for verb, created in self.FOOTPRINT.items():
+            if created:
+                self.assertIn(created, wz._SWEEP_TYPES, verb)
+
     SA_HANDLER: typing.ClassVar = {"list": "serviceAccounts", "filter": "name", "soft": True,
                                    "delete": "deleteServiceAccount", "deleter": None}
 
@@ -1436,6 +1466,18 @@ class TransientGraphqlErrors(unittest.TestCase):
             wz.api("mutation M { createConnector { id } }", {})
         self.assertEqual(cm.code, 3)
         self.assertEqual(post.call_count, 1)
+
+    def test_an_error_beside_data_is_returned_and_named(self):
+        # Tolerated, since a mutation's warning rides the same channel — but a page the error truncated
+        # must not pass as the whole set in silence, so the message reaches stderr.
+        partial = {"errors": [{"message": "field x failed"}], "data": {"connectors": {"totalCount": 1}}}
+        err = io.StringIO()
+        with mock.patch.object(_owner("token_and_dc"), "token_and_dc", return_value=("t", "dc", "tid")), \
+             mock.patch.object(_owner("_post"), "_post", self._post_returning(partial)), \
+             contextlib.redirect_stderr(err):
+            data, _ = wz.api("query Q { connectors { totalCount } }", {})
+        self.assertEqual(data["connectors"]["totalCount"], 1)
+        self.assertIn("field x failed", err.getvalue())
 
     def test_a_real_error_is_not_retried(self):
         bad = {"errors": [{"message": "Resource not found"}], "data": None}

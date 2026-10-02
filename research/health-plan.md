@@ -23,14 +23,14 @@ reproducer that proves it present, and what else the change touches. Status: `to
 
 | Symbol | Why not now | Owner decides |
 |---|---|---|
-| `core.api` partial-data rule | Errors beside a non-null field are dropped; changing it can turn a tolerated mutation warning into exit 3. No live case found | keep, or log the dropped errors to stderr |
 | `user._publish_user` vs `core._emit` | Two writers of `$EXEC_OUTPUT`; unifying echoes the password on a solve's stdout | add a quiet mode to `_emit` |
-| `sensor._ensure_sa`, `serviceaccount`, `mcp` ensure | Same delete-then-mint shape three times; a helper takes four callables | refactor only with the next credential noun |
-| `k8s.CREATE/DELETE` = `connector.CREATE/DELETE` | Identical documents; tests route on mutation names so a divergence in one is unseen by the other's tests | import from `connector` |
-| `user._TENANT_SSO`, `core._DEFAULT_TENANT`, `reap.yml REAP_TENANTS` | A new tenant is a code change plus an image release for the SSO pair alone | move suffix/client id behind `_tenant_env` |
-| `cli._U --domain`, `outpost` region, `--group` defaults | The reaper calls `user delete` with the default domain, so another domain leaves the user with exit 0 | pass `--domain` through `REAP_*` |
-| `reap._SWEEP_TYPES` coverage test | No table ties each `ensure` verb's created type to a sweep member or an explicit exclusion | add the table |
-| `requirements-dev.txt` ruff 0.16.5 vs local 0.16.9 | Both pass the curated rule set | bump on the next lint change |
+| `serviceaccount` and `mcp` ensure | Delete-then-mint through a deployment and an integration; `_ensure_sa` already serves the two plain service-account nouns, and a helper over these two takes four callables | refactor only with the next credential noun |
+| `outpost` region, `--group` defaults | Literals with no env override; no lab has needed another value | add env defaults when one does |
+
+Landed from the earlier table: `core.api` names an error it tolerates beside data on stderr;
+`k8s` reuses `connector.CREATE`/`DELETE`; `WIZ_<T>_COGNITO_SUFFIX`/`WIZ_<T>_SSO_CLIENT_ID` override
+`_TENANT_SSO`; `REAP_DOMAIN` rides on the reaper's `user` calls; `FOOTPRINT` ties every `ensure`
+verb to `_SWEEP_TYPES`; ruff pinned 0.16.9.
 
 ## Next actions
 
