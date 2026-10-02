@@ -1,5 +1,4 @@
 """The Wiz MCP integration: the credential an agent in a lab reaches the remote MCP server with."""
-import re
 import sys
 
 from . import core
@@ -34,22 +33,8 @@ CREATE_INTEGRATION = """mutation CreateIntegration($input: CreateIntegrationInpu
 _DEFAULT_SCOPES = "read:all"
 
 
-_SCOPE_RE = re.compile(r"^[a-z_]+:[a-z_]+$")
-
-
 def _mcp_name(args):
     return core._named(args, "-mcp")
-
-
-def _scopes(args):
-    """The scope list, refused as invocation error 2 when a string is not `<verb>:<object>`: the API
-    takes an unknown scope without complaint and the account then holds fewer permissions than the
-    call named, which surfaces a play later as a tool the agent cannot see."""
-    wanted = [s.strip() for s in (args.scopes or _DEFAULT_SCOPES).split(",") if s.strip()]
-    bad = [s for s in wanted if not _SCOPE_RE.match(s)]
-    if bad:
-        core.die(2, f"--scopes takes <verb>:<object> strings; not {', '.join(repr(b) for b in bad)}")
-    return wanted
 
 
 def _find_integration(name):
@@ -68,7 +53,7 @@ def cmd_mcp_ensure(args):
     WIZ_CLIENT_SECRET to stdout and $EXEC_OUTPUT. The secret is returned once, so this converges to
     ONE fresh integration: any existing one on this name is deleted first. Setup only — never a
     learner check (it prints a secret)."""
-    name, scopes = _mcp_name(args), _scopes(args)
+    name, scopes = _mcp_name(args), core._scopes(args, _DEFAULT_SCOPES)
     existing = _find_integration(name)
     if existing:
         _delete_integration(existing["id"])

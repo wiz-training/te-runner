@@ -53,17 +53,18 @@ def _find_sa(name):
     return core._exact(core._all_nodes(SA_FIND, {"n": name}, "serviceAccounts"), name)
 
 
-def _ensure_sa(name, sa_type, scopes, id_var, secret_var, label):
+def _ensure_sa(name, sa_type, scopes, id_var, secret_var, label, extra=None):
     """Converge to ONE fresh service account named on the session stem, parameterized over type +
-    scopes (SENSOR takes none; a CLI account takes create:security_scans etc.). The client secret is
-    shown once and not re-fetchable, so an existing account is deleted and re-minted: every run emits
-    <id_var>/<secret_var> to stdout and $EXEC_OUTPUT (postconditions: SPEC.md §What `ensure` promises).
-    Solve/setup only — never a learner check (it prints a secret)."""
+    scopes (SENSOR takes none; a THIRD_PARTY account takes read:all etc.) plus any further
+    CreateServiceAccountInput fields in `extra`. The client secret is shown once and not re-fetchable,
+    so an existing account is deleted and re-minted: every run emits <id_var>/<secret_var> to stdout
+    and $EXEC_OUTPUT (postconditions: SPEC.md §What `ensure` promises). Solve/setup only — never a
+    learner check (it prints a secret)."""
     existing = _find_sa(name)
     if existing:
         core.api(core._delete_doc("deleteServiceAccount"), {"id": existing["id"]})
         print(f"deleted {label} service account {name} ({existing['id']}); re-minting", file=sys.stderr)
-    inp = {"name": name, "type": sa_type}
+    inp = {"name": name, "type": sa_type, **(extra or {})}
     if scopes:
         inp["scopes"] = scopes
     data, _ = core.api(CREATE_SA, {"input": inp})

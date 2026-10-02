@@ -13,6 +13,7 @@ inside the package addresses another module's name as `module.X`, so patching `m
 every caller.
 """
 from . import (
+    apiaccount,
     cli,
     codescan,
     connector,
@@ -30,7 +31,7 @@ from . import (
     workflow,
 )
 
-MODULES = (core, session, wiz, connector, k8s, sensor, serviceaccount, mcp, codescan, workflow, outpost,
-           role, user, reap, cli)
+MODULES = (core, session, wiz, connector, k8s, sensor, serviceaccount, apiaccount, mcp, codescan, workflow,
+           outpost, role, user, reap, cli)
 for _m in MODULES:
     globals().update({k: v for k, v in vars(_m).items() if not k.startswith("__")})

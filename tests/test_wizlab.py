@@ -201,6 +201,7 @@ class InspectContract(unittest.TestCase):
                             "steps": [{"status": "COMPLETED", "outboundEdge": "x",
                                        "step": {"name": "Route", "type": "SWITCH_CASE"}}]}
     DEPLOYMENT: typing.ClassVar = {"id": "dep1", "name": "lab-x-cli", "type": "WIZ_CLI"}
+    API: typing.ClassVar = {"id": "sa2", "name": "lab-x-api", "clientId": "cid", "clientSecret": "sec"}
     MCP: typing.ClassVar = {"id": "int1", "name": "lab-x-mcp", "status": "INITIALIZING"}
     SCAN: typing.ClassVar = {"id": "c1", "status": {"state": "DONE", "verdict": "FAILED_BY_POLICY"}}
     POLICY: typing.ClassVar = {"id": "pol-1", "name": "block-root"}
@@ -230,6 +231,9 @@ class InspectContract(unittest.TestCase):
         ("serviceaccount", "inspect"): {"argv": ["--name", "lab-x-cli"],
                                         "present": {"deployments": _conn(DEPLOYMENT)},
                                         "absent": [{"deployments": _conn()}]},
+        ("apiaccount", "inspect"): {"argv": ["--name", "lab-x-api"],
+                                    "present": {"serviceAccounts": _conn(API)},
+                                    "absent": [{"serviceAccounts": _conn()}]},
         # INITIALIZING satisfies `exists`: that is what createIntegration returns, and ACTIVE only
         # follows first use — `--require active` on a healthy fresh integration is MCPGrading's row.
         ("mcp", "inspect"): {"argv": ["--name", "lab-x-mcp"],
@@ -352,6 +356,15 @@ class EnsureContract(unittest.TestCase):
                 "absent": {"deployments": _conn(), "createCliDeployment": self.CLI},
                 "present": {"deployments": _conn(self.CLI["deployment"]), "createCliDeployment": self.CLI},
                 "creates": ["createCliDeployment"], "present_mutates": ["deleteCliDeployment", "createCliDeployment"]},
+            ("apiaccount", "ensure"): {
+                "argv": ["--name", "lab-x-api"],
+                "absent": {"serviceAccounts": _conn(),
+                           "createServiceAccount": {"serviceAccount": InspectContract.API}},
+                "present": {"serviceAccounts": _conn(InspectContract.API),
+                            "createServiceAccount": {"serviceAccount": InspectContract.API}},
+                "creates": ["createServiceAccount"],
+                "present_mutates": ["deleteServiceAccount", "createServiceAccount"],
+                "invalid": [["--name", "lab-x-api", "--scopes", "readall"]]},
             ("mcp", "ensure"): {
                 "argv": ["--name", "lab-x-mcp"],
                 "absent": {"integrations": _conn(), "createIntegration": self.MCP},
@@ -449,6 +462,8 @@ class DeleteContract(unittest.TestCase):
                                "node": EnsureContract.SA, "deletes": ["deleteServiceAccount"]},
         ("serviceaccount", "delete"): {"argv": ["--name", "lab-x-cli"], "field": "deployments",
                                        "node": EnsureContract.CLI["deployment"], "deletes": ["deleteCliDeployment"]},
+        ("apiaccount", "delete"): {"argv": ["--name", "lab-x-api"], "field": "serviceAccounts",
+                                   "node": InspectContract.API, "deletes": ["deleteServiceAccount"]},
         ("mcp", "delete"): {"argv": ["--name", "lab-x-mcp"], "field": "integrations",
                             "node": InspectContract.MCP, "deletes": ["deleteIntegration"]},
         ("policy", "delete"): {"argv": ["--name", "block-root"], "field": "cicdScanPolicies",

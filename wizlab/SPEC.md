@@ -80,7 +80,8 @@ readable from every learner terminal.
 ## Nouns
 `session`, `connector`, `role`, `instance`, `user`, `wiz`, `outpost`, for Kubernetes labs `k8sconnector`
 and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`, for Wiz Code labs
-`serviceaccount` and `code-scan`, for agent labs `mcp`, and for Workflows labs `workflow` and `workflow-run`:
+`serviceaccount` and `code-scan`, for agent labs `apiaccount` and `mcp`, and for Workflows labs `workflow` and
+`workflow-run`:
 - `k8sconnector ensure|inspect|delete --cluster <eks name> | --cluster-arn <arn>` — a Kubernetes
   connector the lab owns. Keyed on `connectors(filterBy:{kubernetesClusterExternalIds})`, where the EKS
   external id is the cluster ARN taken from `aws eks describe-cluster`, **never from a
@@ -202,6 +203,17 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   No `delete` verb: `AutomationWorkflow` is already a `_SWEEP_TYPES` member, so the generic prefix sweep
   reaches it and a second path would be two places holding one fact. Never `TRIGGER_BLUE_AGENT` in a lab
   flow: manual Blue Agent runs are 5/day/tenant and a cohort exhausts them on learner two.
+- `apiaccount ensure|inspect|delete` — a `THIRD_PARTY` service account, the plain API credential an agent
+  or a script in a lab reads the tenant with; the remote MCP server takes it in the `Wiz-Client-Id` /
+  `Wiz-Client-Secret` / `Wiz-DataCenter` headers with no integration object behind it. `ensure` names it
+  `<stem>-api` and converges to one fresh account (delete-then-mint, `clientSecret` readable only in the
+  create payload), emitting `WIZ_CLIENT_ID` / `WIZ_CLIENT_SECRET` to stdout + `$EXEC_OUTPUT`:
+  `createServiceAccount(input:{name, type: THIRD_PARTY, scopes, assignedProjectIds: [], expiresAt})`.
+  `--scopes` defaults to `read:all` under the same `<verb>:<object>` check as `mcp`; `--expires-at` is
+  null by default, so the reap is the account's only end of life. `inspect --require exists` and `delete
+  --id|--name` go through `serviceAccounts(filterBy:{name, deleted:false})` / `deleteServiceAccount`,
+  which **accepts this type**: no owner object, so the reaper's `ServiceAccount` prefix sweep deletes it
+  on the uniform path. The caller needs `create:service_accounts` + `delete:service_accounts`.
 - `mcp ensure|inspect|delete` — the Wiz MCP integration an agent in a lab reads the tenant through.
   `ensure` names it `<stem>-mcp` and converges to one fresh integration (delete-then-mint: `clientSecret`
   is readable only in the create payload), emitting `WIZ_CLIENT_ID` / `WIZ_CLIENT_SECRET` to stdout +

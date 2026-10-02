@@ -291,6 +291,20 @@ def _named(args, suffix=""):
     return args.name or f"{_lab_stem(_session_id(args))}{suffix}"
 
 
+_SCOPE_RE = re.compile(r"^[a-z_]+:[a-z_]+$")
+
+
+def _scopes(args, default):
+    """--scopes as a list, refused as invocation error 2 when a string is not `<verb>:<object>`: the API
+    takes an unknown scope without complaint and the account then holds fewer permissions than the
+    call named, which surfaces a play later as a tool the agent cannot see."""
+    wanted = [s.strip() for s in (args.scopes or default).split(",") if s.strip()]
+    bad = [s for s in wanted if not _SCOPE_RE.match(s)]
+    if bad:
+        die(2, f"--scopes takes <verb>:<object> strings; not {', '.join(repr(b) for b in bad)}")
+    return wanted
+
+
 def _stem_opt(args):
     """The session stem when it is knowable, else None. Unlike _session_id this never dies: a check
     run by hand has no INSTRUQT_SESSION_ID, and the name-search layer is an optimisation, not a
