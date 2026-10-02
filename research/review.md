@@ -20,4 +20,4 @@ Every measurement carrying its reproducer. One pinned image per lab.
 
 ## Next actions
 
-1. #30: read the `audit-only` count off the `reap.yml` summary lines once v0.1.48 has run for two weeks.
+#30 is tracked in `te-labkit-v2/TODO.md` (reaper audit window), with the measurement that decides it.
