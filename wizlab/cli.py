@@ -3,6 +3,7 @@ import argparse
 import sys
 
 from . import (
+    apiaccount,
     codescan,
     connector,
     core,
@@ -35,6 +36,9 @@ VERBS = {
     ("serviceaccount", "ensure"): serviceaccount.cmd_serviceaccount_ensure,
     ("serviceaccount", "inspect"): serviceaccount.cmd_serviceaccount_inspect,
     ("serviceaccount", "delete"): serviceaccount.cmd_serviceaccount_delete,
+    ("apiaccount", "ensure"): apiaccount.cmd_apiaccount_ensure,
+    ("apiaccount", "inspect"): apiaccount.cmd_apiaccount_inspect,
+    ("apiaccount", "delete"): apiaccount.cmd_apiaccount_delete,
     ("mcp", "ensure"): mcp.cmd_mcp_ensure,
     ("mcp", "inspect"): mcp.cmd_mcp_inspect,
     ("mcp", "delete"): mcp.cmd_mcp_delete,
@@ -110,6 +114,9 @@ FLAGS = {
     ("serviceaccount", "ensure"): {**_S, "--name": {}},
     ("serviceaccount", "inspect"): {**_S, "--name": {}, "--require": _one_of("exists")},
     ("serviceaccount", "delete"): {**_S, "--id": {}, "--name": {}},
+    ("apiaccount", "ensure"): {**_S, "--expires-at": {}, "--name": {}, "--scopes": {}},
+    ("apiaccount", "inspect"): {**_S, "--name": {}, "--require": _one_of("exists")},
+    ("apiaccount", "delete"): {**_S, "--id": {}, "--name": {}},
     ("mcp", "ensure"): {**_S, "--expires-at": {}, "--name": {}, "--scopes": {}},
     ("mcp", "inspect"): {**_S, "--name": {}, "--require": _one_of("exists", "active")},
     ("mcp", "delete"): {**_S, "--id": {}, "--name": {}},
