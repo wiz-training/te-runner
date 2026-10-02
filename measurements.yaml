@@ -1520,7 +1520,7 @@ dev_lab_service_gaps:
   # and it is the thing to check FIRST, because Instruqt implements the per-track list as an org policy on
   # the account: the error for a service nobody added is indistinguishable from a hard denial. Names are
   # lowercase IAM service prefixes on AWS, full API hostnames on GCP, resource-provider namespaces on Azure.
-  # A misspelling is silently denied rather than rejected -- see TODO 12 -- so copy the name, do not type it.
+  # A misspelling is silently denied rather than rejected, so copy the name, do not type it.
   aws:
     config: tracks/aws-dev/config.yml -> aws_accounts[0]
     config_gap:

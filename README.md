@@ -49,7 +49,5 @@ out-of-list code puts the session in a terminal `validating_error`) with
 `wizlab --check <noun> <verb> …`, which prints the real code on stderr; consume
 them raw in CI.
 
-Review backlog, ranked by return on effort: `research/review.md`.
-
-Next action: measure the post-role connector `healthy` enum on a live lease
-(TODO in `wizlab/connector.py`).
+Open items for the repo family live in `te-labkit-v2/TODO.md`; review backlogs behind them are
+`research/review.md` and `research/health-plan.md`.

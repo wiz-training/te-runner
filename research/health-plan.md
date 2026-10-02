@@ -34,7 +34,4 @@ verb to `_SWEEP_TYPES`; ruff pinned 0.16.9.
 
 ## Next actions
 
-1. Measure #9 before deciding: `WIZ_TENANT=<T> wizlab user reap --session any --last-min 2880`
-   on each tenant `reap.yml` sweeps; a `FAILED audit enumeration more than 30 pages` line means
-   the cap, not the window, is the first constraint.
-2. Open the PR for rows 1–8; `reap.yml` repin follows the tag that carries them.
+Rows 1–8 shipped in `v0.1.63`. Row 9 and the deferred table are tracked in `te-labkit-v2/TODO.md`.
