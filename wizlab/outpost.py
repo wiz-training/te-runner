@@ -202,8 +202,8 @@ def cmd_outpost_delete(args):
             return
         oid, status = node["id"], node["status"]
     else:
-        status = (_outpost_by_id(oid) or {}).get("status")
-    if status not in _OUTPOST_DELETABLE and status not in _OUTPOST_STUCK:
+        status = (_outpost_by_id(oid) or {}).get("status") or "GONE"
+    if status != "GONE" and status not in _OUTPOST_DELETABLE and status not in _OUTPOST_STUCK:
         if not _uninstall_in_flight(status):
             core.api(UNINSTALL_OUTPOST, {"input": {"id": oid}})
             print(f"uninstalling outpost {oid} (was {status})")

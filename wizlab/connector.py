@@ -243,11 +243,12 @@ def _aws_auth_params(args, account):
     return auth
 
 
-def _reauth_guard(args, node):
-    """--reauth re-submits authParams. An Outpost binding lives in those same authParams, so a patch
-    built without the outpost flags would silently drop it."""
+def _binding_guard(args, node):
+    """Every patch re-submits authParams whole, and an Outpost binding lives in those same authParams:
+    a patch built without the outpost flags drops it, whether the patch is --reauth or a drift repair.
+    The result has no lifecycle signal (CONNECTED, scans nothing), so refuse before sending."""
     if (node.get("outpost") or {}).get("id") and not (args.outpost_id or args.outpost_name):
-        core.die(2, "connector ensure --reauth on an outpost-bound connector needs --outpost-id or "
+        core.die(2, "connector ensure on an outpost-bound connector needs --outpost-id or "
                     "--outpost-name with --scanner-role-arn, or the patch drops the binding")
 
 
@@ -258,8 +259,7 @@ def _patch_aws(args, node, auth, same):
     delete then ensure (CONNECTED in ~4 min). A trust rotated AFTER CONNECTED shows nothing at all —
     CONNECTED, errorCode null, no health issue, lastActivity frozen — and Rescan does not
     re-authenticate. A patch that ADDS outpostId to an existing connector is unexercised."""
-    if same:
-        _reauth_guard(args, node)
+    _binding_guard(args, node)
     data, _ = core.api(UPDATE, {"input": {"id": node["id"], "patch": {"authParams": auth}}})
     status = (((data.get("updateConnector") or {}).get("connector")) or {}).get("status")
     cur = (node.get("config") or {}).get("customerRoleARN") or "(none)"

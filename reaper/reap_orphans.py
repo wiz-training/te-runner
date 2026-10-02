@@ -84,9 +84,20 @@ def stopped_sessions(tag):
     return [it["id"] for it in items if it.get("stoppedReason")]
 
 
+# One session's `user reap` pages the audit log and nine sweep types; a hang here must cost that
+# session, not the rest of the run. 3 is wizlab's own environment code, which _reap_session reads as FAILED.
+WIZLAB_TIMEOUT_S = 300
+
+
 def _wizlab(tenant, *args):
-    r = subprocess.run(["wizlab", *args], env={**os.environ, "WIZ_TENANT": tenant},
-                       capture_output=True, text=True, check=False, timeout=300)
+    try:
+        r = subprocess.run(["wizlab", *args], env={**os.environ, "WIZ_TENANT": tenant},
+                           capture_output=True, text=True, check=False, timeout=WIZLAB_TIMEOUT_S)
+    except subprocess.TimeoutExpired as e:
+        sys.stdout.write(e.stdout or "")
+        sys.stderr.write(e.stderr or "")
+        print(f"reap_orphans: wizlab {' '.join(args)} produced no result within {WIZLAB_TIMEOUT_S}s", file=sys.stderr)
+        return 3
     sys.stdout.write(r.stdout)
     sys.stderr.write(r.stderr)
     return r.returncode

@@ -94,7 +94,9 @@ def _kc_user_id(endpoint, realm, token, email):
 def _kc_group_id(endpoint, realm, token, group):
     q = urllib.parse.urlencode({"search": group, "exact": "true"})
     body = _kc("GET", f"{endpoint}/admin/realms/{realm}/groups?{q}", token, what="Keycloak group lookup")
-    groups = json.loads(body or b"[]")
+    # `exact` on this endpoint is version-dependent, so == is ours: a join lands the learner in whatever
+    # group came first, and a wrong group is a wrong Wiz role for the whole play.
+    groups = [g for g in json.loads(body or b"[]") if g.get("name") == group]
     if not groups:
         core.die(3, f"Keycloak group '{group}' not found in realm '{realm}'")
     return groups[0]["id"]

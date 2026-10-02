@@ -414,6 +414,10 @@ class EnsureContract(unittest.TestCase):
         bound = {"connectors": _conn(dict(self.CONNECTOR, outpost={"id": "o1", "name": "lab-x"}))}
         code, wiz = self._run(("connector", "ensure"), argv, bound)
         self.assertEqual((code, _mutations(wiz)), (2, []))
+        # The drift repair is the same patch without --reauth, so it is refused the same way.
+        drift = ["--account-id", "111111111111", "--role-arn", "arn:aws:iam::111111111111:role/other"]
+        code, wiz = self._run(("connector", "ensure"), drift, bound)
+        self.assertEqual((code, _mutations(wiz)), (2, []))
 
     def test_a_tenant_error_mutates_nothing_and_is_3(self):
         for verb, row in self.rows().items():
@@ -736,6 +740,16 @@ class ExitCodeContract(unittest.TestCase):
         self.assertEqual(exit_code(wz.cmd_session_verify, [], wiz=wiz), 0)
         self.assertEqual(wiz.mints, 1)
         self.assertGreaterEqual(len(wiz.calls), 1)
+
+    def test_a_token_that_is_not_a_jwt_is_environment_3(self):
+        # IndexError/KeyError out of _claims used to reach main()'s catch-all as `internal error` 2.
+        for tok in ["opaque", "h.!!!.s", _jwt(tid="t")]:
+            with self.subTest(tok=tok), \
+                 mock.patch.object(_owner("_post"), "_post", return_value={"access_token": tok}), \
+                 mock.patch.dict(wz.os.environ, FakeWiz.ENV, clear=True), exits() as cm:
+                wz._TOKENS.clear()
+                wz.token_and_dc()
+            self.assertEqual(cm.code, 3)
 
     def test_an_expiring_token_is_reminted(self):
         wiz, clock = FakeWiz(), {"t": 1000.0}
@@ -1902,7 +1916,8 @@ class WorkflowGrading(unittest.TestCase):
     def test_dry_run_reports_issues_without_mutating(self):
         argv = ["--name", "lab-x", "--definition", self._definition_file(), "--dry-run"]
         issues = [{"target": {"triggerId": "eventThreats"}, "message": "outbound edge references non-existent step"}]
-        self.assertEqual(self._exit(wz.cmd_workflow_ensure, argv, self._wiz(self.LIVE, issues=issues)), 1)
+        # Issues are the caller's bug under --dry-run as well (SPEC.md): 2, never learner-state 1.
+        self.assertEqual(self._exit(wz.cmd_workflow_ensure, argv, self._wiz(self.LIVE, issues=issues)), 2)
         self.assertEqual(self._exit(wz.cmd_workflow_ensure, argv, self._wiz(self.LIVE)), 0)
 
     def test_issue_line_survives_a_workflow_level_target(self):
@@ -2087,6 +2102,10 @@ class OutpostGrading(unittest.TestCase):
                 wiz = self._wiz(status, after=after)
                 self.assertEqual(self._exit(wz.cmd_outpost_delete, ["--name", "lab-x"], wiz), code)
                 self.assertEqual(self._mutations(wiz), want)
+        # By id, an absent record is GONE: no uninstall is fired at it and no wait is spent on it.
+        wiz = self._wiz("GONE")
+        self.assertEqual(self._exit(wz.cmd_outpost_delete, ["--id", "o1"], wiz), 0)
+        self.assertEqual(self._mutations(wiz), [])
 
     def test_delete_exits_0_when_uninstall_outlives_the_wait(self):
         # Best-effort: the EKS infra dies with the lease, so a stuck record must not fail the reaper.
