@@ -92,7 +92,23 @@ class ReapOrdering(unittest.TestCase):
                 except SystemExit as e:
                     code = e.code
                 self.assertEqual(code, want)
-                self.assertEqual('REAP_SESSIONS="s1,s2"' in err.getvalue(), want is not None)
+                self.assertEqual('REAP_SESSIONS_TENANT=TBCMP REAP_SESSIONS="s1,s2"' in err.getvalue(),
+                                 want is not None)
+
+    def test_retry_hint_names_the_tenant_each_failed_session_was_swept_under(self):
+        # The hint named sids only; REAP_SESSIONS defaults to the first REAP_TENANTS key, so a TE session
+        # retried from it swept TBCMP, found nothing, and deleted the one handle back to the TE residue.
+        with mock.patch.object(rp, "TENANTS", {"TBCMP": "tid:tbcmp", "TE": "tid:te"}), \
+             mock.patch.object(rp, "stopped_sessions", side_effect=[["a"], ["b", "c"]]), \
+             mock.patch.object(rp, "_reap_session", side_effect=[rp.FAILED, rp.DONE, rp.FAILED]), \
+             mock.patch.dict(rp.os.environ, {}, clear=True), \
+             mock.patch.object(rp.sys, "argv", ["reap_orphans.py", "--commit"]), \
+             mock.patch.object(rp.sys, "stderr", io.StringIO()) as err, \
+             self.assertRaises(SystemExit):
+            rp.main()
+        self.assertIn('REAP_SESSIONS_TENANT=TBCMP REAP_SESSIONS="a"; REAP_SESSIONS_TENANT=TE REAP_SESSIONS="c"',
+                      err.getvalue())
+        self.assertIn("# 1/3 session(s) reaped", err.getvalue())
 
 
 if __name__ == "__main__":
