@@ -17,6 +17,10 @@ on:
         description: "Manual session ids to reap (comma-separated), bypassing the tag/window filter"
         type: string
         default: ""
+      tenant:
+        description: "Tenant the manual sessions are reaped under (a REAP_TENANTS key; empty = the first)"
+        type: string
+        default: ""
 jobs:
   reap:
     runs-on: ubuntu-latest
@@ -36,6 +40,7 @@ jobs:
           LAB_KEYCLOAK_ADMIN_USER: ${{ secrets.LAB_KEYCLOAK_ADMIN_USER }}
           LAB_KEYCLOAK_ADMIN_PWD: ${{ secrets.LAB_KEYCLOAK_ADMIN_PWD }}
           REAP_SESSIONS: ${{ inputs.sessions }}
+          REAP_SESSIONS_TENANT: ${{ inputs.tenant }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then MODE="${{ inputs.commit }}"; else MODE="${{ vars.REAP_COMMIT }}"; fi
           COMMIT=""; [ "$MODE" = "true" ] && COMMIT="--commit"

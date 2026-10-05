@@ -132,16 +132,25 @@ def _reap_session(tenant, sid, commit):
     return DONE if _wizlab(tenant, "user", "delete", "--session", sid, *_domain_args()) == 0 else FAILED
 
 
-def _tally(outcome, sid, failed, deferred):
+def _tally(outcome, tenant, sid, failed, deferred):
     if outcome == FAILED:
-        failed.append(sid)
+        failed.setdefault(tenant, []).append(sid)
     elif outcome == DEFERRED:
         deferred.append(sid)
 
 
+def _retry_hints(failed):
+    """One line per tenant: REAP_SESSIONS reaps under REAP_SESSIONS_TENANT, so a hint naming only the
+    sids retries a TE session under TBCMP, finds nothing, deletes the Keycloak user and loses the handle."""
+    return "; ".join(f'REAP_SESSIONS_TENANT={t} REAP_SESSIONS="{",".join(sids)}"' for t, sids in failed.items())
+
+
 def main():
     commit = "--commit" in sys.argv
-    total, failed, deferred = 0, [], []
+    # The container's stdout is a pipe, so block-buffered; stderr is not. Unbuffered, the per-session
+    # wizlab lines land after the summary that says "see preceding wizlab output".
+    sys.stdout.reconfigure(line_buffering=True)
+    total, failed, deferred = 0, {}, []
     # Manual override: reap explicit sids regardless of tag/window. For orphans that predate a track's
     # tid:<tenant> tag (labPlayReports captures tags at play time, so a late tag never back-fills), or
     # any one-off. `REAP_SESSIONS="sid1,sid2"`; reaped under REAP_SESSIONS_TENANT (default: the first
@@ -152,19 +161,22 @@ def main():
         print(f"# manual: {len(manual)} session(s) under {mtenant}")
         for sid in manual:
             total += 1
-            _tally(_reap_session(mtenant, sid, commit), sid, failed, deferred)
+            _tally(_reap_session(mtenant, sid, commit), mtenant, sid, failed, deferred)
     for tenant, tag in TENANTS.items():
         sids = stopped_sessions(tag)
         print(f"# tenant {tenant} ({tag}): {len(sids)} stopped session(s) in last {WINDOW_H}h")
         for sid in sids:
             total += 1
-            _tally(_reap_session(tenant, sid, commit), sid, failed, deferred)
-    completed = total - len(failed) - len(deferred)
+            _tally(_reap_session(tenant, sid, commit), tenant, sid, failed, deferred)
+    nfailed = sum(len(v) for v in failed.values())
+    completed = total - nfailed - len(deferred)
     print(f"# {completed}/{total} session(s) {'reaped' if commit else 'ready to reap (dry-run)'}"
           f"{f', {len(deferred)} deferred to the next pass' if deferred else ''}", file=sys.stderr)
     if failed:
-        _die(f'{len(failed)} session(s) left cleanup incomplete; see preceding wizlab output, then retry with '
-             f'REAP_SESSIONS="{",".join(failed)}"')
+        # wizlab exit 3 is residue no pass can clear (wizlab.reap._reap_exit), so "retry" alone is wrong:
+        # the same pass fails nightly until the sid ages out, then the retained user is the only way back.
+        _die(f"{nfailed} session(s) left residue no pass can clear; see the wizlab lines above, remove it by "
+             f"hand, then finish with {_retry_hints(failed)}")
 
 
 if __name__ == "__main__":
