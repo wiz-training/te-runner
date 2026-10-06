@@ -59,11 +59,14 @@ class ReapOrdering(unittest.TestCase):
             with self.subTest(codes=codes), mock.patch.object(rp, "_wizlab", side_effect=codes) as wizlab:
                 self.assertEqual(rp._reap_session("T", "s1", True), want)
                 self.assertEqual([c.args[1:3] for c in wizlab.call_args_list], calls)
-        # The user's domain rides on both calls, or a lab on another domain reaps as "absent", done.
+        # --domain rides on user reap (Wiz audit-log performer lookup) but not user delete (Okta login
+        # is the session stem, no domain).
         with mock.patch.dict(rp.os.environ, {"REAP_DOMAIN": "x.io"}), \
              mock.patch.object(rp, "_wizlab", side_effect=(0, 0)) as wizlab:
             rp._reap_session("T", "s1", True)
-        self.assertEqual([c.args[-2:] for c in wizlab.call_args_list], [("--domain", "x.io")] * 2)
+        reap_args, delete_args = [list(c.args) for c in wizlab.call_args_list]
+        self.assertIn("--domain", reap_args)
+        self.assertNotIn("--domain", delete_args)
 
     def test_a_hung_wizlab_costs_one_session_not_the_run(self):
         # Unhandled, TimeoutExpired left main() by traceback: every later session and tenant was skipped
