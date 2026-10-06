@@ -44,8 +44,8 @@ def _okta_call(invoke_url, token, body):
 
 
 def _okta_login(args):
-    """Session stem as the Okta login email: lab-<session_id>@wizlabs.cloudseclabs.io."""
-    return f"{core._lab_stem(core._session_id(args))}@wizlabs.cloudseclabs.io"
+    """Session stem as the Okta login: lab-<session_id>. The router appends the domain."""
+    return core._lab_stem(core._session_id(args))
 
 
 def _gen_password():
@@ -108,15 +108,18 @@ def cmd_user_ensure(args):
         core.die(2, "--profile or LAB_PROFILE required")
     pwd = _gen_password()
     participant = os.getenv("INSTRUQT_PARTICIPANT_ID", "manual")
-    _okta_call(invoke_url, token, {
+    res = _okta_call(invoke_url, token, {
         "action": "create",
         "profile": profile,
         "login": login,
         "password": pwd,
         "participant_id": participant,
     })
-    core._emit(f"WIZ_USER={login}\nWIZ_PWD={pwd}\n")
-    print(f"user created: {login} (profile {profile})")
+    # The router appends the tenant's email domain; what it returns as `login` is what the learner
+    # signs in with. A router that returns nothing leaves the stem, which is still the reap key.
+    user = res.get("login") or login
+    core._emit(f"WIZ_USER={user}\nWIZ_PWD={pwd}\n")
+    print(f"user created: {user} (profile {profile})")
 
 
 def cmd_user_inspect(args):

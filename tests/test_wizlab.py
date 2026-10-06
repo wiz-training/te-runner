@@ -126,7 +126,7 @@ class FakeOkta:
         if action == "create":
             uid = f"oid-{len(self.users) + 1}"
             self.users.append({"login": login, "okta_user_id": uid})
-            return {"login": login, "okta_user_id": uid, "wiz_login_url": "https://wiz.io/login",
+            return {"login": f"{login}@x.io", "okta_user_id": uid, "wiz_login_url": "https://wiz.io/login",
                     "expires_at": "2099-01-01"}
         if action == "inspect":
             u = next((u for u in self.users if u["login"] == login), None)
@@ -486,7 +486,7 @@ class OktaContract(unittest.TestCase):
     inspect grades existence; delete is idempotent; any router error is 3."""
 
     ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "s1", **FakeOkta.ENV}
-    LOGIN = "lab-s1@wizlabs.cloudseclabs.io"
+    LOGIN = "lab-s1"
 
     def _run(self, fn, argv, okta, out=None):
         return exit_code(fn, argv, wiz=FakeWiz(), env=self.ENV, out=out, _okta_call=okta)
@@ -497,7 +497,8 @@ class OktaContract(unittest.TestCase):
         self.assertEqual(self._run(wz.cmd_user_ensure, ["--profile", "wiz-global-reader"], okta, out=out), 0)
         self.assertEqual(len(okta.users), 1)
         self.assertEqual(okta.users[0]["login"], self.LOGIN)
-        self.assertIn("WIZ_USER=" + self.LOGIN, out.getvalue())
+        # The published user is the email the router composed, not the stem wizlab sent.
+        self.assertIn("WIZ_USER=" + self.LOGIN + "@x.io", out.getvalue())
         self.assertRegex(out.getvalue(), r"WIZ_PWD=\S{8,}")
 
     def test_ensure_requires_profile(self):
