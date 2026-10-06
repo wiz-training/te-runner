@@ -44,8 +44,8 @@ def _okta_call(invoke_url, token, body):
 
 
 def _okta_login(args):
-    """Session stem as the Okta login: lab-<session_id> (lowercase alnum)."""
-    return core._lab_stem(core._session_id(args))
+    """Session stem as the Okta login email: lab-<session_id>@wizlabs.cloudseclabs.io."""
+    return f"{core._lab_stem(core._session_id(args))}@wizlabs.cloudseclabs.io"
 
 
 def _gen_password():
@@ -108,17 +108,14 @@ def cmd_user_ensure(args):
         core.die(2, "--profile or LAB_PROFILE required")
     pwd = _gen_password()
     participant = os.getenv("INSTRUQT_PARTICIPANT_ID", "manual")
-    res = _okta_call(invoke_url, token, {
+    _okta_call(invoke_url, token, {
         "action": "create",
         "profile": profile,
         "login": login,
         "password": pwd,
         "participant_id": participant,
     })
-    okta_user_id = res.get("okta_user_id")
-    if not okta_user_id:
-        core.die(3, f"Okta router returned no okta_user_id: {repr(res)[:300]}")
-    core._emit(f"WIZ_USER={login}\nWIZ_PWD={pwd}\nOKTA_USER_ID={okta_user_id}\n")
+    core._emit(f"WIZ_USER={login}\nWIZ_PWD={pwd}\n")
     print(f"user created: {login} (profile {profile})")
 
 

@@ -486,7 +486,7 @@ class OktaContract(unittest.TestCase):
     inspect grades existence; delete is idempotent; any router error is 3."""
 
     ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "s1", **FakeOkta.ENV}
-    LOGIN = "lab-s1"
+    LOGIN = "lab-s1@wizlabs.cloudseclabs.io"
 
     def _run(self, fn, argv, okta, out=None):
         return exit_code(fn, argv, wiz=FakeWiz(), env=self.ENV, out=out, _okta_call=okta)
@@ -499,7 +499,6 @@ class OktaContract(unittest.TestCase):
         self.assertEqual(okta.users[0]["login"], self.LOGIN)
         self.assertIn("WIZ_USER=" + self.LOGIN, out.getvalue())
         self.assertRegex(out.getvalue(), r"WIZ_PWD=\S{8,}")
-        self.assertIn("OKTA_USER_ID=oid-1", out.getvalue())
 
     def test_ensure_requires_profile(self):
         # No --profile and no LAB_PROFILE → invocation error 2
