@@ -1,4 +1,4 @@
-"""The per-lease Keycloak user behind Wiz SSO, and the tenant's login URL."""
+"""The per-lease Okta user behind Wiz SSO, and the tenant's login URL."""
 import json
 import os
 import secrets
@@ -7,111 +7,56 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import namedtuple
 
 from . import core
 
 
-# --- lab user (Keycloak): backs Wiz SSO for a learner. Realm/endpoint come from grader-only env,
-# never hardcoded. ---
-def _kc_env():
+# --- lab user (Okta via Workflows Router): backs Wiz SSO for a learner. ---
+def _okta_env():
     vals = {}
-    for k in ("LAB_KEYCLOAK_ENDPOINT", "LAB_KEYCLOAK_REALM", "LAB_KEYCLOAK_ADMIN_USER", "LAB_KEYCLOAK_ADMIN_PWD"):
+    for k in ("OKTA_WF_INVOKE_URL", "OKTA_WF_CLIENT_TOKEN"):
         v = os.getenv(k)
         if not v:
-            core.die(3, f"{k} not in environment (grader-only Keycloak secret; not wired?)")
+            core.die(3, f"{k} not in environment (Okta Workflows secret; not wired?)")
         vals[k] = v
-    return (
-        vals["LAB_KEYCLOAK_ENDPOINT"].rstrip("/"),
-        vals["LAB_KEYCLOAK_REALM"],
-        vals["LAB_KEYCLOAK_ADMIN_USER"],
-        vals["LAB_KEYCLOAK_ADMIN_PWD"],
+    return vals["OKTA_WF_INVOKE_URL"], vals["OKTA_WF_CLIENT_TOKEN"]
+
+
+def _okta_call(invoke_url, token, body):
+    """POST body to the Okta Workflows Router; returns the parsed response."""
+    req = urllib.request.Request(
+        invoke_url,
+        data=json.dumps(body).encode(),
+        headers={
+            "x-api-client-token": token,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
     )
-
-
-def _kc_token(endpoint, admin_user, admin_pwd):
-    res = core._post(
-        f"{endpoint}/realms/master/protocol/openid-connect/token",
-        urllib.parse.urlencode(
-            {"grant_type": "password", "client_id": "admin-cli", "username": admin_user, "password": admin_pwd}
-        ),
-        {"Content-Type": "application/x-www-form-urlencoded"},
-    )
-    tok = res.get("access_token")
-    if not tok:
-        core.die(3, "Keycloak admin token: no access_token returned")
-    return tok
-
-
-# The setup every `user` verb shares: grader-only env, the per-lease email, an admin token. `name`
-# is the firstName only `ensure` needs; inspect/delete unpack it to `_`.
-_KcSession = namedtuple("_KcSession", "endpoint realm token email name")
-
-
-def _kc_session(args):
-    endpoint, realm, admin_user, admin_pwd = _kc_env()
-    email, name = core._lab_user_email(args)
-    token = _kc_token(endpoint, admin_user, admin_pwd)
-    return _KcSession(endpoint, realm, token, email, name)
-
-
-def _kc_call(method, url, token, body=None):
-    headers = {"Authorization": f"Bearer {token}"}
-    data = None
-    if body is not None:
-        data = json.dumps(body).encode()
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
-            return r.status, r.read()
+            return json.loads(r.read())
     except urllib.error.HTTPError as e:
-        return e.code, e.read()
+        b = e.read().decode(errors="replace")[:500]
+        core.die(3, f"Okta Workflows HTTP {e.code}: {b}")
     except Exception as e:
-        core.die(3, f"Keycloak transport failure to {url}: {type(e).__name__}: {e}")
+        core.die(3, f"Okta Workflows transport failure: {type(e).__name__}: {e}")
 
 
-def _kc(method, url, token, payload=None, ok=(200,), what="Keycloak"):
-    """_kc_call whose status outside `ok` is an environment failure named by `what`; returns the body."""
-    status, body = _kc_call(method, url, token, payload)
-    if status not in ok:
-        core.die(3, f"{what} HTTP {status}: {body[:300]!r}")
-    return body
+def _okta_login(args):
+    """Session stem as the Okta login: lab-<session_id> (lowercase alnum)."""
+    return core._lab_stem(core._session_id(args))
 
 
-def _kc_user_id(endpoint, realm, token, email):
-    # `search` is a substring match: a prefix collision (bob@x vs bob@x.io) would return the wrong
-    # learner and a group-join/DELETE would hit them, so filter to an exact username/email and refuse
-    # to guess on >1.
-    q = urllib.parse.urlencode({"exact": "true", "briefRepresentation": "true", "search": email})
-    body = _kc("GET", f"{endpoint}/admin/realms/{realm}/users?{q}", token, what="Keycloak user lookup")
-    exact = [u for u in json.loads(body or b"[]") if email in (u.get("username"), u.get("email"))]
-    if len(exact) > 1:
-        core.die(3, f"{len(exact)} Keycloak users exactly match {email}; refusing to guess")
-    return exact[0]["id"] if exact else None
-
-
-def _kc_group_id(endpoint, realm, token, group):
-    q = urllib.parse.urlencode({"search": group, "exact": "true"})
-    body = _kc("GET", f"{endpoint}/admin/realms/{realm}/groups?{q}", token, what="Keycloak group lookup")
-    # `exact` on this endpoint is version-dependent, so == is ours: a join lands the learner in whatever
-    # group came first, and a wrong group is a wrong Wiz role for the whole play.
-    groups = [g for g in json.loads(body or b"[]") if g.get("name") == group]
-    if not groups:
-        core.die(3, f"Keycloak group '{group}' not found in realm '{realm}'")
-    return groups[0]["id"]
-
-
-def _gen_password(length=14):
-    # upper+lower+digit guaranteed so it clears a typical Keycloak policy.
-    pool = string.ascii_uppercase + string.ascii_lowercase + string.digits
-    chars = [
-        secrets.choice(string.ascii_uppercase),
-        secrets.choice(string.ascii_lowercase),
-        secrets.choice(string.digits),
-    ] + [secrets.choice(pool) for _ in range(length - 3)]
-    secrets.SystemRandom().shuffle(chars)
-    return "".join(chars)
+def _gen_password():
+    """20 chars; guaranteed upper/lower/digit/symbol for any Okta password policy."""
+    pool = string.ascii_letters + string.digits
+    return (
+        secrets.choice(string.ascii_uppercase)
+        + "".join(secrets.choice(pool) for _ in range(16))
+        + secrets.choice(string.digits)
+        + "!"
+    )
 
 
 # Per-tenant SSO constants that CANNOT be derived: the suffix Wiz appends to the tenant id in its
@@ -119,8 +64,8 @@ def _gen_password(length=14):
 # not stored here — one source, no drift. WIZ_<T>_COGNITO_SUFFIX / WIZ_<T>_SSO_CLIENT_ID override
 # so a new tenant is an env pair, like its credential, not an image release.
 _TENANT_SSO = {
-    "TBCMP": {"cognito_suffix": "34dq", "client_id": "4lgopniht2g4j58sirh4kh5gtl"},
-    "TE": {"cognito_suffix": "o8cy", "client_id": "54snbgo7lek43ct9ph3coc5484"},
+    "TBCMP": {"cognito_suffix": "34dq", "client_id": "4lgopniht2g4j58sirh4kh5gtl", "idp_name": "Okta"},
+    "TE": {"cognito_suffix": "o8cy", "client_id": "54snbgo7lek43ct9ph3coc5484", "idp_name": "Okta"},
 }
 
 
@@ -130,9 +75,9 @@ _COGNITO_REGION = "us-east-1"  # Wiz's own auth infrastructure, not the lab's cl
 def _wiz_login_url():
     """The tenant's IdP-initiated Cognito authorize URL, or None if it cannot be built.
 
-    A `lab_*` Keycloak user CANNOT sign in at app.wiz.io — that renders a real login page the account
+    A lab Okta user CANNOT sign in at app.wiz.io — that renders a real login page the account
     fails against, and the learner blames their creds. Only this IdP-init URL routes them straight
-    to the lab's Keycloak. Full-URL env overrides win so a track can pin it.
+    to the lab's Okta. Full-URL env overrides win so a track can pin it.
     """
     override = core._tenant_env("LOGIN_URL")
     if override:
@@ -140,6 +85,7 @@ def _wiz_login_url():
     sso = _TENANT_SSO.get(core._tenant(), {})
     suffix = core._tenant_env("COGNITO_SUFFIX") or sso.get("cognito_suffix")
     client_id = core._tenant_env("SSO_CLIENT_ID") or sso.get("client_id")
+    idp_name = core._tenant_env("SSO_IDP_NAME") or sso.get("idp_name", "Okta")
     if not suffix or not client_id:
         return None
     _tok, _dc, tid = core.token_and_dc()
@@ -148,85 +94,51 @@ def _wiz_login_url():
     callback = urllib.parse.quote(f"https://auth.app.wiz.io/api/oidc/idp-init-callback/{tid}", safe="")
     return (
         f"https://{tid}-{suffix}.auth.{_COGNITO_REGION}.amazoncognito.com"
-        f"/oauth2/authorize?response_type=code&identity_provider=Keycloak"
+        f"/oauth2/authorize?response_type=code&identity_provider={idp_name}"
         f"&client_id={client_id}&redirect_uri={callback}"
     )
 
 
-def _publish_user(email, pwd):
-    # Instruqt 2.0 replaces 1.0 agent vars: an `exec` resource writes KEY=value to $EXEC_OUTPUT,
-    # read as resource.exec.<name>.output.<KEY> and rendered into a `note` via Handlebars. When not
-    # under exec (grader manual run / acceptance), print so a human can use the creds. The login URL is
-    # NOT emitted here: it is a per-tenant constant, not per-learner, so labs pin it as a note literal
-    # (regenerate with `wizlab user login-url`); emitting a new key here would deadlock note decode.
-    out = os.getenv("EXEC_OUTPUT")
-    if out:
-        with open(out, "a") as f:
-            f.write(f"WIZ_USER={email}\nWIZ_PWD={pwd}\n")
-        print("published WIZ_USER/WIZ_PWD to $EXEC_OUTPUT")
-    else:
-        print(f"WIZ_USER={email}")
-        print(f"WIZ_PWD={pwd}")
-
-
 def cmd_user_ensure(args):
-    """Create (or password-reset) the per-lease Keycloak user backing Wiz SSO, join it to the RBAC
-    group, and publish WIZ_USER/WIZ_PWD. Reset on an existing user: Keycloak never returns the old
-    password and the learner needs a working value."""
-    endpoint, realm, token, email, name = _kc_session(args)
-    group = args.group
+    """Create the per-lease Okta user backing Wiz SSO and publish WIZ_USER/WIZ_PWD/OKTA_USER_ID."""
+    invoke_url, token = _okta_env()
+    login = _okta_login(args)
+    profile = args.profile or os.getenv("LAB_PROFILE")
+    if not profile:
+        core.die(2, "--profile or LAB_PROFILE required")
     pwd = _gen_password()
-    uid = _kc_user_id(endpoint, realm, token, email)
-    if uid is None:
-        _kc("POST", f"{endpoint}/admin/realms/{realm}/users", token, {
-            "email": email,
-            "username": email,
-            "firstName": name,
-            "lastName": "Student",
-            "emailVerified": True,
-            "enabled": True,
-            "requiredActions": [],
-            "credentials": [{"type": "password", "value": pwd, "temporary": False}],
-        }, ok=(201,), what="create user")
-        uid = _kc_user_id(endpoint, realm, token, email)
-        if uid is None:
-            core.die(3, f"created {email} but Keycloak does not return it on re-lookup")
-        action = "created"
-    else:
-        _kc("PUT", f"{endpoint}/admin/realms/{realm}/users/{uid}/reset-password", token,
-            {"type": "password", "value": pwd, "temporary": False}, ok=(200, 204), what="reset-password")
-        action = "reset"
-    gid = _kc_group_id(endpoint, realm, token, group)
-    _kc("PUT", f"{endpoint}/admin/realms/{realm}/users/{uid}/groups/{gid}", token, ok=(200, 204), what="group-join")
-    _publish_user(email, pwd)
-    print(f"user {action}: {email} (group {group})")
+    participant = os.getenv("INSTRUQT_PARTICIPANT_ID", "manual")
+    res = _okta_call(invoke_url, token, {
+        "action": "create",
+        "profile": profile,
+        "login": login,
+        "password": pwd,
+        "participant_id": participant,
+    })
+    okta_user_id = res.get("okta_user_id")
+    if not okta_user_id:
+        core.die(3, f"Okta router returned no okta_user_id: {repr(res)[:300]}")
+    core._emit(f"WIZ_USER={login}\nWIZ_PWD={pwd}\nOKTA_USER_ID={okta_user_id}\n")
+    print(f"user created: {login} (profile {profile})")
 
 
 def cmd_user_inspect(args):
-    endpoint, realm, token, email, _ = _kc_session(args)
-    group = args.group
-    uid = _kc_user_id(endpoint, realm, token, email)
-    if uid is None:
-        print(f"no Keycloak user {email}")
+    """Check that the per-lease Okta user exists. Exit 0 if present, 1 if absent."""
+    invoke_url, token = _okta_env()
+    login = _okta_login(args)
+    res = _okta_call(invoke_url, token, {"action": "inspect", "login": login})
+    if not res.get("okta_user_id"):
+        print(f"no Okta user for {login}")
         sys.exit(1)
-    body = _kc("GET", f"{endpoint}/admin/realms/{realm}/users/{uid}/groups", token, what=f"Keycloak groups of {email}")
-    groups = [g.get("name") for g in json.loads(body or b"[]")]
-    if group not in groups:
-        print(f"user {email} exists but is not in group {group}; groups={groups}")
-        sys.exit(1)
-    print(f"user {email} exists and is in group {group}")
+    print(f"user {login} exists")
 
 
 def cmd_user_delete(args):
-    endpoint, realm, token, email, _ = _kc_session(args)
-    uid = _kc_user_id(endpoint, realm, token, email)
-    if uid is None:
-        print(f"no Keycloak user {email}; nothing to delete")
-        return
-    status, body = _kc_call("DELETE", f"{endpoint}/admin/realms/{realm}/users/{uid}", token)
-    if status not in (204, 404):
-        core.die(3, f"delete user HTTP {status}: {body[:300]!r}")
-    print(f"deleted Keycloak user {email}")
+    """Teardown the per-lease Okta user by login. Idempotent: absent is OK."""
+    invoke_url, token = _okta_env()
+    login = _okta_login(args)
+    _okta_call(invoke_url, token, {"action": "teardown", "login": login})
+    print(f"teardown sent for {login}")
 
 
 def cmd_user_login_url(args):

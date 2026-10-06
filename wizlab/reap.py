@@ -21,7 +21,7 @@ REMOVED, ABSENT, DEFERRED, UNKNOWN, FAILED = "removed", "absent", "deferred", "u
 def _reap_exit(tally):
     """Answers one question: must a human come back? 3 is cleanup a later pass cannot finish on its own;
     4 is a teardown still in flight, which the rolling window brings the next daily pass back to.
-    Anything but 0 keeps the session's Keycloak user, the only handle back to the leftovers — so
+    Anything but 0 keeps the session's Okta user, the only handle back to the leftovers — so
     collapsing 3 and 4 made a multi-pass Outpost uninstall page as a failure every night."""
     if tally[FAILED]:
         return 3

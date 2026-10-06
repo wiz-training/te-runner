@@ -106,45 +106,35 @@ class FakeWiz:
         return [v for f, v in self.calls if f == field]
 
 
-class FakeKeycloak:
-    """A realm behind _kc_call. `users` are the admin API's user records; membership lives in each
-    record's "groups". `fail` makes every call answer that status. `calls` holds (method, path)."""
-    ENV: typing.ClassVar = {"LAB_KEYCLOAK_ENDPOINT": "https://kc", "LAB_KEYCLOAK_REALM": "wiz",
-                            "LAB_KEYCLOAK_ADMIN_USER": "admin", "LAB_KEYCLOAK_ADMIN_PWD": "pw"}
+class FakeOkta:
+    """An Okta Workflows Router behind _okta_call. `users` are records with {login, okta_user_id}.
+    `fail` makes every call raise a WizlabError(3). `calls` holds each request body."""
+    ENV: typing.ClassVar = {
+        "OKTA_WF_INVOKE_URL": "https://okta.wf/invoke",
+        "OKTA_WF_CLIENT_TOKEN": "tok123",
+    }
 
-    def __init__(self, users=(), groups=("global-contributor",), fail=None):
-        self.users, self.groups, self.fail, self.calls = [dict(u) for u in users], list(groups), fail, []
+    def __init__(self, users=(), fail=None):
+        self.users, self.fail, self.calls = [dict(u) for u in users], fail, []
 
-    def _user(self, uid):
-        return next((u for u in self.users if u["id"] == uid), None)
-
-    def __call__(self, method, url, token, body=None):
-        u = urllib.parse.urlparse(url)
-        parts = u.path.split("/admin/realms/", 1)[1].split("/")[1:]
-        params = dict(urllib.parse.parse_qsl(u.query))
-        self.calls.append((method, "/".join(parts)))
+    def __call__(self, invoke_url, token, body):
+        self.calls.append(dict(body))
         if self.fail:
-            return self.fail, b"boom"
-        if parts == ["users"] and method == "GET":
-            hit = [x for x in self.users if params.get("search") in (x["username"], x["email"])]
-            return 200, json.dumps(hit).encode()
-        if parts == ["users"] and method == "POST":
-            self.users.append({"id": f"u{len(self.users) + 1}", "username": body["email"], "email": body["email"]})
-            return 201, b""
-        if parts == ["groups"] and method == "GET":
-            hit = [{"id": f"g-{g}", "name": g} for g in self.groups if g == params.get("search")]
-            return 200, json.dumps(hit).encode()
-        if len(parts) == 2 and method == "DELETE":
-            self.users = [x for x in self.users if x["id"] != parts[1]]
-            return 204, b""
-        if len(parts) == 3 and parts[2] == "reset-password":
-            return 204, b""
-        if len(parts) == 4 and parts[2] == "groups" and method == "PUT":
-            self._user(parts[1]).setdefault("groups", []).append(parts[3][2:])
-            return 204, b""
-        if len(parts) == 3 and parts[2] == "groups" and method == "GET":
-            return 200, json.dumps([{"name": g} for g in self._user(parts[1]).get("groups", [])]).encode()
-        return 404, b"unrouted"
+            raise wz.WizlabError(3, "Okta Workflows transport failure: boom")
+        action = body.get("action")
+        login = body.get("login")
+        if action == "create":
+            uid = f"oid-{len(self.users) + 1}"
+            self.users.append({"login": login, "okta_user_id": uid})
+            return {"login": login, "okta_user_id": uid, "wiz_login_url": "https://wiz.io/login",
+                    "expires_at": "2099-01-01"}
+        if action == "inspect":
+            u = next((u for u in self.users if u["login"] == login), None)
+            return {"okta_user_id": u["okta_user_id"]} if u else {}
+        if action == "teardown":
+            self.users = [u for u in self.users if u["login"] != login]
+            return {"status": "ok"}
+        return {}
 
 
 def parsed(fn, argv):
@@ -264,7 +254,7 @@ class InspectContract(unittest.TestCase):
                                  "present": {"outposts": _conn(OUTPOST)}, "absent": [{"outposts": _conn()}]},
     }
     # Graded off another system, each in its own class.
-    NOT_WIZ: typing.ClassVar = {("role", "inspect"): "CSP CLIs", ("user", "inspect"): "Keycloak"}
+    NOT_WIZ: typing.ClassVar = {("role", "inspect"): "CSP CLIs", ("user", "inspect"): "Okta"}
 
     def _code(self, verb, argv, fields):
         with mock.patch.object(wz.time, "sleep", lambda *_: None):
@@ -324,7 +314,7 @@ class EnsureContract(unittest.TestCase):
                                 "allowedRegions": ["us-east-1"], "config": {"roleARN": "a"}}
     NOT_WIZ: typing.ClassVar = {("role", "ensure"): "CSP CLIs",
                                 ("k8sconnector", "ensure"): "aws + kubectl mint the token, K8sConnectorGrading",
-                                ("user", "ensure"): "Keycloak, KeycloakContract",
+                                ("user", "ensure"): "Okta, OktaContract",
                                 ("workflow-run", "ensure"): "fires a test run, converges nothing"}
 
     @classmethod
@@ -452,7 +442,7 @@ class DeleteContract(unittest.TestCase):
     a tenant error → 3 and no mutation."""
 
     ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "x"}
-    NOT_WIZ: typing.ClassVar = {("user", "delete"): "Keycloak, KeycloakContract"}
+    NOT_WIZ: typing.ClassVar = {("user", "delete"): "Okta, OktaContract"}
     ROWS: typing.ClassVar = {
         ("connector", "delete"): {"argv": ["--account-id", "111111111111"], "field": "connectors",
                                   "node": InspectContract.CONNECTOR, "deletes": ["deleteConnector"]},
@@ -491,62 +481,57 @@ class DeleteContract(unittest.TestCase):
                 self.assertEqual((code, _mutations(wiz)), (3, []))
 
 
-class KeycloakContract(unittest.TestCase):
-    """The user verbs against a realm: ensure creates or resets and always joins the group and publishes
-    credentials; inspect grades membership; delete is idempotent; any unexpected status is 3."""
+class OktaContract(unittest.TestCase):
+    """The user verbs against the Okta Workflows Router: ensure creates and publishes credentials;
+    inspect grades existence; delete is idempotent; any router error is 3."""
 
-    ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "s1", **FakeKeycloak.ENV}
-    EMAIL = "lab-s1@titra-labs.ai"
+    ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "s1", **FakeOkta.ENV}
+    LOGIN = "lab-s1"
 
-    def _run(self, fn, argv, kc, out=None):
-        return exit_code(fn, argv, wiz=FakeWiz(), env=self.ENV, out=out, _kc_call=kc)
+    def _run(self, fn, argv, okta, out=None):
+        return exit_code(fn, argv, wiz=FakeWiz(), env=self.ENV, out=out, _okta_call=okta)
 
-    def test_ensure_creates_then_resets_and_publishes_both_times(self):
-        kc = FakeKeycloak()
-        for expect in ("POST users", "PUT users/u1/reset-password"):
-            out = io.StringIO()
-            self.assertEqual(self._run(wz.cmd_user_ensure, [], kc, out=out), 0)
-            self.assertIn(expect, [f"{m} {p}" for m, p in kc.calls])
-            self.assertIn("WIZ_USER=" + self.EMAIL, out.getvalue())
-            self.assertRegex(out.getvalue(), r"WIZ_PWD=\S{8,}")
-        self.assertEqual(kc.users[0]["groups"], ["global-contributor", "global-contributor"])
+    def test_ensure_creates_and_publishes_credentials(self):
+        okta = FakeOkta()
+        out = io.StringIO()
+        self.assertEqual(self._run(wz.cmd_user_ensure, ["--profile", "wiz-global-reader"], okta, out=out), 0)
+        self.assertEqual(len(okta.users), 1)
+        self.assertEqual(okta.users[0]["login"], self.LOGIN)
+        self.assertIn("WIZ_USER=" + self.LOGIN, out.getvalue())
+        self.assertRegex(out.getvalue(), r"WIZ_PWD=\S{8,}")
+        self.assertIn("OKTA_USER_ID=oid-1", out.getvalue())
 
-    def test_ensure_refuses_to_join_a_group_when_the_created_user_is_not_found(self):
-        # A None re-lookup after a 201 used to PUT to users/None/groups/<gid>.
-        kc = FakeKeycloak()
-        kc.users = None  # a POST that "succeeds" but leaves nothing to find
+    def test_ensure_requires_profile(self):
+        # No --profile and no LAB_PROFILE → invocation error 2
+        okta = FakeOkta()
+        env = {k: v for k, v in self.ENV.items() if k != "LAB_PROFILE"}
+        self.assertEqual(exit_code(wz.cmd_user_ensure, [], _okta_call=okta, env=env), 2)
 
-        def kc_call(method, url, token, body=None):
-            kc.calls.append((method, url))
-            return (201, b"") if method == "POST" else (200, b"[]")
-        self.assertEqual(self._run(wz.cmd_user_ensure, [], kc_call), 3)
-        self.assertEqual([m for m, _ in kc.calls if m != "GET"], ["POST"])
-        self.assertFalse([u for _, u in kc.calls if "/users/None/" in u])
+    def test_ensure_accepts_lab_profile_env(self):
+        okta = FakeOkta()
+        env = {**self.ENV, "LAB_PROFILE": "wiz-global-reader"}
+        self.assertEqual(exit_code(wz.cmd_user_ensure, [], _okta_call=okta, env=env, wiz=FakeWiz()), 0)
 
-    def test_inspect_grades_membership(self):
-        member = {"id": "u1", "username": self.EMAIL, "email": self.EMAIL, "groups": ["global-contributor"]}
-        for users, want in [([member], 0), ([dict(member, groups=[])], 1), ([], 1)]:
+    def test_inspect_grades_existence(self):
+        existing = [{"login": self.LOGIN, "okta_user_id": "oid-1"}]
+        for users, want in [(existing, 0), ([], 1)]:
             with self.subTest(users=users):
-                self.assertEqual(self._run(wz.cmd_user_inspect, [], FakeKeycloak(users)), want)
+                self.assertEqual(self._run(wz.cmd_user_inspect, [], FakeOkta(users)), want)
 
     def test_delete_is_idempotent(self):
-        kc = FakeKeycloak([{"id": "u1", "username": self.EMAIL, "email": self.EMAIL}])
-        self.assertEqual(self._run(wz.cmd_user_delete, [], kc), 0)
-        self.assertIn(("DELETE", "users/u1"), kc.calls)
-        self.assertEqual(self._run(wz.cmd_user_delete, [], kc), 0)
-        self.assertEqual([c for c in kc.calls if c[0] == "DELETE"], [("DELETE", "users/u1")])
+        okta = FakeOkta([{"login": self.LOGIN, "okta_user_id": "oid-1"}])
+        self.assertEqual(self._run(wz.cmd_user_delete, [], okta), 0)
+        self.assertEqual(okta.users, [])
+        self.assertEqual(self._run(wz.cmd_user_delete, [], okta), 0)
 
-    def test_an_unexpected_status_is_environment_3(self):
-        for fn in (wz.cmd_user_ensure, wz.cmd_user_inspect, wz.cmd_user_delete):
+    def test_a_router_error_is_environment_3(self):
+        for fn, argv in (
+            (wz.cmd_user_ensure, ["--profile", "wiz-global-reader"]),
+            (wz.cmd_user_inspect, []),
+            (wz.cmd_user_delete, []),
+        ):
             with self.subTest(fn=fn.__name__):
-                self.assertEqual(self._run(fn, [], FakeKeycloak(fail=503)), 3)
-
-    def test_a_duplicate_exact_match_is_never_guessed(self):
-        # `search` is a substring match; two exact hits mean the realm is inconsistent, not that the
-        # first one is ours.
-        dup = [{"id": "a", "username": self.EMAIL, "email": self.EMAIL},
-               {"id": "b", "username": self.EMAIL, "email": self.EMAIL}]
-        self.assertEqual(self._run(wz.cmd_user_delete, [], FakeKeycloak(dup)), 3)
+                self.assertEqual(self._run(fn, argv, FakeOkta(fail=True)), 3)
 
 
 class AuthorTools(unittest.TestCase):
@@ -951,13 +936,13 @@ class Naming(unittest.TestCase):
         self.assertEqual(wz._lab_stem("abc123"), "lab-abc123")
 
     def test_session_id_from_flag_then_env(self):
-        self.assertEqual(wz._session_id(wz.parse(("user", "inspect"), ["--session", "flagid"])), "flagid")
+        self.assertEqual(wz._session_id(wz.parse(("user", "delete"), ["--session", "flagid"])), "flagid")
         with mock.patch.dict(wz.os.environ, {"INSTRUQT_SESSION_ID": "envid"}, clear=False):
-            self.assertEqual(wz._session_id(wz.parse(("user", "inspect"), [])), "envid")
+            self.assertEqual(wz._session_id(wz.parse(("user", "delete"), [])), "envid")
 
     def test_session_id_missing_is_invocation_error(self):
         with mock.patch.dict(wz.os.environ, {}, clear=True), exits() as cm:
-            wz._session_id(wz.parse(("user", "inspect"), []))
+            wz._session_id(wz.parse(("user", "delete"), []))
         self.assertEqual(cm.code, 2)
 
     def test_tenant_keyed_env_wins_over_the_tenant_less_name(self):
@@ -972,7 +957,7 @@ class Naming(unittest.TestCase):
             self.assertEqual(wz._named(wz.parse(("sensor", "delete"), argv), "-cli"), want)
 
     def test_user_email_keyed_on_session(self):
-        args = wz.parse(("user", "inspect"), ["--session", "s1"])
+        args = wz.parse(("user", "reap"), ["--session", "s1"])
         self.assertEqual(wz._lab_user_email(args)[0], "lab-s1@titra-labs.ai")
 
 
@@ -1049,7 +1034,7 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         ("workflow-run", "ensure"): None,   # a test run, not a resource
         ("policy", "ensure"): None,         # shared persistent fixture, never session-scoped
         ("role", "ensure"): None,           # AWS IAM in the lease account, which dies with the lease
-        ("user", "ensure"): None,           # Keycloak; `user delete` is the inverse the reaper calls
+        ("user", "ensure"): None,           # Okta; `user delete` is the inverse the reaper calls
     }
 
     def test_every_ensure_verb_names_what_the_sweep_reaches(self):
@@ -1261,15 +1246,6 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         self.assertIs(wz._reap_handler("Outpost")["deleter"], wz._reap_outpost)
         self.assertIsNone(wz._reap_handler("Report")["deleter"])
 
-    def test_kc_session_bundles_setup_in_field_order(self):
-        # The three user verbs unpack this positionally, so field ORDER is the contract: a swap of
-        # token/email would silently send the token as the lookup key.
-        with mock.patch.object(_owner("_kc_env"), "_kc_env", return_value=("http://kc", "realm", "admin", "pw")), \
-             mock.patch.object(_owner("_kc_token"), "_kc_token", return_value="tok"):
-            s = wz._kc_session(wz.parse(("user", "inspect"), ["--session", "s1"]))
-        self.assertEqual((s.endpoint, s.realm, s.token), ("http://kc", "realm", "tok"))
-        self.assertEqual((s.email, s.name), ("lab-s1@titra-labs.ai", "lab-s1"))
-        self.assertEqual(tuple(s), ("http://kc", "realm", "tok", "lab-s1@titra-labs.ai", "lab-s1"))
 
 class Pagination(unittest.TestCase):
     """Every lookup that feeds a delete or an ==1 guard walks the whole connection, and a walk it cannot

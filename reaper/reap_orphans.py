@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Out-of-band reaper. Per tenant: ask Instruqt labPlayReports for STOPPED lab sessions (tagged
-tid:<tenant>), then reap each session's Wiz footprint + Keycloak user via wizlab, keyed on the
+tid:<tenant>), then reap each session's Wiz footprint + Okta user via wizlab, keyed on the
 session id (objects are named lab-<session_id>). DRY-RUN by default; --commit deletes.
 
 Stopped is Instruqt's own done-signal (immune to long/paused labs). The session id is the join:
-it's the labPlayReports id AND the naming stem. No account, no Keycloak attributes, no age heuristic.
+it's the labPlayReports id AND the naming stem. No account, no Okta attributes, no age heuristic.
 
 Env: INSTRUQT_TOKEN (API key); REAP_TENANTS, the comma-separated tenant keys to sweep (default TBCMP);
-for --commit also WIZ_<TENANT>_CLIENT_ID/SECRET per listed tenant + LAB_KEYCLOAK_*. REAP_DOMAIN is the
-Keycloak user's domain when labs do not use wizlab's default: unset, a user on another domain is
-"absent" and the reap reads as done.
+for --commit also WIZ_<TENANT>_CLIENT_ID/SECRET per listed tenant + OKTA_WF_INVOKE_URL/CLIENT_TOKEN.
+REAP_DOMAIN is the Wiz audit-log performer domain when labs do not use wizlab's default: unset, a
+performer on another domain is "absent" and the Wiz footprint reap reads as done.
 """
 import json
 import os
@@ -129,7 +129,7 @@ def _reap_session(tenant, sid, commit):
         # handle stays until a pass proves the footprint gone.
         print(f"reap_orphans: retaining lab-{sid}@ because Wiz cleanup is incomplete", file=sys.stderr)
         return DEFERRED if rc == 4 else FAILED
-    return DONE if _wizlab(tenant, "user", "delete", "--session", sid, *_domain_args()) == 0 else FAILED
+    return DONE if _wizlab(tenant, "user", "delete", "--session", sid) == 0 else FAILED
 
 
 def _tally(outcome, tenant, sid, failed, deferred):
@@ -141,7 +141,7 @@ def _tally(outcome, tenant, sid, failed, deferred):
 
 def _retry_hints(failed):
     """One line per tenant: REAP_SESSIONS reaps under REAP_SESSIONS_TENANT, so a hint naming only the
-    sids retries a TE session under TBCMP, finds nothing, deletes the Keycloak user and loses the handle."""
+    sids retries a TE session under TBCMP, finds nothing, deletes the Okta user and loses the handle."""
     return "; ".join(f'REAP_SESSIONS_TENANT={t} REAP_SESSIONS="{",".join(sids)}"' for t, sids in failed.items())
 
 
