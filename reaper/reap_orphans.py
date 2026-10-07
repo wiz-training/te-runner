@@ -8,8 +8,9 @@ it's the labPlayReports id AND the naming stem. No account, no Okta attributes, 
 
 Env: INSTRUQT_TOKEN (API key); REAP_TENANTS, the comma-separated tenant keys to sweep (default TBCMP);
 for --commit also WIZ_<TENANT>_CLIENT_ID/SECRET per listed tenant + OKTA_WF_INVOKE_URL/CLIENT_TOKEN.
-REAP_DOMAIN is the Wiz audit-log performer domain when labs do not use wizlab's default: unset, a
-performer on another domain is "absent" and the Wiz footprint reap reads as done.
+REAP_DOMAIN is the Wiz audit-log performer domain when labs do not use wizlab's default
+(wizlabs.cloudseclabs.io): unset, a performer on another domain is "absent" and the Wiz footprint reap
+reads as done.
 """
 import json
 import os
@@ -129,6 +130,8 @@ def _reap_session(tenant, sid, commit):
         # handle stays until a pass proves the footprint gone.
         print(f"reap_orphans: retaining lab-{sid}@ because Wiz cleanup is incomplete", file=sys.stderr)
         return DEFERRED if rc == 4 else FAILED
+    # `user delete` is a no-op since Okta expires lab users itself; it stays as the last step so the
+    # log still shows the session closed out.
     return DONE if _wizlab(tenant, "user", "delete", "--session", sid) == 0 else FAILED
 
 

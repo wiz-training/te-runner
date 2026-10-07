@@ -83,7 +83,7 @@ _SWITCH = {"action": "store_true"}
 _S = {"--session": {}}
 
 
-_U = {**_S, "--domain": {"default": "titra-labs.ai"}}
+_U = {**_S, "--domain": {"default": "wizlabs.cloudseclabs.io"}}
 
 
 # aws first so every pre-GCP lab keeps working unchanged. The default is also the trap it replaced:

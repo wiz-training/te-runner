@@ -131,9 +131,6 @@ class FakeOkta:
         if action == "inspect":
             u = next((u for u in self.users if u["login"] == login), None)
             return {"okta_user_id": u["okta_user_id"]} if u else {}
-        if action == "teardown":
-            self.users = [u for u in self.users if u["login"] != login]
-            return {"status": "ok"}
         return {}
 
 
@@ -483,7 +480,7 @@ class DeleteContract(unittest.TestCase):
 
 class OktaContract(unittest.TestCase):
     """The user verbs against the Okta Workflows Router: ensure creates and publishes credentials;
-    inspect grades existence; delete is idempotent; any router error is 3."""
+    inspect grades existence; delete is a no-op; any router error is 3."""
 
     ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "s1", **FakeOkta.ENV}
     LOGIN = "lab-s1"
@@ -518,17 +515,17 @@ class OktaContract(unittest.TestCase):
             with self.subTest(users=users):
                 self.assertEqual(self._run(wz.cmd_user_inspect, [], FakeOkta(users)), want)
 
-    def test_delete_is_idempotent(self):
+    def test_delete_calls_nothing_and_needs_no_credential(self):
+        # Okta expires its own lab users; the reaper runs this without OKTA_WF_* in its env.
         okta = FakeOkta([{"login": self.LOGIN, "okta_user_id": "oid-1"}])
-        self.assertEqual(self._run(wz.cmd_user_delete, [], okta), 0)
-        self.assertEqual(okta.users, [])
-        self.assertEqual(self._run(wz.cmd_user_delete, [], okta), 0)
+        env = {"INSTRUQT_SESSION_ID": "s1"}
+        self.assertEqual(exit_code(wz.cmd_user_delete, [], env=env, _okta_call=okta), 0)
+        self.assertEqual(okta.calls, [])
 
     def test_a_router_error_is_environment_3(self):
         for fn, argv in (
             (wz.cmd_user_ensure, ["--profile", "wiz-global-reader"]),
             (wz.cmd_user_inspect, []),
-            (wz.cmd_user_delete, []),
         ):
             with self.subTest(fn=fn.__name__):
                 self.assertEqual(self._run(fn, argv, FakeOkta(fail=True)), 3)
@@ -958,7 +955,7 @@ class Naming(unittest.TestCase):
 
     def test_user_email_keyed_on_session(self):
         args = wz.parse(("user", "reap"), ["--session", "s1"])
-        self.assertEqual(wz._lab_user_email(args)[0], "lab-s1@titra-labs.ai")
+        self.assertEqual(wz._lab_user_email(args)[0], "lab-s1@wizlabs.cloudseclabs.io")
 
 
 class ConnectorAndReaperSafety(unittest.TestCase):

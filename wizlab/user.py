@@ -134,11 +134,11 @@ def cmd_user_inspect(args):
 
 
 def cmd_user_delete(args):
-    """Teardown the per-lease Okta user by login. Idempotent: absent is OK."""
-    invoke_url, token = _okta_env()
-    login = _okta_login(args)
-    _okta_call(invoke_url, token, {"action": "teardown", "login": login})
-    print(f"teardown sent for {login}")
+    """A no-op that exits 0: Okta expires lab users on its own schedule (its Expire One / Expired
+    Sweep flows), so there is nothing for a lab or the reaper to tear down. The verb stays because
+    reap.sh and the reaper call it as the last step; needing no Okta credential here is what lets the
+    reaper run without them. Operator decision, 2026-10-07."""
+    print(f"user {_okta_login(args)}: left to Okta's expiry flows; nothing to delete")
 
 
 def cmd_user_login_url(args):
