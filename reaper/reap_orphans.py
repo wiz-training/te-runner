@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Out-of-band reaper. Per tenant: ask Instruqt labPlayReports for STOPPED lab sessions (tagged
-tid:<tenant>), then reap each session's Wiz footprint + Okta user via wizlab, keyed on the
-session id (objects are named lab-<session_id>). DRY-RUN by default; --commit deletes.
+tid:<tenant>), then reap each session's Wiz footprint and the Wiz user its SSO login minted, via
+wizlab, keyed on the session id (objects are named lab-<session_id>). DRY-RUN by default; --commit
+deletes.
 
 Stopped is Instruqt's own done-signal (immune to long/paused labs). The session id is the join:
 it's the labPlayReports id AND the naming stem. No account, no Okta attributes, no age heuristic.
 
 Env: INSTRUQT_TOKEN (API key); REAP_TENANTS, the comma-separated tenant keys to sweep (default TBCMP);
-for --commit also WIZ_<TENANT>_CLIENT_ID/SECRET per listed tenant + OKTA_WF_INVOKE_URL/CLIENT_TOKEN.
-REAP_DOMAIN is the Wiz audit-log performer domain when labs do not use wizlab's default
-(wizlabs.cloudseclabs.io): unset, a performer on another domain is "absent" and the Wiz footprint reap
-reads as done.
+for --commit also WIZ_<TENANT>_CLIENT_ID/SECRET per listed tenant. REAP_DOMAIN is the login's email
+domain (the audit-log performer and the Wiz user record) when labs do not use wizlab's default
+(wizlabs.cloudseclabs.io): unset, a login on another domain is "absent", the footprint reap reads as
+done and its Wiz user stays.
 """
 import json
 import os
@@ -130,9 +131,8 @@ def _reap_session(tenant, sid, commit):
         # handle stays until a pass proves the footprint gone.
         print(f"reap_orphans: retaining lab-{sid}@ because Wiz cleanup is incomplete", file=sys.stderr)
         return DEFERRED if rc == 4 else FAILED
-    # `user delete` is a no-op since Okta expires lab users itself; it stays as the last step so the
-    # log still shows the session closed out.
-    return DONE if _wizlab(tenant, "user", "delete", "--session", sid) == 0 else FAILED
+    # Okta expires the login itself; `user delete` removes the Wiz record its SSO sign-in minted.
+    return DONE if _wizlab(tenant, "user", "delete", "--session", sid, *_domain_args()) == 0 else FAILED
 
 
 def _tally(outcome, tenant, sid, failed, deferred):

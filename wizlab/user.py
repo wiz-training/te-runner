@@ -133,12 +133,35 @@ def cmd_user_inspect(args):
     print(f"user {login} exists")
 
 
+# Wiz's own record of the login, minted by the first SSO sign-in as `<idp>_<email>` and kept after the
+# Okta login expires. `search` is a substring filter, so the exact email is the caller's. deleteUser is
+# a soft delete: the record stays listed as status DELETED, and a second deleteUser on it is an opaque
+# INTERNAL error, so a DELETED record is absent here.
+USERS_Q = """query LabUsers($search: String, $after: String) {
+  users(first: 100, after: $after, filterBy: { search: $search }) {
+    nodes { id email status identityProviderTypeV2 }
+    pageInfo { hasNextPage endCursor }
+  }
+}"""
+
+
+def _wiz_users(email):
+    return [n for n in core._all_nodes(USERS_Q, {"search": email}, "users")
+            if (n.get("email") or "").lower() == email.lower() and n.get("status") != "DELETED"]
+
+
 def cmd_user_delete(args):
-    """A no-op that exits 0: Okta expires lab users on its own schedule (its Expire One / Expired
-    Sweep flows), so there is nothing for a lab or the reaper to tear down. The verb stays because
-    reap.sh and the reaper call it as the last step; needing no Okta credential here is what lets the
-    reaper run without them. Operator decision, 2026-10-07."""
-    print(f"user {_okta_login(args)}: left to Okta's expiry flows; nothing to delete")
+    """Delete the Wiz user record(s) for the session's login, lab-<sid>@--domain. Okta expires the login
+    itself (its Expire One / Expired Sweep flows), so this reaches Wiz, never the router: the record its
+    first SSO sign-in minted outlives the login until something deletes it. Idempotent: absent is OK."""
+    email, _stem = core._lab_user_email(args)
+    users = _wiz_users(email)
+    if not users:
+        print(f"no Wiz user for {email}; nothing to delete")
+        return
+    for u in users:
+        core.api(core._delete_doc("deleteUser"), {"id": u["id"]})
+        print(f"deleted Wiz user {u['id']} ({u.get('identityProviderTypeV2')})")
 
 
 def cmd_user_login_url(args):

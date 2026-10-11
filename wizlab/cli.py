@@ -145,7 +145,7 @@ FLAGS = {
     ("role", "ensure"): {**_CLOUD, "--external-id": {}, "--role-name": {}},
     ("user", "ensure"): {**_S, "--profile": {}},
     ("user", "inspect"): _S,
-    ("user", "delete"): _S,
+    ("user", "delete"): _U,
     ("user", "login-url"): {},
     ("wiz", "tenant"): {},
     ("user", "reap"): {**_U, "--commit": _SWITCH, "--email": {}, "--last-min": _int(1440)},

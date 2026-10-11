@@ -439,7 +439,8 @@ class DeleteContract(unittest.TestCase):
     a tenant error → 3 and no mutation."""
 
     ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "x"}
-    NOT_WIZ: typing.ClassVar = {("user", "delete"): "Okta, OktaContract"}
+    USER: typing.ClassVar = {"id": "okta_lab-x@wizlabs.cloudseclabs.io", "email": "lab-x@wizlabs.cloudseclabs.io",
+                             "status": "ACTIVE", "identityProviderTypeV2": "SSO"}
     ROWS: typing.ClassVar = {
         ("connector", "delete"): {"argv": ["--account-id", "111111111111"], "field": "connectors",
                                   "node": InspectContract.CONNECTOR, "deletes": ["deleteConnector"]},
@@ -458,6 +459,7 @@ class DeleteContract(unittest.TestCase):
         ("outpost", "delete"): {"argv": ["--name", "lab-x"], "field": "outposts",
                                 "node": dict(EnsureContract.OUTPOST, status="UNINSTALLED"),
                                 "deletes": ["deleteOutpost"]},
+        ("user", "delete"): {"argv": [], "field": "users", "node": USER, "deletes": ["deleteUser"]},
     }
 
     def _run(self, verb, argv, fields):
@@ -465,7 +467,7 @@ class DeleteContract(unittest.TestCase):
         return exit_code(wz.VERBS[verb], argv, wiz=wiz, env=self.ENV), wiz
 
     def test_every_delete_verb_has_a_row(self):
-        self.assertEqual({v for v in wz.VERBS if v[1] == "delete"}, set(self.ROWS) | set(self.NOT_WIZ))
+        self.assertEqual({v for v in wz.VERBS if v[1] == "delete"}, set(self.ROWS))
 
     def test_present_is_deleted_absent_is_a_no_op_and_an_error_mutates_nothing(self):
         for verb, row in self.ROWS.items():
@@ -480,7 +482,7 @@ class DeleteContract(unittest.TestCase):
 
 class OktaContract(unittest.TestCase):
     """The user verbs against the Okta Workflows Router: ensure creates and publishes credentials;
-    inspect grades existence; delete is a no-op; any router error is 3."""
+    inspect grades existence; any router error is 3. delete reaches Wiz only (DeleteContract)."""
 
     ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "s1", **FakeOkta.ENV}
     LOGIN = "lab-s1"
@@ -515,11 +517,11 @@ class OktaContract(unittest.TestCase):
             with self.subTest(users=users):
                 self.assertEqual(self._run(wz.cmd_user_inspect, [], FakeOkta(users)), want)
 
-    def test_delete_calls_nothing_and_needs_no_credential(self):
+    def test_delete_never_reaches_the_router(self):
         # Okta expires its own lab users; the reaper runs this without OKTA_WF_* in its env.
         okta = FakeOkta([{"login": self.LOGIN, "okta_user_id": "oid-1"}])
         env = {"INSTRUQT_SESSION_ID": "s1"}
-        self.assertEqual(exit_code(wz.cmd_user_delete, [], env=env, _okta_call=okta), 0)
+        self.assertEqual(exit_code(wz.cmd_user_delete, [], env=env, wiz=FakeWiz(users=_conn()), _okta_call=okta), 0)
         self.assertEqual(okta.calls, [])
 
     def test_a_router_error_is_environment_3(self):
