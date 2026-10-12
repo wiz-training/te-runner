@@ -73,26 +73,41 @@ _CSP_REQUIRED_VARS = {
 }
 
 
+def _verify_aws(account_id):
+    ident = core._csp_json(core._aws("sts", "get-caller-identity"), "aws sts get-caller-identity") or {}
+    account = str(ident.get("Account") or "")
+    if not account:
+        core.die(3, "aws sts get-caller-identity named no Account")
+    if account_id and account != account_id:
+        core.die(3, f"AWS credentials are for account {account}, not the {account_id} this lease grades")
+
+
+def _verify_gcp(account_id):
+    accounts = core._csp_json(core._gcp("auth", "list", "--format=json"), "gcloud auth list") or []
+    if not [a for a in accounts if a.get("status") == "ACTIVE"]:
+        core.die(3, f"gcloud holds no ACTIVE account ({len(accounts)} listed); GOOGLE_CREDENTIALS did not activate")
+    project = os.getenv("GOOGLE_PROJECT")
+    if account_id and project != account_id:
+        core.die(3, f"GCP credentials are for project {project}, not the {account_id} this lease grades")
+
+
+def _verify_azure(account_id):
+    sub = (core._csp_json(core._az("account", "show", "-o", "json"), "az account show") or {}).get("id") or ""
+    want = os.getenv("ARM_SUBSCRIPTION_ID")
+    if sub.lower() != want.lower():
+        core.die(3, f"az is logged in to subscription {sub or '(none)'}, not ARM_SUBSCRIPTION_ID {want}")
+    if account_id and sub.lower() != account_id.lower():
+        core.die(3, f"az is logged in to subscription {sub}, not the {account_id} this lease grades")
+
+
+_VERIFY = {"aws": _verify_aws, "gcp": _verify_gcp, "azure": _verify_azure}
+
+
 def _verify_csp(cloud, account_id=None):
     missing = [v for v in _CSP_REQUIRED_VARS[cloud] if not os.getenv(v)]
     if missing:
         core.die(3, f"CSP credentials missing from environment: {', '.join(missing)}")
-    if cloud == "aws":
-        ident = core._csp_json(core._aws("sts", "get-caller-identity"), "aws sts get-caller-identity") or {}
-        account = str(ident.get("Account") or "")
-        if not account:
-            core.die(3, "aws sts get-caller-identity named no Account")
-        if account_id and account != account_id:
-            core.die(3, f"AWS credentials are for account {account}, not the {account_id} this lease grades")
-    elif cloud == "gcp":
-        accounts = core._csp_json(core._gcp("auth", "list", "--format=json"), "gcloud auth list") or []
-        if not [a for a in accounts if a.get("status") == "ACTIVE"]:
-            core.die(3, f"gcloud holds no ACTIVE account ({len(accounts)} listed); GOOGLE_CREDENTIALS did not activate")
-    elif cloud == "azure":
-        sub = (core._csp_json(core._az("account", "show", "-o", "json"), "az account show") or {}).get("id") or ""
-        want = os.getenv("ARM_SUBSCRIPTION_ID")
-        if sub.lower() != want.lower():
-            core.die(3, f"az is logged in to subscription {sub or '(none)'}, not ARM_SUBSCRIPTION_ID {want}")
+    _VERIFY[cloud](account_id)
 
 
 def cmd_session_verify(args):
@@ -100,6 +115,8 @@ def cmd_session_verify(args):
     floor = args.min_runner
     if floor:
         _require_runner(floor)
+    if args.account_id and not args.cloud:
+        core.die(2, "--account-id is compared to a cloud credential's own account and needs --cloud")
     _tok, dc, tid = core.token_and_dc()
     # `viewer` is not a Wiz root field (returns "Resource not found"); `connectors` is. This confirms
     # the token is accepted by the API, not just minted by auth.

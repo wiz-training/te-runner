@@ -123,7 +123,12 @@ def cmd_user_ensure(args):
 
 
 def cmd_user_inspect(args):
-    """Check that the per-lease Okta user exists. Exit 0 if present, 1 if absent."""
+    """Two reads of one login, exit 0 present and 1 absent. Default: Okta, through the router — the login
+    `user ensure` created, which Okta expires on its own schedule. `--wiz`: the tenant's own `users` record
+    the first SSO sign-in minted and `user delete` removes; it outlives the Okta login, so only this read
+    confirms the delete. `--wiz` needs the tenant pair alone, never OKTA_WF_*."""
+    if args.wiz:
+        return _inspect_wiz_user(args)
     invoke_url, token = _okta_env()
     login = _okta_login(args)
     res = _okta_call(invoke_url, token, {"action": "inspect", "login": login})
@@ -148,6 +153,16 @@ USERS_Q = """query LabUsers($search: String, $after: String) {
 def _wiz_users(email):
     return [n for n in core._all_nodes(USERS_Q, {"search": email}, "users")
             if (n.get("email") or "").lower() == email.lower() and n.get("status") != "DELETED"]
+
+
+def _inspect_wiz_user(args):
+    email, _stem = core._lab_user_email(args)
+    users = _wiz_users(email)
+    if not users:
+        print(f"no Wiz user for {email}")
+        sys.exit(1)
+    for u in users:
+        print(f"wiz user {u['id']} ({u.get('identityProviderTypeV2')}) for {email}")
 
 
 def cmd_user_delete(args):

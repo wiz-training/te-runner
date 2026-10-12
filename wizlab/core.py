@@ -300,6 +300,15 @@ def _account_id(args, verb):
     return _norm_account(args.account_id or die(2, f"{verb} needs --account-id"))
 
 
+def _unused(args, cloud, *flags):
+    """Exit 2 for a flag this --cloud path never reads: `FLAGS` refuses a flag the verb does not read, and a
+    flag only another cloud's branch reads was parsed, then ignored, so the call graded as if it had
+    taken effect."""
+    for flag in flags:
+        if getattr(args, flag.lstrip("-").replace("-", "_")):
+            die(2, f"{flag} is not read for --cloud {cloud}")
+
+
 def _named(args, suffix=""):
     """--name, else the session stem plus `suffix`: the reaper sweeps the stem, so a default name is
     always within its reach; --name is for a manual or dev run."""

@@ -157,6 +157,7 @@ def _role_inspect_gcp(args):
     """The GCP twin of the AWS trust-policy assertion: does this project's IAM policy actually grant
     Wiz's managed SA the roles it needs to read the project? A project that grants nothing is exactly
     the state a learner reaches by opening the wizard and stopping."""
+    core._unused(args, "gcp", "--role-name")  # the roles graded are the fixed GCP_WIZ_ROLES set
     project = args.account_id or os.getenv("GOOGLE_PROJECT")
     if not project:
         core.die(2, "role inspect --cloud gcp needs --account-id <project id> (or GOOGLE_PROJECT)")
