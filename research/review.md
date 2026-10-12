@@ -2,7 +2,7 @@
 
 Every finding from the code-level and design-level reviews, one row each, ranked by payoff per unit
 of work. Effort: S = under a day, M = days, L = a week or cross-repo. Baseline: `ruff` clean, radon
-average A with 13 functions at C, 202 tests in `test_wizlab.py` green (plus 5 reaper, 1 entrypoint).
+average A with 13 functions at C, `test_wizlab.py`, the reaper and entrypoint tests green.
 Symbols name the `wizlab` package unless a path is given. The last column is the blast radius: what the fix
 touches, what depends on it (tests, labs, other repos), and where the fixing agent looks next.
 

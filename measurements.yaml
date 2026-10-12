@@ -21,16 +21,10 @@ meta:
     aws: 73
     gcp: 53
     # azure is the connector-101 essentials only -- one VM plus the connector and discovery plane --
-    # not a kitchen-sink sweep. The Entra lock (bricks/azure/NOTES.md) blocks the identity-scanning
+    # not a kitchen-sink sweep. The Entra lock blocks the identity-scanning
     # legs that would surface IAM/policy kinds, so the id-shape catalogue aws/gcp have is not yet
     # possible on azure. What is here was measured on one apply; see the azure `verify` below.
     azure: 1
-  # Not a date. A date says a figure is old without saying whether it is wrong; the command says which.
-  verify: |
-    cd research/kitchen-sink && terraform apply
-    python3 -m labkit tf-apply --cloud aws --dir bricks/aws     # the Wiz identity
-    python3 bricks/connector.py --cloud aws create --account-id <acct>
-    # then poll both planes from the connector-created timestamp; see research/kitchen-sink/wiz-sweep.md
 
 # The shared tenant a lab lands in, which is not empty and decides whether a lookup can find anything.
 tenant_scale:
@@ -204,10 +198,11 @@ planes:
       solver_budget_min: 16
       time_fields: [firstSeen]
     verify: |
-      cd /tmp/az-measure && terraform apply   # vendor identity module (use_existing_service_principal
-                                              # =true + wiz_app_object_id) + one centralus VM
-      python3 bricks/connector.py --cloud azure create --account-id <sub> --tenant-id <arm-tenant>
-      # then poll status (CONNECTED) and `resource --external-id <lower(vm-arm-id)>` from create time
+      # te-labkit-v2: terraform apply template/infra/azure/wiz-connector-roles (wiz_app_object_id from the
+      # team store) and template/infra/azure/linux-vm (centralus), then from the connector-created timestamp:
+      wizlab connector ensure --cloud azure --account-id <sub> --tenant-id <arm-tenant>
+      wizlab connector inspect --cloud azure --account-id <sub> --require healthy       # exit 1 until CONNECTED
+      wizlab instance inspect --account-id <sub> --type VIRTUAL_MACHINE                # exit 1 until >=1
   sensor:
     # Cloudless Runtime-Sensor lab (te-wiz-sensor-101): the sensor installs on an Instruqt `vm`
     # sandbox (real kernel + systemd -- a container cannot run its engine) and grades on the
@@ -1483,7 +1478,6 @@ findings:
         node disk scan produced 357 findings but no CVE for a container deployed after the snapshot, and
         the app's own CONTAINER_IMAGE was a graph node with ZERO findings after 9h (registry scanning is
         a console-only tenant setting, weekly by default).
-        Re-establish: labkit check-vuln-finding --cve <cve> --project <p> --repo <owner/repo>
     data_findings:
       solver_budget_min: null       # null = NOT solver-gradeable; this plane is multi-day
       bound_max_min: 520
@@ -1494,8 +1488,6 @@ findings:
         at all, no firstSeen/createdAt/detectedAt -- so tightening it means polling. A challenge that
         grades this cannot pass inside a lease window. On-demand scans are rate limited to one per 10 min
         per connector and an inventory rescan resets that clock, so request the data scan last and alone.
-        Re-establish: connector.py rescan --account-id <p> --data-scan, then poll
-        labkit check-data-finding --bucket <b>
 
 # ---------------------------------------------------------------------------------------------------
 # A denial on a dev lease is usually a gap in the dev track's own allow-list, not a fact about the cloud.

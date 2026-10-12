@@ -15,14 +15,17 @@ wrappers (one `wizlab` call + an exit-code remap). Change it only within this co
 | reap | audit + prefix cleanup of a session's footprint |
 | tenant | (`wiz`) emit live tenant connector + endpoint facts as `KEY=value` (+ `$EXEC_OUTPUT`) for a script/terraform; grow by adding keys, never removing |
 
-Exit codes: 0 satisfied · 1 not · 2 invocation error · 3 environment error. Learner checks remap 2/3→1:
-`wizlab --check <noun> <verb> …` does the remap and prints the real code on stderr. A flag the verb does
-not read is invocation error 2 (`FLAGS`), never ignored.
+Exit codes: 0 satisfied · 1 not · 2 invocation error · 3 environment error · 4 `user reap` only, cleanup
+still in flight (`_reap_exit`). Learner checks remap every nonzero code to 1 — a code outside the task's
+declared list puts the session in a terminal `validating_error` — with `wizlab --check <noun> <verb> …`,
+which prints the real code on stderr; CI consumes the codes raw. A flag the verb does not read is
+invocation error 2 (`FLAGS`), never ignored.
 
 ### What `user reap` exit 0 promises
-One outcome per resource: `removed`, `absent`, `deferred`, `unknown`, `failed`. Exit 3 is `failed` or
-`deferred` — the signal for the reaper to keep `lab-<sid>@`, its only handle back to leftovers, and
-retry the sid. Exit 0 promises that every guaranteed-type resource (`_SWEEP_TYPES`) named for the
+One outcome per resource: `removed`, `absent`, `deferred`, `unknown`, `failed`. Exit 3 is `failed`,
+cleanup a later pass cannot finish alone; exit 4 is `deferred`, a teardown still in flight that the next
+daily pass finishes. Either keeps `lab-<sid>@`, the reaper's only handle back to leftovers, and retries
+the sid. Exit 0 promises that every guaranteed-type resource (`_SWEEP_TYPES`) named for the
 session, and every audit-attributed create carrying a handler and a name, is removed or absent. It does
 NOT promise the session created nothing else; that residue is counted as `unknown`. Blanket blocking on
 `unknown` is rejected — handler coverage is partial by construction, so it would fail every reap and
@@ -36,7 +39,8 @@ verb cannot make that true it exits 3 naming the difference and mutates nothing.
 | noun | object exists | rule |
 |---|---|---|
 | sensor, serviceaccount, mcp | any | delete, re-mint, emit credentials: the secret is shown once and not re-fetchable |
-| connector (aws), workflow, user | drifted, or connector `--reauth` | patch / reset / rotate to the requested state; `--reauth` patches `authParams` unchanged, which re-inits the connector |
+| connector (aws), workflow | drifted, or connector `--reauth` | patch / reset / rotate to the requested state; `--reauth` patches `authParams` unchanged, which re-inits the connector |
+| user | any | one `action: create` call to the Okta router with a freshly generated password, every run; wizlab reads back only `login` and emits `WIZ_USER`/`WIZ_PWD` |
 | connector (gcp, azure) | any | left as found, exit 0: nothing in it can drift |
 | policy | flags differ from the live params | exit 3, no mutation: a shared tenant fixture other labs grade against changes deliberately |
 | outpost | `--role-arn`/`--region` differ | exit 3, no mutation: a role change is a knowing delete-and-recreate |
@@ -91,8 +95,8 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   authProviderConfig:{serviceAccountToken}, isOnPrem:false}, extraConfig:{installationType:"Script"})`
   with a 24 h bound token from `kubectl create token kube-system/wiz-connector` (the lab applies that
   ServiceAccount and its cluster-admin binding), else `updateConnector(patch:{enabled})`. An
-  auto-onboarded child refuses the patch (`Child connectors cannot be individually disabled/enabled`) and
-  is deleted, not toggled. `inspect --require exists|connected|disabled` reads `status`; `exists` is what
+  auto-onboarded child refuses the patch (`Child connectors cannot be individually disabled/enabled`);
+  that surfaces as exit 3 and deletes nothing — only a connector the lab created can be toggled. `inspect --require exists|connected|disabled` reads `status`; `exists` is what
   a repair check asserts, since INITIAL_SCANNING precedes CONNECTED by ~7 min. Ordering fact the verbs
   rely on: a cluster created after the cloud connector reaches CONNECTED is never auto-onboarded.
   kubectl is the fourth CSP-side CLI (operator decision, 2026-09-24, forced by the token mint).
@@ -108,8 +112,10 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   assumes); `inspect --require exists|initialized|connected` asserts the `OutpostStatus` enum and
   `--require scanned` counts workload scans performed BY this Outpost (`resourceScanMetricsTrend`,
   `--lookback-days` default 2); `delete` reaps by name as uninstall → poll to UNINSTALLED → delete
-  (`--timeout`, default 600s), exit 0 on a stuck record — `user reap` owns the same lifecycle as a
-  guaranteed type and reports `deferred` rather than waiting. Scoping key: the Outpost name == the session
+  (`--timeout`, default 600s); exit 0 when the uninstall outlives the wait (the record is left for the
+  daily reaper), exit 1 on `PARTIALLY_UNINSTALLED` (`_OUTPOST_STUCK`): the uninstall cannot be re-fired
+  and `deleteOutpost` refuses the record, so it needs an operator. `user reap` owns the same lifecycle
+  as a guaranteed type and reports `deferred` rather than waiting. Scoping key: the Outpost name == the session
   stem (`OutpostFilters` has no account/region field, same as the sensor plane). Three statuses that
   read as success are not: **INITIALIZED proves only that the object is registered**, **CONNECTED does
   not imply it scanned anything** (4 of 7 live ones had scanned nothing), and a direct delete fails.
