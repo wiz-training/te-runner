@@ -22,7 +22,6 @@ reproducer that proves it present, and what else the change touches. Status: `to
 
 | Symbol | Why not now | Owner decides |
 |---|---|---|
-| `serviceaccount` and `mcp` ensure | Delete-then-mint through a deployment and an integration; `_ensure_sa` already serves the two plain service-account nouns, and a helper over these two takes four callables | refactor only with the next credential noun |
 | `outpost` region, `--group` defaults | Literals with no env override; no lab has needed another value | add env defaults when one does |
 
 Landed from the earlier table: `core.api` names an error it tolerates beside data on stderr;

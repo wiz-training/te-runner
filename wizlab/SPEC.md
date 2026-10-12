@@ -44,12 +44,22 @@ verb cannot make that true it exits 3 naming the difference and mutates nothing.
 
 | noun | object exists | rule |
 |---|---|---|
-| sensor, serviceaccount, mcp | any | delete, re-mint, emit credentials: the secret is shown once and not re-fetchable |
+| sensor, apiaccount, serviceaccount, mcp | any | delete, re-mint, emit credentials: the secret is shown once and not re-fetchable |
 | connector (aws), workflow | drifted, or connector `--reauth` | patch / reset / rotate to the requested state; `--reauth` patches `authParams` unchanged, which re-inits the connector |
 | user | any | one `action: create` call to the Okta router with a freshly generated password, every run; wizlab reads back only `login` and emits `WIZ_USER`/`WIZ_PWD`. `user inspect` reads Okta; `--wiz` reads the tenant's `users` record `user delete` removes, with the tenant pair alone |
 | connector (gcp, azure) | any | left as found, exit 0: nothing in it can drift |
 | policy | flags differ from the live params | exit 3, no mutation: a shared tenant fixture other labs grade against changes deliberately |
 | outpost | `--role-arn`/`--region` differ | exit 3, no mutation: a role change is a knowing delete-and-recreate |
+
+### Credential nouns
+`sensor` (its service account), `apiaccount`, `serviceaccount` and `mcp` are each a `credential.Credential`
+record driven by `credential.ensure`, `credential.inspect` and `credential.delete`. A record holds the
+print `label`, the stem `suffix`, the find document, field and variable builder, the create document and
+`input` builder, the path to `(id, clientId, clientSecret)` in the payload, the delete mutation and its
+selection, the two `emit_keys`, an optional `status_field`, the `--require` predicates and the
+`_SWEEP_TYPES` member the reaper reaches it through. A new credential noun is a record plus its documents
+in its own module, and a row in `CredentialRecords`. Not records: `connector`, `k8sconnector`, `outpost`
+and `workflow` patch in place or exit 3 on drift, never re-mint; `role` is lease-account IAM; `user` is Okta.
 
 ### Runner identity, and the floor `session verify` enforces
 The image carries its own `TE_RUNNER_TAG` + `TE_RUNNER_REV`, baked from the git tag and sha CI built
@@ -89,6 +99,7 @@ The tag that first reads each contract; a lab pins at or above the highest row i
 | v0.1.71 | `workflow ensure` exact-name; `user inspect --wiz`; a flag another `--cloud` reads is exit 2 |
 | v0.1.72 | `user reap` exit 5: `operator` residue, the user record deleted |
 | v0.1.73 | reaper attempts `deleteOutpost` on a PARTIALLY_UNINSTALLED record |
+| v0.1.74 | credential nouns share one record-driven ensure/inspect/delete; unified success line |
 
 ### The learner shell
 The image ships a non-root `learner` user, `sudo`, and one sudoers rule: `learner` may run
