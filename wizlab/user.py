@@ -100,7 +100,7 @@ def _wiz_login_url():
 
 
 def cmd_user_ensure(args):
-    """Create the per-lease Okta user backing Wiz SSO and publish WIZ_USER/WIZ_PWD/OKTA_USER_ID."""
+    """Create the per-lease Okta user backing Wiz SSO and publish WIZ_USER/WIZ_PWD."""
     invoke_url, token = _okta_env()
     login = _okta_login(args)
     profile = args.profile or os.getenv("LAB_PROFILE")

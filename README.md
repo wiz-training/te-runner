@@ -1,7 +1,8 @@
 # te-runner
 
 The one Docker image TE 2.0 labs reference.
-Carries `wizlab` (`/usr/local/bin/wizlab`), AWS CLI v2, Terraform 1.16.2, python 3.12, jq.
+Carries `wizlab` (`/usr/local/bin/wizlab`) on python 3.12 and the CLIs the `build.yml` smoke step
+asserts by name; `Dockerfile` holds each pin.
 
 Build: CI only — push a `v*` tag to `origin` (`wiz-training/te-runner`), whose
 Actions publish the **public** `ghcr.io/wiz-training/te-runner:<tag>` that labs
@@ -25,29 +26,26 @@ it is (`wizlab session verify` prints it), and a lab can assert its verb floor
 with `session verify --min-runner vX.Y.Z` (`wizlab/SPEC.md`). Both are empty on
 images before v0.1.37, which is why that floor gate binds only at v0.1.37+.
 
-## Three env contexts on a grader
-`entrypoint.sh` creates them, and they carry different environments — a `wizlab`
-call that works in one exits 3 in another:
+## Env contexts on a grader
+A lab passes the Wiz pair and `OKTA_WF_*` through exec and task `environment` maps, never
+`container.environment` (te-labkit-v2 `authoring/lab-patterns.md` §One container), so a `wizlab` call
+that works in one context exits 3 in another:
 
-| Context | Carries `WIZ_*`, lease creds, `TE_RUNNER_*` | Reach it by |
+| Context | Carries | Reach it by |
 |---|---|---|
-| platform check/solve/exec executor | yes — a container exec gets image `ENV` + the `environment` block | the platform only |
-| `tmux attach -t dev` | yes — started by the entrypoint, inherits its env | dev tracks |
-| plain `ssh root@<grader>` | **no** — sshd builds a clean env per session | dev tracks |
+| platform check/solve/exec executor | `container.environment` (lease creds, `WIZ_TENANT`, `INSTRUQT_SESSION_ID`, `TE_RUNNER_*`) plus the script's own map: Wiz pair, `OKTA_WF_*` | the platform only |
+| PID 1, `tmux attach -t dev` | `container.environment` only: no Wiz pair, no `OKTA_WF_*` | dev tracks |
+| plain `ssh root@<grader>` | nothing: sshd starts each session clean | dev tracks |
+| `/run/lab/wiz.env` (root 0600) | what `wizlab-grant` snapshotted from the setup exec (`wizlab/SPEC.md` §The learner shell) | `set -a; . /run/lab/wiz.env; set +a` |
 
-So over ssh, import PID 1's env before any `wizlab` call, or every one of them
-fails on auth:
+Over ssh, source the snapshot first. The `te-dev-<csp>` profiles put the pair on
+`container.environment`; there PID 1 holds the whole set:
 
 ```sh
 while IFS= read -r -d '' kv; do export "$kv"; done < /proc/1/environ
 ```
 
-`wizlab` exit codes: 0 satisfied · 1 not satisfied · 2 invocation · 3
-environment · 4 `user reap` only — cleanup still in flight, which the next daily
-pass finishes on its own. In learner checks, remap everything nonzero to 1 (an
-out-of-list code puts the session in a terminal `validating_error`) with
-`wizlab --check <noun> <verb> …`, which prints the real code on stderr; consume
-them raw in CI.
+`wizlab` exit codes and the `--check` remap learner checks use: `wizlab/SPEC.md` §Grammar.
 
 Open items for the repo family live in `te-labkit-v2/TODO.md`; review backlogs behind them are
 `research/review.md` and `research/health-plan.md`.
