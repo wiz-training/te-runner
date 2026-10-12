@@ -96,6 +96,29 @@ class ReapOrdering(unittest.TestCase):
                 self.assertEqual('REAP_SESSIONS_TENANT=TBCMP REAP_SESSIONS="s1,s2"' in err.getvalue(),
                                  want is not None)
 
+    def test_a_body_that_is_not_a_graphql_answer_costs_one_tenant_not_the_run(self):
+        """Instruqt answered a login page (HTML, 200) once; json.loads left _instruqt by traceback and
+        every later tenant went unswept. A bad body is the same failure class as an HTTP error: the
+        tenant is named, the rest of the run proceeds, and the run ends red."""
+        def body(raw):
+            cm = mock.MagicMock()
+            cm.__enter__.return_value.read.return_value = raw
+            return cm
+        answers = [body(b"<html>sign in</html>"),
+                   body(b'{"data": {"labPlayReports": {"items": [{"id": "b1", "stoppedReason": "done"}]}}}')]
+        with mock.patch.object(rp, "TENANTS", {"A": "tid:a", "B": "tid:b"}), \
+             mock.patch.object(rp.urllib.request, "urlopen", side_effect=answers), \
+             mock.patch.object(rp, "_reap_session", return_value=rp.DONE) as reap, \
+             mock.patch.dict(rp.os.environ, {"INSTRUQT_TOKEN": "t"}, clear=True), \
+             mock.patch.object(rp.sys, "argv", ["reap_orphans.py", "--commit"]), \
+             mock.patch.object(rp.sys, "stderr", io.StringIO()) as err, \
+             self.assertRaises(SystemExit) as cm:
+            rp.main()
+        self.assertEqual(cm.exception.code, 1)
+        self.assertEqual([c.args[:2] for c in reap.call_args_list], [("B", "b1")])
+        self.assertIn("tenant A", err.getvalue())
+        self.assertIn("<html>", err.getvalue())
+
     def test_retry_hint_names_the_tenant_each_failed_session_was_swept_under(self):
         # The hint named sids only; REAP_SESSIONS defaults to the first REAP_TENANTS key, so a TE session
         # retried from it swept TBCMP, found nothing, and deleted the one handle back to the TE residue.

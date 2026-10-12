@@ -6,7 +6,9 @@ def cmd_wiz_tenant(args):
     """Emit this tenant's connector and endpoint facts as KEY=value, live from the Wiz API — no
     hardcoded per-tenant values. A script `eval`s stdout to feed a terraform apply (the Wiz connector-role
     module needs remote-arn + external-id). One call, one auth; grow it by adding keys (readers take
-    only what they know). To $EXEC_OUTPUT too, for a note/HCL ref."""
+    only what they know). To $EXEC_OUTPUT too, for a note/HCL ref. Every key is written every run, empty
+    when the tenant lacks it: an exec's output key set freezes at its first reference, so a key omitted
+    once is unresolvable to HCL for the lab's lifetime."""
     params, tid = _managed_identity()
     aws, gcp, azure = params["aws"], params["gcp"], params["azure"]
     facts = {
@@ -40,7 +42,7 @@ def cmd_wiz_tenant(args):
         "WIZ_AUTH_URL": core.AUTH_URL,
         "WIZ_AUDIENCE": core.AUDIENCE,
     })
-    core._emit("".join(f"{k}={v}\n" for k, v in facts.items() if v))
+    core._emit("".join(f"{k}={v}\n" for k, v in facts.items()))
 
 
 def _managed_identity():

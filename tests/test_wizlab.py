@@ -81,8 +81,9 @@ class FakeWiz:
     _FIELD = re.compile(r"^\s*(?:query|mutation)\b[^{]*\{\s*(\w+)|^\s*\{\s*(\w+)")
 
     class error:
-        def __init__(self, message):
-            self.message = message
+        """A GraphQL error; `beside` is the partial payload Wiz sends with it when a page truncates."""
+        def __init__(self, message, beside=None):
+            self.message, self.beside = message, beside
 
     def __init__(self, tid="tid", **fields):
         self.tid, self.fields, self.calls, self.docs, self.mints = tid, fields, [], [], 0
@@ -99,7 +100,8 @@ class FakeWiz:
         if callable(answer):
             answer = answer(variables)
         if isinstance(answer, FakeWiz.error):
-            return {"errors": [{"message": answer.message}], "data": None}
+            return {"errors": [{"message": answer.message}],
+                    "data": None if answer.beside is None else {field: answer.beside}}
         return {"data": {field: answer}}
 
     def sent(self, field):
@@ -173,6 +175,16 @@ def exit_code(fn, argv=(), *, wiz=None, env=None, out=None, err=None, **patches)
 
 def _conn(*nodes):
     return {"nodes": list(nodes), "totalCount": len(nodes)}
+
+
+@contextlib.contextmanager
+def fake_api(side):
+    """`side(query, variables) -> (data, tid)` behind both hops a lookup takes: api() for one document,
+    _api_full() under the pager. One mock records every call, so a test can assert which left."""
+    m = mock.MagicMock(side_effect=side)
+    with mock.patch.object(_owner("api"), "api", m), \
+         mock.patch.object(_owner("_api_full"), "_api_full", side_effect=lambda q, v, attempts=3: (*m(q, v), [])):
+        yield m
 
 
 class InspectContract(unittest.TestCase):
@@ -799,6 +811,23 @@ class RoleInspectGrading(unittest.TestCase):
         self.assertEqual(self._run(_proc(255, "", "Unable to locate credentials")), 3)
         self.assertEqual(self._run(_proc(255, "", "ExpiredToken: token is expired")), 3)
 
+    def test_a_cli_answer_that_is_not_json_is_environment_3_on_every_cloud(self):
+        """A CLI that exits 0 and prints a prompt or an update notice instead of JSON hit json.loads raw
+        and left main() as 2 "internal error"; it is the CLI's state, 3, like a non-zero exit."""
+        rows = [("aws", "_aws", [], {}),
+                ("gcp", "_gcp", ["--cloud", "gcp", "--account-id", "wiz-lab-42"], {}),
+                ("azure", "_az", ["--cloud", "azure", "--account-id", AzureRoleInspect.SUB, "--role-name", "R"],
+                 {"WIZ_TBCMP_AZURE_APP_OBJECT_ID": AzureRoleInspect.OID})]
+        for cloud, binary, argv, env in rows:
+            with self.subTest(cloud=cloud), \
+                 mock.patch.object(_owner(binary), binary, return_value=_proc(0, "Updates are available", "")), \
+                 mock.patch.object(_owner("_wiz_delegator"), "_wiz_delegator",
+                                   return_value=(self.DELEGATOR, self.TID)), \
+                 mock.patch.object(_owner("_wiz_gcp_sa"), "_wiz_gcp_sa", return_value="sa@p.iam.gserviceaccount.com"), \
+                 mock.patch.dict(wz.os.environ, env, clear=True), exits() as cm:
+                call(wz.cmd_role_inspect, argv)
+                self.assertEqual(cm.code, 3)
+
     @staticmethod
     def _stmt(principal, external_id):
         return {"Effect": "Allow", "Principal": {"AWS": principal}, "Action": "sts:AssumeRole",
@@ -975,14 +1004,14 @@ class ConnectorAndReaperSafety(unittest.TestCase):
             {"id": "e", "enabled": True, "status": "ERROR", "type": {"id": "aws"}, "config": {}},
             {"id": "c", "enabled": True, "status": "CONNECTED", "type": {"id": "aws"}, "config": {}},
         ]
-        with mock.patch.object(_owner("api"), "api", side_effect=self._api(nodes)):
+        with fake_api(self._api(nodes)):
             self.assertEqual(wz.find_connector("111111111111")[0]["status"], "CONNECTED")
 
     def test_find_connector_by_type_fallback_when_no_parent(self):
         find = [{"id": "builtin", "type": {"id": "self-hosted"}, "config": {}}]  # no aws parent yet
         bytype = [{"id": "a", "enabled": True, "status": "CONNECTED", "type": {"id": "aws"},
                    "config": {"customerRoleARN": "arn:aws:iam::111111111111:role/WizAccess-Role"}}]
-        with mock.patch.object(_owner("api"), "api", side_effect=self._api(find, bytype)):
+        with fake_api(self._api(find, bytype)):
             self.assertEqual([n["id"] for n in wz.find_connector("111111111111")], ["a"])
 
     HANDLER: typing.ClassVar = {"list": "reports", "filter": "search", "delete": "deleteReport",
@@ -1252,7 +1281,7 @@ class Pagination(unittest.TestCase):
 
     @staticmethod
     def _pages(field, *pages, cursors=None):
-        """An api() fake serving `pages` in order, keyed by the `after` variable it receives."""
+        """An _api_full() fake serving `pages` in order, keyed by the `after` variable it receives."""
         cursors = cursors or [f"c{i}" for i in range(len(pages))]
         by_after = {None: 0, **{cursors[i]: i + 1 for i in range(len(pages) - 1)}}
         seen = []
@@ -1261,15 +1290,15 @@ class Pagination(unittest.TestCase):
             seen.append(variables.get("after"))
             i = by_after[variables.get("after")]
             last = i == len(pages) - 1
-            return {field: {"nodes": pages[i],
-                            "pageInfo": {"hasNextPage": not last, "endCursor": None if last else cursors[i]}}}, "tid"
+            page = {"hasNextPage": not last, "endCursor": None if last else cursors[i]}
+            return {field: {"nodes": pages[i], "pageInfo": page}}, "tid", []
         side.seen = seen
         return side
 
     def test_an_exact_match_past_the_first_page_is_found(self):
         page1 = [{"id": str(i), "name": f"lab-s1-sensor-{i}"} for i in range(50)]
         side = self._pages("serviceAccounts", page1, [{"id": "sa", "name": "lab-s1-sensor"}])
-        with mock.patch.object(_owner("api"), "api", side_effect=side):
+        with mock.patch.object(_owner("_api_full"), "_api_full", side_effect=side):
             self.assertEqual(wz._find_sa("lab-s1-sensor")["id"], "sa")
         self.assertEqual(side.seen, [None, "c0"])
 
@@ -1277,7 +1306,7 @@ class Pagination(unittest.TestCase):
         # Before paging, `live[1:]` was computed on one page and a duplicate on the next survived.
         live = [{"id": "w1", "name": "lab-x", "enabled": True}], [{"id": "w2", "name": "lab-x", "enabled": False}]
         side = self._pages("automationWorkflows", *live)
-        with mock.patch.object(_owner("api"), "api", side_effect=side):
+        with mock.patch.object(_owner("_api_full"), "_api_full", side_effect=side):
             hits = wz._resolve_workflows("lab-x", exact=True)
         self.assertEqual([h["id"] for h in hits], ["w1", "w2"])
 
@@ -1286,31 +1315,39 @@ class Pagination(unittest.TestCase):
         # "absent" on a set it never finished reading.
         def side(query, variables):
             return {"cicdScanPolicies": {"nodes": [{"id": "p", "name": "other"}],
-                                         "pageInfo": {"hasNextPage": True, "endCursor": "same"}}}, "tid"
-        with mock.patch.object(_owner("api"), "api", side_effect=side), exits() as cm:
+                                         "pageInfo": {"hasNextPage": True, "endCursor": "same"}}}, "tid", []
+        with mock.patch.object(_owner("_api_full"), "_api_full", side_effect=side), exits() as cm:
             wz._find_policy("fixture")
         self.assertEqual(cm.code, 3)
 
     def test_has_next_page_without_a_cursor_is_environment_3(self):
         def side(query, variables):
-            return {"outposts": {"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": None}}}, "tid"
-        with mock.patch.object(_owner("api"), "api", side_effect=side), exits() as cm:
+            return {"outposts": {"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": None}}}, "tid", []
+        with mock.patch.object(_owner("_api_full"), "_api_full", side_effect=side), exits() as cm:
             wz._resolve_outpost("lab-s1")
         self.assertEqual(cm.code, 3)
 
     def test_the_page_cap_is_a_refusal(self):
         def side(query, variables):
             n = int(variables.get("after") or 0)
-            return {"sensors": {"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": str(n + 1)}}}, "tid"
-        with mock.patch.object(_owner("api"), "api", side_effect=side) as api, exits() as cm:
+            return {"sensors": {"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": str(n + 1)}}}, "tid", []
+        with mock.patch.object(_owner("_api_full"), "_api_full", side_effect=side) as api, exits() as cm:
             wz._resolve_sensor("lab-s1")
         self.assertEqual(cm.code, 3)
         self.assertEqual(api.call_count, wz._PAGE_CAP)
 
     def test_a_response_without_page_info_is_one_complete_page(self):
-        with mock.patch.object(_owner("api"), "api", return_value=({"serviceAccounts": {"nodes": []}}, "tid")) as api:
+        with fake_api(lambda q, v: ({"serviceAccounts": {"nodes": []}}, "tid")) as api:
             self.assertIsNone(wz._find_sa("lab-s1-sensor"))
         api.assert_called_once()
+
+    def test_an_error_beside_a_page_is_a_refusal_not_the_whole_set(self):
+        """Wiz answers a page it could not finish as data plus `errors` in one 200 body. _api_send dropped
+        the errors api() had tolerated, so a sensor lookup graded the partial page as the whole set and
+        a delete fed by it saw fewer objects than exist."""
+        page = _conn(InspectContract.SENSOR)
+        wiz = FakeWiz(sensors=FakeWiz.error("field sensors failed", beside=page))
+        self.assertEqual(exit_code(wz.cmd_sensor_inspect, ["--name", "lab-x"], wiz=wiz), 3)
 
     # --- the reaper's list, through _gql (errors returned, never die)
     HANDLER: typing.ClassVar = {"list": "reports", "filter": "search", "delete": "deleteReport",
@@ -1371,7 +1408,7 @@ class CloudSelection(unittest.TestCase):
         self.assertEqual(cm.code, 2)
 
     def test_gcp_connector_found_only_when_cloud_is_gcp(self):
-        with mock.patch.object(_owner("api"), "api", return_value=({"connectors": {"nodes": [self.GCP_NODE]}}, "tid")):
+        with fake_api(lambda q, v: ({"connectors": {"nodes": [self.GCP_NODE]}}, "tid")):
             self.assertEqual([n["id"] for n in wz.find_connector("wiz-lab-42", "gcp")], ["g"])
             self.assertEqual(wz.find_connector("wiz-lab-42", "aws"), [])  # the old bug, locked down
 
@@ -1550,41 +1587,39 @@ class ConnectorLookupLayers(unittest.TestCase):
 
     def test_name_search_covers_the_pre_link_window(self):
         # Nothing linked yet, but the stem finds it — and BY_TYPE is never consulted.
-        api = mock.MagicMock(side_effect=self._api(find=[], search=[self.GCP]))
-        with mock.patch.object(_owner("api"), "api", api):
+        with fake_api(self._api(find=[], search=[self.GCP])) as api:
             self.assertEqual([n["id"] for n in wz.find_connector("proj-1", "gcp", "lab-s1")], ["g"])
         self.assertNotIn(wz.BY_TYPE, [c[0][0] for c in api.call_args_list])
 
     def test_search_result_must_still_target_the_account(self):
         # A same-stem connector for a DIFFERENT project is not this lab's connector.
         other = {**self.GCP, "config": {"projectId": "proj-2"}}
-        with mock.patch.object(_owner("api"), "api", side_effect=self._api(search=[other])):
+        with fake_api(self._api(search=[other])):
             self.assertEqual(wz.find_connector("proj-1", "gcp", "lab-s1"), [])
 
     def test_search_ignores_child_deployments(self):
         child = {"id": "c", "name": "GAR in lab-s1-connector", "enabled": True, "status": "CONNECTED",
                  "type": {"id": "gar"}, "config": {"projectId": "proj-1"}}
-        with mock.patch.object(_owner("api"), "api", side_effect=self._api(search=[child, self.GCP])):
+        with fake_api(self._api(search=[child, self.GCP])):
             self.assertEqual([n["id"] for n in wz.find_connector("proj-1", "gcp", "lab-s1")], ["g"])
 
     def test_by_type_walks_past_the_first_page(self):
         """A tenant holding 104 aws connectors made `connector delete` exit 3 on every freshly leased
         account, because BY_TYPE read one page and refused to conclude. Staging calls delete before
         ensure, so every lab in the family failed to start."""
-        with mock.patch.object(_owner("api"), "api",
-                               side_effect=self._api(pages=[([], "p2"), ([self.GCP], None)])):
+        with fake_api(self._api(pages=[([], "p2"), ([self.GCP], None)])):
             self.assertEqual([n["id"] for n in wz.find_connector("proj-1", "gcp", None)], ["g"])
 
     def test_a_walk_that_cannot_be_trusted_is_environment_3_not_learner_1(self):
         # hasNextPage with no endCursor: "no match" stops meaning "absent". Reporting 1 would tell a
         # learner they did nothing; it would also let `ensure` duplicate a connector it cannot see.
-        with mock.patch.object(_owner("api"), "api", side_effect=self._api(pages=[([], "")])), \
+        with fake_api(self._api(pages=[([], "")])), \
              exits() as cm:
             wz.find_connector("proj-1", "gcp", None)
         self.assertEqual(cm.code, 3)
 
     def test_a_complete_walk_finding_nothing_is_still_learner_state(self):
-        with mock.patch.object(_owner("api"), "api", side_effect=self._api(bytype=[])):
+        with fake_api(self._api(bytype=[])):
             self.assertEqual(wz.find_connector("proj-1", "gcp", None), [])
 
     def test_stem_is_optional_and_never_dies(self):
@@ -1692,11 +1727,14 @@ class WizTenantFacts(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("WIZ_GCP_SERVICE_ACCOUNT=wizabc@prod-us100.iam.gserviceaccount.com", text)
 
-    def test_gcp_only_tenant_does_not_die_on_missing_aws_delegator(self):
-        # The coupling this replaced would have failed a GCP lab for an absent AWS fact.
+    def test_every_key_is_emitted_every_run_empty_when_the_tenant_lacks_it(self):
+        """An Instruqt exec's output key set freezes at its first reference, so a key omitted on one run
+        is unresolvable to HCL forever after (te-labkit-v2/authoring/instruqt-2.0.md): a GCP-only tenant
+        still emits WIZ_REMOTE_ARN, empty, and does not die for the AWS fact it lacks."""
         code, text = self._run({"aws": {}, "gcp": {"serviceAccountEmail": "wizabc@prod-us100.iam.gserviceaccount.com"}})
         self.assertEqual(code, 0)
-        self.assertNotIn("WIZ_REMOTE_ARN", text)  # empty facts are omitted, not emitted blank
+        self.assertIn("WIZ_REMOTE_ARN=\n", text)
+        self.assertIn("WIZ_AZURE_APP_ID=\n", text)
 
     def test_no_facts_at_all_is_environment_3(self):
         # No aws delegator, no gcp SA AND no tid in the token — nothing a caller could consume.

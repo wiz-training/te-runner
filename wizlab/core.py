@@ -225,7 +225,9 @@ def _paged(send, query, variables, field):
 
 
 def _api_send(query, variables):
-    return api(query, variables)[0], []
+    # A page Wiz truncated arrives as data plus errors in one body; the pager must see both.
+    data, _tid, errors = _api_full(query, variables)
+    return data, errors
 
 
 def _all_nodes(query, variables, field):
@@ -252,19 +254,17 @@ def _graphql(tok, dc, query, variables=None):
     return res.get("data") or {}, res.get("errors") or []
 
 
-def api(query, variables, attempts=3):
-    """(data, tid); a GraphQL error is fatal, except a transient one on a read, which is retried."""
+def _api_full(query, variables, attempts=3):
+    """(data, tid, errors): a GraphQL error is fatal, except a transient one on a read, which is retried;
+    errors are returned only when data rides beside them, for the caller to judge."""
     for i in range(attempts):
         tok, dc, tid = token_and_dc()
         data, errors = _graphql(tok, dc, query, variables)
         if not errors:
-            return data, tid
+            return data, tid, []
         msg = "; ".join(e.get("message", "?") for e in errors)
         if any(data.get(k) is not None for k in data):
-            # A field-level error beside data is tolerated (a mutation's warning), but a page it
-            # truncated must not read as the whole set in silence.
-            print(f"wizlab: {len(errors)} GraphQL error(s) beside data, ignored: {msg}", file=sys.stderr)
-            return data, tid
+            return data, tid, errors
         # One rule for both layers: whatever may not be resubmitted over HTTP may not be replayed here
         # either, so a transient GraphQL fault is retried for reads and fatal for everything else.
         is_read = _submissions(query) > 1
@@ -272,6 +272,16 @@ def api(query, variables, attempts=3):
             die(3, msg)
         time.sleep(2**i)  # 1s, 2s
     die(3, "unreachable")  # pragma: no cover
+
+
+def api(query, variables, attempts=3):
+    """(data, tid). A field-level error beside data is tolerated (a mutation's warning) and named on
+    stderr; a lookup that must see a whole set goes through _all_nodes, which refuses it."""
+    data, tid, errors = _api_full(query, variables, attempts)
+    if errors:
+        msg = "; ".join(e.get("message", "?") for e in errors)
+        print(f"wizlab: {len(errors)} GraphQL error(s) beside data, ignored: {msg}", file=sys.stderr)
+    return data, tid
 
 
 def _csp_json(r, cmd):

@@ -13,13 +13,16 @@ umask 077
 : > /run/lab/wiz.env
 # NUL-delimited, so a value carrying a newline (a GOOGLE_CREDENTIALS key) survives whole; `%q` re-quotes
 # it for the wrapper's `.`. The names are every one wizlab reads through core._tenant_env plus the
-# session, lease and Keycloak inputs — a verb granted here fails 3 if its name is missing below.
+# session, lease and Okta inputs (user._okta_env, cmd_user_ensure) — a verb granted here fails 3 if its
+# name is missing below.
 while IFS= read -r -d '' kv; do
   k=${kv%%=*}
   case "$k" in
     WIZ_TENANT|INSTRUQT_SESSION_ID|WIZLAB_SESSION_PREFIX|WIZ_CLIENT_ID|WIZ_CLIENT_SECRET) ;;
     WIZ_*_CLIENT_ID|WIZ_*_CLIENT_SECRET|WIZ_*_AZURE_APP_OBJECT_ID|WIZ_*_LOGIN_URL) ;;
-    LAB_KEYCLOAK_*|GIT_CONFIG_*|ARM_*|GOOGLE_CREDENTIALS|GOOGLE_PROJECT) ;;
+    WIZ_*_COGNITO_SUFFIX|WIZ_*_SSO_CLIENT_ID|WIZ_*_SSO_IDP_NAME) ;;
+    OKTA_WF_INVOKE_URL|OKTA_WF_CLIENT_TOKEN|LAB_PROFILE|INSTRUQT_PARTICIPANT_ID) ;;
+    GIT_CONFIG_*|ARM_*|GOOGLE_CREDENTIALS|GOOGLE_PROJECT) ;;
     AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|AWS_DEFAULT_REGION|AWS_ACCOUNT_ID) ;;
     *) continue ;;
   esac
