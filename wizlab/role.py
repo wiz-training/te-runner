@@ -145,7 +145,7 @@ def _role_inspect_azure(args):
         # (no session, denied, bad scope) is environment. Branch on the exit code, never on az's
         # message text.
         core.die(3, f"az role assignment list failed on /subscriptions/{sub}: {res.stderr.strip()}")
-    assigned = set(json.loads(res.stdout or "[]"))
+    assigned = set(core._csp_json(res, "az role assignment list") or [])
     missing = [r for r in ("Reader", custom) if r not in assigned]
     if missing:
         print(f"subscription {sub}: Wiz's service principal is missing {', '.join(missing)}")
@@ -169,7 +169,7 @@ def _role_inspect_gcp(args):
         # lease itself, so any failure here (no creds, denied, no such project) is environment (3).
         core.die(3, f"gcloud projects get-iam-policy {project} failed: {res.stderr.strip()}")
     member = f"serviceAccount:{sa}"
-    policy = json.loads(res.stdout or "{}")
+    policy = core._csp_json(res, f"gcloud projects get-iam-policy {project}") or {}
     bound = {b.get("role") for b in (policy.get("bindings") or []) if member in (b.get("members") or [])}
     missing = [r for r in GCP_WIZ_ROLES if r not in bound]
     if missing:
@@ -188,7 +188,7 @@ def _aws_role(role):
             print(f"role {role} not found")
             sys.exit(1)
         core.die(3, f"aws iam get-role failed probing {role}: {res.stderr.strip()}")
-    return json.loads(res.stdout or "{}").get("Role") or {}
+    return (core._csp_json(res, "aws iam get-role") or {}).get("Role") or {}
 
 
 def _inspect_aws_trust(role, role_obj):

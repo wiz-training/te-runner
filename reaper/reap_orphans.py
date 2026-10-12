@@ -48,6 +48,10 @@ def _die(msg):
     sys.exit(1)
 
 
+class InstruqtError(Exception):
+    """One tenant's labPlayReports read failed; main() names the tenant and sweeps the next."""
+
+
 def _instruqt(query, variables):
     tok = os.getenv("INSTRUQT_TOKEN") or _die("INSTRUQT_TOKEN not set")
     req = urllib.request.Request(
@@ -57,14 +61,21 @@ def _instruqt(query, variables):
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
-            res = json.loads(r.read())
+            raw = r.read()
     except urllib.error.HTTPError as e:
-        _die(f"instruqt HTTP {e.code}: {e.read().decode(errors='replace')[:300]}")
+        raise InstruqtError(f"instruqt HTTP {e.code}: {e.read().decode(errors='replace')[:300]}") from e
     except OSError as e:
-        _die(f"instruqt unreachable: {type(e).__name__}: {e}")
-    if res.get("errors"):
-        _die(f"instruqt: {res['errors']}")
-    return res["data"]
+        raise InstruqtError(f"instruqt unreachable: {type(e).__name__}: {e}") from e
+    # A 200 whose body is a sign-in page or a `{"errors": ...}` is the same failure class as an HTTP
+    # error: a tenant's read is unusable, which is not grounds to abandon the other tenants' sweep.
+    try:
+        res = json.loads(raw)
+        errors, data = res.get("errors"), res["data"]
+    except (ValueError, KeyError, AttributeError) as e:
+        raise InstruqtError(f"instruqt body is not a GraphQL answer: {raw.decode(errors='replace')[:300]!r}") from e
+    if errors:
+        raise InstruqtError(f"instruqt: {errors}")
+    return data
 
 
 def stopped_sessions(tag):
@@ -165,8 +176,14 @@ def main():
         for sid in manual:
             total += 1
             _tally(_reap_session(mtenant, sid, commit), mtenant, sid, failed, deferred)
+    unread = []
     for tenant, tag in TENANTS.items():
-        sids = stopped_sessions(tag)
+        try:
+            sids = stopped_sessions(tag)
+        except InstruqtError as e:
+            print(f"reap_orphans: tenant {tenant} ({tag}) not swept: {e}", file=sys.stderr)
+            unread.append(tenant)
+            continue
         print(f"# tenant {tenant} ({tag}): {len(sids)} stopped session(s) in last {WINDOW_H}h")
         for sid in sids:
             total += 1
@@ -180,6 +197,8 @@ def main():
         # the same pass fails nightly until the sid ages out, then the retained user is the only way back.
         _die(f"{nfailed} session(s) left residue no pass can clear; see the wizlab lines above, remove it by "
              f"hand, then finish with {_retry_hints(failed)}")
+    if unread:
+        _die(f"tenant(s) {', '.join(unread)} not swept: labPlayReports unreadable; see the instruqt lines above")
 
 
 if __name__ == "__main__":
