@@ -10,25 +10,31 @@ from . import core, outpost, serviceaccount
 # across ~34 of 36 create types; correlation (find by name) is per-type — the generic handler
 # (plural+search, hard verify) covers the norm, _REAP_OVERRIDES holds the exceptions.
 
-# One outcome per resource; _reap_exit routes them. UNKNOWN is not one of the two that keep the user:
-# handler coverage is partial by construction (the generic handler misses most of the ~34 create
+# One outcome per resource; _reap_exit routes them. Only FAILED and DEFERRED keep the user. UNKNOWN does
+# not: handler coverage is partial by construction (the generic handler misses most of the ~34 create
 # types), so blocking a miss would fail every reap and retain every user the reaper exists to delete.
 # Guaranteed types are _SWEEP_TYPES; outside that set the audit layer is opportunistic, and a miss is
-# a record, not a verdict.
-REMOVED, ABSENT, DEFERRED, UNKNOWN, FAILED = "removed", "absent", "deferred", "unknown", "failed"
+# a record, not a verdict. OPERATOR does not either: it is residue only a human can clear, found by its
+# own lab-<sid> name and never through the user, so a retained record buys nothing and accumulates one
+# user per play of a lab whose own cleanup leaves it.
+REMOVED, ABSENT, DEFERRED, UNKNOWN, OPERATOR, FAILED = ("removed", "absent", "deferred", "unknown", "operator",
+                                                       "failed")
 
 
 def _reap_exit(tally):
-    """Answers one question: must a human come back? 3 is cleanup a later pass cannot finish on its own;
-    4 is a teardown still in flight, which the rolling window brings the next daily pass back to.
-    Anything but 0 keeps the session's Wiz user, the only handle back to the leftovers — so
-    collapsing 3 and 4 made a multi-pass Outpost uninstall page as a failure every night."""
+    """Answers two questions: must a human come back, and is the user record a handle to what is left?
+    3 is cleanup a later pass cannot finish on its own and the user stays; 5 is residue only an operator
+    clears and the user goes; 4 is a teardown still in flight, which the rolling window brings the next
+    daily pass back to, user kept. Collapsing 3 and 4 made a multi-pass Outpost uninstall page as a
+    failure every night; collapsing 3 and 5 retained a user per play for an Outpost the user never led to."""
     if tally[FAILED]:
         return 3
+    if tally[OPERATOR]:
+        return 5
     return 4 if tally[DEFERRED] else 0
 
 
-_REAP_NEEDS_REVIEW = (FAILED, DEFERRED, UNKNOWN)
+_REAP_NEEDS_REVIEW = (FAILED, OPERATOR, DEFERRED, UNKNOWN)
 
 
 def _reap_outpost(tok, dc, _h, oid, name):
@@ -37,7 +43,8 @@ def _reap_outpost(tok, dc, _h, oid, name):
     out inside a cron container, so a record mid-uninstall is DEFERRED — blocking keeps the user, and
     the audit entry plus the rolling window bring the next daily pass back to it minutes later. A
     status already carrying UNINSTALL takes no second uninstall: that call is what refuses — which is
-    why _OUTPOST_STUCK is FAILED and not DEFERRED: no later pass has a call left to make."""
+    why _OUTPOST_STUCK is not DEFERRED: no later pass has a call left to make. It is OPERATOR, not
+    FAILED, because the record is reached by its name, so holding the user does not help the human."""
     data, errs = core._gql(tok, dc, outpost.OUTPOST_Q, {"id": oid})
     if errs:
         return FAILED, f"status unreadable ({errs[0].get('message', '?')})"
@@ -48,8 +55,8 @@ def _reap_outpost(tok, dc, _h, oid, name):
         _d, derr = core._gql(tok, dc, outpost.DELETE_OUTPOST, {"input": {"id": oid}})
         return (FAILED, derr[0].get("message", "?")) if derr else (REMOVED, None)
     if status in outpost._OUTPOST_STUCK:
-        return FAILED, f"{status.lower()}; the uninstall cannot be re-fired and deleteOutpost refuses " \
-                       f"the record — it needs an operator, not another pass"
+        return OPERATOR, f"{status.lower()}; the uninstall cannot be re-fired and deleteOutpost refuses " \
+                         f"the record — an operator deletes it in the Wiz console; no pass has a call left"
     if not outpost._uninstall_in_flight(status):
         _d, derr = core._gql(tok, dc, outpost.UNINSTALL_OUTPOST, {"input": {"id": oid}})
         if derr:
@@ -277,8 +284,9 @@ def cmd_reap(args):
     service-account creates the audit layer can't attribute. Pair with `user delete`. Exit 0 promises
     only this: every _SWEEP_TYPES resource named for the session, and every audit-attributed create
     with a handler and a name, is removed or absent. It does NOT promise the session created nothing
-    else — that residue is counted as unknown. Exit 3 and exit 4 are both the reaper's signal to keep
-    the user and come back; _reap_exit says which of the two, and whether anyone need look."""
+    else — that residue is counted as unknown. Exit 3 and exit 4 are the reaper's signal to keep the
+    user and come back; exit 5 is residue for an operator that the user is no handle to; _reap_exit
+    says which, and whether anyone need look."""
     sid = core._session_id(args)
     email = args.email or core._lab_user_email(args)[0]
     stem = core._lab_stem(sid)
@@ -305,7 +313,7 @@ def cmd_reap(args):
     for x in _SWEEP_TYPES:
         tally += _reap_sweep_type(tok, dc, x, stem, commit)
     verb = "removed" if commit else "to remove (dry-run)"
-    counts = ", ".join(f"{tally[o]} {o}" for o in (ABSENT, DEFERRED, UNKNOWN, FAILED))
+    counts = ", ".join(f"{tally[o]} {o}" for o in (ABSENT, DEFERRED, UNKNOWN, OPERATOR, FAILED))
     print(f"# {tally[REMOVED]} {verb} ({audit_only} audit-only), {counts} for {email} / {stem}*",
           file=sys.stderr)
     sys.exit(_reap_exit(tally) if commit else 0)

@@ -53,6 +53,10 @@ class ReapOrdering(unittest.TestCase):
         for codes, want, calls in [((0, 0), rp.DONE, [reap, delete]),
                                    ((4,), rp.DEFERRED, [reap]),
                                    ((3,), rp.FAILED, [reap]),
+                                   # 5 is residue the user record is no handle to, so the record goes
+                                   # and the run stays red for the operator step.
+                                   ((5, 0), rp.FAILED, [reap, delete]),
+                                   ((5, 1), rp.FAILED, [reap, delete]),
                                    # The user is the only handle back to the footprint, so a delete that
                                    # failed is not cleanup done.
                                    ((0, 1), rp.FAILED, [reap, delete])]:
@@ -65,6 +69,29 @@ class ReapOrdering(unittest.TestCase):
             rp._reap_session("T", "s1", True)
         for args in (list(c.args) for c in wizlab.call_args_list):
             self.assertIn("--domain", args)
+
+    def test_operator_residue_deletes_the_user_and_keeps_the_run_red(self):
+        """An Outpost left PARTIALLY_UNINSTALLED by a lab's own cleanup (te-aws-outpost-trust-201,
+        every play) made `wizlab user reap` exit 3, so the session's Wiz user was retained as "the only
+        handle back to the leftovers". The Outpost is found by its name lab-<sid>, not through the user,
+        so the retained user bought nothing and one accumulated per play until an operator deleted the
+        Outpost in the console and re-dispatched the reaper (ghtvgsxcgphw, k8m01846391n). On 5 the
+        record is deleted, the operator step is named, and the red run still names the sid."""
+        def run(cmd, **kw):
+            rc = 5 if cmd[1:3] == ["user", "reap"] else 0
+            return rp.subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
+        with mock.patch.object(rp, "TENANTS", {}), \
+             mock.patch.object(rp.subprocess, "run", side_effect=run) as proc, \
+             mock.patch.dict(rp.os.environ, {"REAP_SESSIONS": "s1"}, clear=True), \
+             mock.patch.object(rp.sys, "argv", ["reap_orphans.py", "--commit"]), \
+             mock.patch.object(rp.sys, "stdout", io.TextIOWrapper(io.BytesIO())), \
+             mock.patch.object(rp.sys, "stderr", io.StringIO()) as err, \
+             self.assertRaises(SystemExit) as cm:
+            rp.main()
+        self.assertEqual(cm.exception.code, 1)
+        self.assertEqual([c.args[0][1:3] for c in proc.call_args_list], [["user", "reap"], ["user", "delete"]])
+        self.assertIn("reap_orphans: lab-s1@ deleted; residue needs an operator", err.getvalue())
+        self.assertIn('REAP_SESSIONS_TENANT=TBCMP REAP_SESSIONS="s1"', err.getvalue())
 
     def test_a_hung_wizlab_costs_one_session_not_the_run(self):
         # Unhandled, TimeoutExpired left main() by traceback: every later session and tenant was skipped

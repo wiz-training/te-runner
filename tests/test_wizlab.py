@@ -1185,12 +1185,20 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         # exit 3 with FAILED made every night of a normal multi-pass teardown page. Residue we cannot
         # act on (UNKNOWN) is not cleanup that failed, or the reaper would retain every lab-<sid>@ user
         # it was built to delete.
-        for outcome, want in [(wz.REMOVED, 0), (wz.ABSENT, 0), (wz.UNKNOWN, 0), (wz.DEFERRED, 4), (wz.FAILED, 3)]:
+        # OPERATOR is residue only a human clears and the user record is no handle to it: an Outpost
+        # left PARTIALLY_UNINSTALLED by te-aws-outpost-trust-201's own cleanup (every play) exited 3, so
+        # reap_orphans retained lab-<sid>@ and one user accumulated per play (ghtvgsxcgphw, k8m01846391n)
+        # although the Outpost is found by its name lab-<sid>, never through the user.
+        for outcome, want in [(wz.REMOVED, 0), (wz.ABSENT, 0), (wz.UNKNOWN, 0), (wz.DEFERRED, 4), (wz.FAILED, 3),
+                              (wz.OPERATOR, 5)]:
             with self.subTest(outcome=outcome):
                 self.assertEqual(self._reap(outcome), want)
         self.assertEqual(self._reap(None, sweep=wz.Counter({wz.FAILED: 1})), 3)  # a sweep that did not finish
-        # A failure outranks a deferral: the pass that needs an operator must not read as self-healing.
+        # A failure outranks a deferral and operator residue: the pass that needs an operator must not
+        # read as self-healing, and a failure must not read as a record the user can be let go of.
         self.assertEqual(self._reap(wz.DEFERRED, sweep=wz.Counter({wz.FAILED: 1})), 3)
+        self.assertEqual(self._reap(wz.OPERATOR, sweep=wz.Counter({wz.FAILED: 1})), 3)
+        self.assertEqual(self._reap(wz.OPERATOR, sweep=wz.Counter({wz.DEFERRED: 1})), 5)
 
     def test_reap_one_reports_failed_when_delete_does_not_remove_resource(self):
         found = [("id1", 1, None), ("id1", 1, None)]
@@ -1232,7 +1240,8 @@ class ConnectorAndReaperSafety(unittest.TestCase):
             call(wz.cmd_reap, ["--session", "s1", "--commit"])
         self.assertEqual(cm.code, 0)
         swept = len(wz._SWEEP_TYPES)
-        self.assertIn(f"# {2 + swept} removed (1 audit-only), 1 absent", err.getvalue())
+        self.assertIn(f"# {2 + swept} removed (1 audit-only), 1 absent, 0 deferred, 0 unknown, 0 operator, 0 failed",
+                      err.getvalue())
 
     def _outpost_reap(self, status, delete_err=None, status_err=None):
         """Drives the real _reap_outpost. Returns (outcome, detail, mutations issued)."""
@@ -1262,14 +1271,19 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         outcome, _detail, sent = self._outpost_reap("UNINSTALLING")
         self.assertEqual((outcome, sent), (wz.DEFERRED, []))
 
-    def test_a_stuck_outpost_is_failed_not_deferred_and_issues_nothing(self):
-        """A PARTIALLY_UNINSTALLED Outpost reported as `delete deferred to the next pass` kept the
-        reaper red every night: the uninstall refuses a second call and deleteOutpost refuses the
-        record, so no pass it promised could ever clear it."""
+    def test_a_stuck_outpost_is_operator_residue_not_failed_or_deferred_and_issues_nothing(self):
+        """An Outpost left PARTIALLY_UNINSTALLED by a lab's own cleanup (te-aws-outpost-trust-201,
+        every play) made `user reap` exit 3, so reap_orphans retained the session's Wiz user as "the
+        only handle back to the leftovers". The Outpost is found by its name lab-<sid>, not through the
+        user, so the retained user bought nothing and one accumulated per play until an operator deleted
+        the Outpost in the console and re-dispatched the reaper (ghtvgsxcgphw, k8m01846391n). The
+        uninstall refuses a second call and deleteOutpost refuses the record, so DEFERRED is wrong too:
+        no pass has a call left to make. OPERATOR names the console step and lets the user go."""
+        self.assertIn(wz.OPERATOR, wz._REAP_NEEDS_REVIEW)
         for status in wz._OUTPOST_STUCK:
             outcome, detail, sent = self._outpost_reap(status)
-            self.assertEqual((outcome, sent), (wz.FAILED, []), status)
-            self.assertIn("operator", detail)
+            self.assertEqual((outcome, sent), (wz.OPERATOR, []), status)
+            self.assertIn("console", detail)
 
     def test_an_uninstalled_outpost_is_deleted(self):
         for status in wz._OUTPOST_DELETABLE:
