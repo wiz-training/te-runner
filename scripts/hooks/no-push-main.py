@@ -7,6 +7,8 @@ it could land on `main`: an explicit `main` refspec (with or without a leading
 read (a `$var`, `$(…)` or backtick), or a push inside `sh -c "…"`. Git's own
 options before `push` (`-C dir`, `-c k=v`, `--git-dir=…`) are skipped, and a
 `cd dir` earlier in the same command line moves the branch check to `dir`.
+A wrapper in front of git (`env`, `command`, `exec`, `nice`, `xargs`) or a path to it is seen
+through, and a push option that takes a value (`-o`, `--repo`) is not read as the remote.
 Branch pushes and tag pushes go through.
 
 Reproducers, all exit 2:
@@ -25,6 +27,10 @@ DYNAMIC = re.compile(r"[$`]")
 # Global git options that take a value in the next argv slot.
 GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
 SHELLS = {"sh", "bash", "dash", "zsh"}
+# Words that run the command after them, with their own leading options or VAR=value assignments.
+WRAPPERS = {"env", "command", "exec", "nice", "nohup", "xargs", "time"}
+# `git push` options whose value is the next argv slot.
+PUSH_VALUE_OPTS = {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
 
 
 def on_main(cwd) -> bool:
@@ -52,21 +58,44 @@ def _git_subcommand(argv):
     return None, None
 
 
+def _unwrap(argv):
+    """argv with leading wrappers, their options and VAR=value assignments removed."""
+    while argv and os.path.basename(argv[0]) in WRAPPERS:
+        argv = argv[1:]
+        while argv and (argv[0].startswith("-") or re.match(r"^\w+=", argv[0])):
+            argv = argv[1:]
+    return argv
+
+
+def _push_positional(args):
+    """The remote and refspecs of a `git push` argument list: options dropped, a value-taking
+    option's value dropped with it."""
+    positional, i = [], 0
+    while i < len(args):
+        if args[i] in PUSH_VALUE_OPTS:
+            i += 2
+            continue
+        if not args[i].startswith("-"):
+            positional.append(args[i])
+        i += 1
+    return positional
+
+
 def lands_on_main(argv: list[str], cwd: str, is_main=on_main) -> bool:
     if not argv:
         return False
     if os.path.basename(argv[0]) in SHELLS:
         # `sh -c "git push origin main"`: inspect the script the shell would run.
         return any(command_lands_on_main(a, cwd, is_main) for a in argv[1:] if "git" in a)
-    if argv[0] != "git":
+    argv = _unwrap(argv)
+    if not argv or os.path.basename(argv[0]) != "git":
         return False
     sub, cdir = _git_subcommand(argv)
     if sub is None or argv[sub] != "push":
         return False
     if cdir:
         cwd = cdir if os.path.isabs(cdir) or not cwd else os.path.join(cwd, cdir)
-    positional = [a for a in argv[sub + 1:] if not a.startswith("-")]
-    refs = positional[1:]  # positional[0] is the remote
+    refs = _push_positional(argv[sub + 1:])[1:]  # positional[0] is the remote
     if not refs:
         return is_main(cwd)
     for r in refs:
@@ -115,6 +144,14 @@ CASES = (
     ("git push origin feature:refs/heads/mainline", "main", False),
     ("gh pr merge --admin 1", "main", False),
     ("echo git push origin main", "main", False),
+    ("/usr/bin/git push origin main", "feature", True),
+    ("env GIT_TRACE=1 git push origin main", "feature", True),
+    ("command git push origin main", "feature", True),
+    ("exec git push origin main", "feature", True),
+    ("git push -o ci.skip origin", "main", True),
+    ("git push --push-option ci.skip origin main", "feature", True),
+    ("git push -o main origin feature", "main", False),
+    ("git push --receive-pack /x/git-receive-pack origin feature", "main", False),
 )
 
 
