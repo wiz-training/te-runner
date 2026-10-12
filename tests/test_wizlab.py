@@ -1252,7 +1252,7 @@ class ConnectorAndReaperSafety(unittest.TestCase):
                 if status_err:
                     return {}, [{"message": status_err}]
                 return {"outpost": ({"id": "o1", "status": status} if status else None)}, []
-            sent.append("delete" if query is wz.DELETE_OUTPOST else "uninstall")
+            sent.append(FakeWiz._FIELD.match(query).group(1))
             return {}, ([{"message": delete_err}] if delete_err else [])
 
         with mock.patch.object(_owner("_gql"), "_gql", gql):
@@ -1263,7 +1263,7 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         # deleteOutpost fails on a live record, so the sweep must not try it; the reaper also must not
         # sit in a poll loop inside a cron container.
         outcome, _detail, sent = self._outpost_reap("CONNECTED")
-        self.assertEqual((outcome, sent), (wz.DEFERRED, ["uninstall"]))
+        self.assertEqual((outcome, sent), (wz.DEFERRED, ["uninstallOutpost"]))
 
     def test_an_uninstalling_outpost_is_deferred_without_a_second_uninstall(self):
         # Every status carrying UNINSTALL is in or past the flow, and the second uninstall is the call
@@ -1271,24 +1271,31 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         outcome, _detail, sent = self._outpost_reap("UNINSTALLING")
         self.assertEqual((outcome, sent), (wz.DEFERRED, []))
 
-    def test_a_stuck_outpost_is_operator_residue_not_failed_or_deferred_and_issues_nothing(self):
+    def test_a_stuck_outpost_gets_one_deleteOutpost_per_pass_and_the_refusal_is_operator_residue(self):
         """An Outpost left PARTIALLY_UNINSTALLED by a lab's own cleanup (te-aws-outpost-trust-201,
-        every play) made `user reap` exit 3, so reap_orphans retained the session's Wiz user as "the
-        only handle back to the leftovers". The Outpost is found by its name lab-<sid>, not through the
-        user, so the retained user bought nothing and one accumulated per play until an operator deleted
-        the Outpost in the console and re-dispatched the reaper (ghtvgsxcgphw, k8m01846391n). The
-        uninstall refuses a second call and deleteOutpost refuses the record, so DEFERRED is wrong too:
-        no pass has a call left to make. OPERATOR names the console step and lets the user go."""
+        every play) was reported OPERATOR without a call, on the inference that deleteOutpost would
+        refuse it; the measured refusal is of a re-fired uninstall (labkit REAP-PARTIAL-019), and the
+        delete was never tried. The operator then deleted two such records from the Wiz console
+        (ghtvgsxcgphw, k8m01846391n), which issues the same mutation, so the record is deletable at
+        least some of the time. Each pass attempts the delete; a refusal carries the server's message
+        so the first logged one settles whether the console step is ever needed. No pass re-fires the
+        uninstall on a stuck status: that call is the one measured to refuse."""
         self.assertIn(wz.OPERATOR, wz._REAP_NEEDS_REVIEW)
         for status in wz._OUTPOST_STUCK:
-            outcome, detail, sent = self._outpost_reap(status)
-            self.assertEqual((outcome, sent), (wz.OPERATOR, []), status)
-            self.assertIn("console", detail)
+            for delete_err, want in [(None, wz.REMOVED), ("outpost is partially uninstalled", wz.OPERATOR)]:
+                with self.subTest(status=status, refused=delete_err):
+                    outcome, detail, sent = self._outpost_reap(status, delete_err=delete_err)
+                    self.assertEqual((outcome, sent), (want, ["deleteOutpost"]))
+                    if delete_err:
+                        self.assertIn(delete_err, detail)
+                        self.assertIn("console", detail)
+                    else:
+                        self.assertIsNone(detail)
 
     def test_an_uninstalled_outpost_is_deleted(self):
         for status in wz._OUTPOST_DELETABLE:
             outcome, _detail, sent = self._outpost_reap(status)
-            self.assertEqual((outcome, sent), (wz.REMOVED, ["delete"]), status)
+            self.assertEqual((outcome, sent), (wz.REMOVED, ["deleteOutpost"]), status)
 
     def test_an_absent_outpost_is_absent_not_failed(self):
         self.assertEqual(self._outpost_reap(None)[0], wz.ABSENT)
@@ -2263,7 +2270,8 @@ class OutpostGrading(unittest.TestCase):
         # deleteOutpost on a live Outpost is a server-side internal error, so it is never attempted
         # first; an already-UNINSTALLED record skips the uninstall. A status already carrying UNINSTALL
         # takes no second uninstall — that call is the one that refuses. PARTIALLY_UNINSTALLED reaches
-        # no deletable state and deleteOutpost refuses it, so it is state (1), never environment (3).
+        # no deletable state and the lab-side verb leaves deleteOutpost to the nightly reaper: a solve
+        # must not wait on a delete that may be refused, so it is state (1), never environment (3).
         both = ["uninstallOutpost", "deleteOutpost"]
         for status, after, want, code in [
             ("INITIALIZED", ["UNINSTALLING", "UNINSTALLED"], both, 0),

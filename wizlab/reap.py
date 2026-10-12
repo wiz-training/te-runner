@@ -42,9 +42,11 @@ def _reap_outpost(tok, dc, _h, oid, name):
     still UNINSTALLING, so the order is uninstall -> UNINSTALLED -> delete. The reaper never waits that
     out inside a cron container, so a record mid-uninstall is DEFERRED — blocking keeps the user, and
     the audit entry plus the rolling window bring the next daily pass back to it minutes later. A
-    status already carrying UNINSTALL takes no second uninstall: that call is what refuses — which is
-    why _OUTPOST_STUCK is not DEFERRED: no later pass has a call left to make. It is OPERATOR, not
-    FAILED, because the record is reached by its name, so holding the user does not help the human."""
+    status already carrying UNINSTALL takes no second uninstall: that call is what refuses. A status in
+    _OUTPOST_STUCK gets deleteOutpost every pass: its refusal was inferred, never measured, and the
+    console delete issues the same mutation, so the attempt is the measurement — the first logged
+    refusal message settles it. A refusal is OPERATOR, not FAILED, because the record is reached by
+    its name, so holding the user does not help the human."""
     data, errs = core._gql(tok, dc, outpost.OUTPOST_Q, {"id": oid})
     if errs:
         return FAILED, f"status unreadable ({errs[0].get('message', '?')})"
@@ -55,8 +57,11 @@ def _reap_outpost(tok, dc, _h, oid, name):
         _d, derr = core._gql(tok, dc, outpost.DELETE_OUTPOST, {"input": {"id": oid}})
         return (FAILED, derr[0].get("message", "?")) if derr else (REMOVED, None)
     if status in outpost._OUTPOST_STUCK:
-        return OPERATOR, f"{status.lower()}; the uninstall cannot be re-fired and deleteOutpost refuses " \
-                         f"the record — an operator deletes it in the Wiz console; no pass has a call left"
+        _d, derr = core._gql(tok, dc, outpost.DELETE_OUTPOST, {"input": {"id": oid}})
+        if derr:
+            return OPERATOR, f"{status.lower()}; deleteOutpost refused: {derr[0].get('message', '?')} — " \
+                             f"delete it in the Wiz console"
+        return REMOVED, None
     if not outpost._uninstall_in_flight(status):
         _d, derr = core._gql(tok, dc, outpost.UNINSTALL_OUTPOST, {"input": {"id": oid}})
         if derr:

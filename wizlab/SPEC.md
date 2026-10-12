@@ -88,6 +88,7 @@ The tag that first reads each contract; a lab pins at or above the highest row i
 | v0.1.70 | `wiz tenant` emits every key |
 | v0.1.71 | `workflow ensure` exact-name; `user inspect --wiz`; a flag another `--cloud` reads is exit 2 |
 | v0.1.72 | `user reap` exit 5: `operator` residue, the user record deleted |
+| v0.1.73 | reaper attempts `deleteOutpost` on a PARTIALLY_UNINSTALLED record |
 
 ### The learner shell
 The image ships a non-root `learner` user, `sudo`, and one sudoers rule: `learner` may run
@@ -136,9 +137,10 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   `--lookback-days` default 2); `delete` reaps by name as uninstall → poll to UNINSTALLED → delete
   (`--timeout`, default 600s); exit 0 when the uninstall outlives the wait (the record is left for the
   daily reaper), exit 1 on `PARTIALLY_UNINSTALLED` (`_OUTPOST_STUCK`): the uninstall cannot be re-fired
-  and `deleteOutpost` refuses the record, so it needs an operator. `user reap` owns the same lifecycle
-  as a guaranteed type, reports `deferred` rather than waiting, and reports a stuck record as `operator`
-  (exit 5): the console delete is the only call left and the user is no handle to it. Scoping key: the
+  and a solve must not wait on a delete that may be refused. `user reap` owns the same lifecycle as a
+  guaranteed type, reports `deferred` rather than waiting, attempts `deleteOutpost` on a stuck record
+  each pass and reports its refusal as `operator` (exit 5): the console delete issues the same mutation
+  and the user is no handle to the record. Scoping key: the
   Outpost name == the session stem (`OutpostFilters` has no account/region field, same as the sensor
   plane). Three statuses that read as success are not: **INITIALIZED proves only that the object is
   registered**, **CONNECTED does not imply it scanned anything** (4 of 7 live ones had scanned nothing),
