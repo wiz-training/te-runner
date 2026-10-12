@@ -120,7 +120,8 @@ def _wizlab(tenant, *args):
 
 # What a session's reap leaves behind. DEFERRED is not a failure: a teardown still in flight is the
 # documented Outpost lifecycle, and the next pass inside WINDOW_H finishes it, so a run reporting only
-# deferrals is green. FAILED is cleanup no later pass can finish on its own.
+# deferrals is green. FAILED is cleanup no later pass can finish on its own, whether the user was kept
+# (wizlab 3) or let go because it was no handle to the residue (wizlab 5).
 DONE, DEFERRED, FAILED = "done", "deferred", "failed"
 
 
@@ -137,13 +138,20 @@ def _reap_session(tenant, sid, commit):
     # when the footprint survives. Only a run inside WINDOW_H retries on its own — past that the sid
     # has aged out of labPlayReports and an operator must pass it via REAP_SESSIONS.
     rc = _wizlab(tenant, "user", "reap", "--session", sid, "--commit", *_domain_args())
-    if rc != 0:
-        # wizlab routes it: 4 finishes on its own, 3 does not (wizlab.reap._reap_exit). Either way the
+    if rc not in (0, 5):
+        # wizlab routes it (wizlab.reap._reap_exit): 4 finishes on its own, 3 does not. Either way the
         # handle stays until a pass proves the footprint gone.
         print(f"reap_orphans: retaining lab-{sid}@ because Wiz cleanup is incomplete", file=sys.stderr)
         return DEFERRED if rc == 4 else FAILED
     # Okta expires the login itself; `user delete` removes the Wiz record its SSO sign-in minted.
-    return DONE if _wizlab(tenant, "user", "delete", "--session", sid, *_domain_args()) == 0 else FAILED
+    deleted = _wizlab(tenant, "user", "delete", "--session", sid, *_domain_args()) == 0
+    if rc == 5 and deleted:
+        # 5 is residue only an operator clears (a stuck Outpost), found by its lab-<sid> name and never
+        # through the user: keeping the record accumulated one user per play of a lab whose own cleanup
+        # leaves it. The run stays red so the operator step is named with the sid.
+        print(f"reap_orphans: lab-{sid}@ deleted; residue needs an operator — see the wizlab line above",
+              file=sys.stderr)
+    return DONE if rc == 0 and deleted else FAILED
 
 
 def _tally(outcome, tenant, sid, failed, deferred):
@@ -193,8 +201,8 @@ def main():
     print(f"# {completed}/{total} session(s) {'reaped' if commit else 'ready to reap (dry-run)'}"
           f"{f', {len(deferred)} deferred to the next pass' if deferred else ''}", file=sys.stderr)
     if failed:
-        # wizlab exit 3 is residue no pass can clear (wizlab.reap._reap_exit), so "retry" alone is wrong:
-        # the same pass fails nightly until the sid ages out, then the retained user is the only way back.
+        # wizlab exit 3 and 5 are residue no pass can clear (wizlab.reap._reap_exit), so "retry" alone is
+        # wrong: the same pass fails nightly until the sid ages out, then the hint's sid is the way back.
         _die(f"{nfailed} session(s) left residue no pass can clear; see the wizlab lines above, remove it by "
              f"hand, then finish with {_retry_hints(failed)}")
     if unread:

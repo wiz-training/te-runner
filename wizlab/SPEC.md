@@ -16,20 +16,26 @@ wrappers (one `wizlab` call + an exit-code remap). Change it only within this co
 | tenant | (`wiz`) emit live tenant connector + endpoint facts as `KEY=value` (+ `$EXEC_OUTPUT`) for a script/terraform; grow by adding keys, never removing |
 
 Exit codes: 0 satisfied · 1 not · 2 invocation error · 3 environment error · 4 `user reap` only, cleanup
-still in flight (`_reap_exit`). Learner checks remap every nonzero code to 1 — a code outside the task's
+still in flight · 5 `user reap` only, residue only an operator can clear; the user record is not a handle
+to it and is deleted (`_reap_exit`). Learner checks remap every nonzero code to 1 — a code outside the task's
 declared list puts the session in a terminal `validating_error` — with `wizlab --check <noun> <verb> …`,
 which prints the real code on stderr; CI consumes the codes raw. A flag the verb does not read is
 invocation error 2 (`FLAGS`), never ignored.
 
 ### What `user reap` exit 0 promises
-One outcome per resource: `removed`, `absent`, `deferred`, `unknown`, `failed`. Exit 3 is `failed`,
-cleanup a later pass cannot finish alone; exit 4 is `deferred`, a teardown still in flight that the next
-daily pass finishes. Either keeps `lab-<sid>@`, the reaper's only handle back to leftovers, and retries
-the sid. Exit 0 promises that every guaranteed-type resource (`_SWEEP_TYPES`) named for the
-session, and every audit-attributed create carrying a handler and a name, is removed or absent. It does
-NOT promise the session created nothing else; that residue is counted as `unknown`. Blanket blocking on
-`unknown` is rejected — handler coverage is partial by construction, so it would fail every reap and
-retain every user. Operator decision, 2026-09-05.
+One outcome per resource; `failed` outranks `operator`, which outranks `deferred` (`_reap_exit`).
+
+| outcome | exit | `lab-<sid>@` |
+|---|---|---|
+| `failed` | 3 | kept, sid retried: no later pass finishes it alone |
+| `operator` | 5 | deleted, run red naming the sid: only a human clears it, by its `lab-<sid>` name, never through the user |
+| `deferred` | 4 | kept, sid retried: teardown in flight; the next daily pass finishes it |
+| `removed`, `absent`, `unknown` | 0 | deleted |
+
+Exit 0 promises that every guaranteed-type resource (`_SWEEP_TYPES`) named for the session, and every
+audit-attributed create carrying a handler and a name, is removed or absent; other residue is `unknown`.
+Blocking on `unknown` would fail every reap and retain every user, since handler coverage is partial by
+construction. Operator decision, 2026-09-05.
 
 ### What `ensure` promises
 Exit 0 means the object matches every flag the call named, and what changed is printed. Where the
@@ -81,6 +87,7 @@ The tag that first reads each contract; a lab pins at or above the highest row i
 | v0.1.65 | Okta `OKTA_WF_*` (`user ensure`, `user inspect`) |
 | v0.1.70 | `wiz tenant` emits every key |
 | v0.1.71 | `workflow ensure` exact-name; `user inspect --wiz`; a flag another `--cloud` reads is exit 2 |
+| v0.1.72 | `user reap` exit 5: `operator` residue, the user record deleted |
 
 ### The learner shell
 The image ships a non-root `learner` user, `sudo`, and one sudoers rule: `learner` may run
@@ -130,10 +137,12 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   (`--timeout`, default 600s); exit 0 when the uninstall outlives the wait (the record is left for the
   daily reaper), exit 1 on `PARTIALLY_UNINSTALLED` (`_OUTPOST_STUCK`): the uninstall cannot be re-fired
   and `deleteOutpost` refuses the record, so it needs an operator. `user reap` owns the same lifecycle
-  as a guaranteed type and reports `deferred` rather than waiting. Scoping key: the Outpost name == the session
-  stem (`OutpostFilters` has no account/region field, same as the sensor plane). Three statuses that
-  read as success are not: **INITIALIZED proves only that the object is registered**, **CONNECTED does
-  not imply it scanned anything** (4 of 7 live ones had scanned nothing), and a direct delete fails.
+  as a guaranteed type, reports `deferred` rather than waiting, and reports a stuck record as `operator`
+  (exit 5): the console delete is the only call left and the user is no handle to it. Scoping key: the
+  Outpost name == the session stem (`OutpostFilters` has no account/region field, same as the sensor
+  plane). Three statuses that read as success are not: **INITIALIZED proves only that the object is
+  registered**, **CONNECTED does not imply it scanned anything** (4 of 7 live ones had scanned nothing),
+  and a direct delete fails.
   All measured — grade and reap off `measurements.yaml outpost_lifecycle.aws`, never off the status
   name's plain meaning.
 - `connector ensure|inspect|delete` — a Cloud Connector. `ensure` converges only on AWS: it creates
