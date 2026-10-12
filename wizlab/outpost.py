@@ -175,8 +175,9 @@ def _reprovision(outpost):
 
 _OUTPOST_DELETABLE = ("UNINSTALLED", "UNINSTALLATION_FAILED")
 
-# No proven transition reaches UNINSTALLED from here, and deleteOutpost refuses the record, so the
-# terminal behaviour is undecided: report it as state (1), never as an environment fault (3).
+# No proven transition reaches UNINSTALLED from here and the uninstall refuses a second call; whether
+# deleteOutpost takes the record is unmeasured, so the nightly reaper attempts it and this verb does
+# not: a solve must not wait on a delete that may be refused. State (1), never an environment fault (3).
 _OUTPOST_STUCK = ("PARTIALLY_UNINSTALLED",)
 
 
@@ -212,8 +213,8 @@ def cmd_outpost_delete(args):
         print(f"outpost {oid} no longer exists; nothing left to delete")
         return
     if status in _OUTPOST_STUCK:
-        print(f"outpost {oid} is {status}: the uninstall cannot be re-fired and deleteOutpost refuses "
-              f"the record; it needs an operator")
+        print(f"outpost {oid} is {status}: the uninstall cannot be re-fired; the nightly reaper attempts "
+              f"deleteOutpost and reports a refusal for an operator")
         sys.exit(1)
     if status not in _OUTPOST_DELETABLE:
         print(f"outpost {oid} still {status} after the wait; leaving the record for the daily reaper")
