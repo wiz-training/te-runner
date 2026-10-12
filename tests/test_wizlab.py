@@ -211,6 +211,8 @@ class InspectContract(unittest.TestCase):
     CLUSTER_ARN: typing.ClassVar = "arn:aws:eks:us-east-1:111111111111:cluster/lab-x"
     K8S: typing.ClassVar = {"id": "k1", "name": "lab-x-k8s", "enabled": True, "status": "CONNECTED",
                             "type": {"id": "eks"}}
+    USER: typing.ClassVar = {"id": "u1", "email": "lab-x@wizlabs.cloudseclabs.io", "status": "ACTIVE",
+                             "identityProviderTypeV2": "SAML"}
     ROWS: typing.ClassVar = {
         ("connector", "inspect"): {"argv": ["--account-id", "111111111111"],
                                    "present": {"connectors": _conn(CONNECTOR)}, "absent": [{"connectors": _conn()}]},
@@ -261,9 +263,14 @@ class InspectContract(unittest.TestCase):
                                       "invalid": [["--name", "lab-x", "--require", "branch"]]},
         ("outpost", "inspect"): {"argv": ["--name", "lab-x"],
                                  "present": {"outposts": _conn(OUTPOST)}, "absent": [{"outposts": _conn()}]},
+        # `--wiz` reads the tenant's own record; without it the verb reads Okta (OktaContract). deleteUser
+        # is a soft delete, so a DELETED record is absent.
+        ("user", "inspect"): {"argv": ["--wiz"],
+                              "present": {"users": _conn(USER)},
+                              "absent": [{"users": _conn()}, {"users": _conn(dict(USER, status="DELETED"))}]},
     }
-    # Graded off another system, each in its own class.
-    NOT_WIZ: typing.ClassVar = {("role", "inspect"): "CSP CLIs", ("user", "inspect"): "Okta"}
+    # Graded off another system, in its own class.
+    NOT_WIZ: typing.ClassVar = {("role", "inspect"): "CSP CLIs"}
 
     def _code(self, verb, argv, fields):
         with mock.patch.object(wz.time, "sleep", lambda *_: None):
@@ -378,7 +385,7 @@ class EnsureContract(unittest.TestCase):
                 "present": {"cicdScanPolicies": _conn(self.POLICY)},
                 "creates": ["createCICDScanPolicy"], "invalid": [[]]},
             ("workflow", "ensure"): {
-                "argv": ["--name", "lab-x", "--definition", self.definition.name],
+                "argv": ["--name", wf["name"], "--definition", self.definition.name],
                 "absent": {"automationWorkflows": _conn(), "validateAutomationWorkflow": {"issues": []},
                            "createAutomationWorkflow": {"workflow": wf}},
                 "present": {"automationWorkflows": _conn(wf), "validateAutomationWorkflow": {"issues": []},
@@ -543,6 +550,16 @@ class OktaContract(unittest.TestCase):
         ):
             with self.subTest(fn=fn.__name__):
                 self.assertEqual(self._run(fn, argv, FakeOkta(fail=True)), 3)
+
+    def test_the_wiz_read_never_reaches_the_router(self):
+        """`reap.sh` runs `user delete` with the tenant pair only, and the Okta login outlives the Wiz record
+        it removes, so the read that confirms the delete must answer from `users` without OKTA_WF_*."""
+        okta = FakeOkta([{"login": self.LOGIN, "okta_user_id": "oid-1"}])
+        env = {"INSTRUQT_SESSION_ID": "s1"}
+        wiz = FakeWiz(users=_conn(dict(InspectContract.USER, email="lab-s1@wizlabs.cloudseclabs.io")))
+        self.assertEqual(exit_code(wz.cmd_user_inspect, ["--wiz"], env=env, wiz=wiz, _okta_call=okta), 0)
+        self.assertEqual(okta.calls, [])
+        self.assertEqual(wiz.sent("users")[0]["search"], "lab-s1@wizlabs.cloudseclabs.io")
 
 
 class AuthorTools(unittest.TestCase):
@@ -1439,6 +1456,33 @@ class CloudSelection(unittest.TestCase):
         self.assertTrue(all(v == [] for v in payload["extraConfig"].values()))
         self.assertNotIn("customerRoleARN", json.dumps(payload))
 
+    def test_a_flag_another_cloud_reads_is_2_and_every_shipped_combination_is_not(self):
+        """A flag the verb does not read is exit 2 (SPEC.md); a flag only another cloud's path reads was
+        parsed and ignored, so `--role-arn` on gcp graded as if it had bound. The None rows are the shapes
+        the shipped `scripts/*.sh` call, which must keep their exit code."""
+        sub, acct = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "111111111111"
+        for argv, refused in (
+            (["--cloud", "gcp", "--account-id", "wiz-lab-42"], None),
+            (["--cloud", "azure", "--account-id", sub, "--tenant-id", "dir-1"], None),
+            (["--account-id", acct, "--role-arn", f"arn:aws:iam::{acct}:role/WizAccess-Role"], None),
+            (["--account-id", acct, "--outpost-name", "lab-x", "--role-arn", "a", "--scanner-role-arn", "b"], None),
+            (["--cloud", "gcp", "--account-id", "wiz-lab-42", "--role-arn", "a"], "--role-arn"),
+            (["--cloud", "gcp", "--account-id", "wiz-lab-42", "--outpost-name", "lab-x"], "--outpost-name"),
+            (["--cloud", "gcp", "--account-id", "wiz-lab-42", "--reauth"], "--reauth"),
+            (["--cloud", "azure", "--account-id", sub, "--tenant-id", "d", "--scanner-role-arn", "b"],
+             "--scanner-role-arn"),
+            (["--cloud", "azure", "--account-id", sub, "--tenant-id", "d", "--outpost-id", "o1"], "--outpost-id"),
+            (["--account-id", acct, "--tenant-id", "dir-1"], "--tenant-id"),
+            (["--cloud", "gcp", "--account-id", "wiz-lab-42", "--tenant-id", "dir-1"], "--tenant-id"),
+        ):
+            with self.subTest(argv=argv):
+                err = io.StringIO()
+                code = exit_code(wz.cmd_connector_ensure, argv, wiz=FakeWiz(), env=InspectContract.ENV, err=err)
+                if refused:
+                    self.assertEqual((code, refused in err.getvalue()), (2, True), err.getvalue())
+                else:
+                    self.assertNotEqual(code, 2, err.getvalue())
+
     def test_unsupported_paths_refuse_rather_than_guess(self):
         with exits() as cm:
             call(wz.cmd_connector_ensure, ["--cloud", "azure", "--account-id", "sub-1"])
@@ -1818,11 +1862,33 @@ class SessionVerifyCsp(unittest.TestCase):
         self.assertEqual(self._verify("aws", self.AWS_ENV, proc, ["--account-id", "123456789012"]), 3)
         self.assertEqual(self._verify("aws", self.AWS_ENV, proc, ["--account-id", "999999999999"]), 0)
 
+    AZ_ENV: typing.ClassVar = {"ARM_CLIENT_ID": "c", "ARM_CLIENT_SECRET": "s", "ARM_TENANT_ID": "t",
+                               "ARM_SUBSCRIPTION_ID": "5da4a5ee-0000-0000-0000-000000000001"}
+
     def test_azure_must_be_logged_in_to_the_declared_subscription(self):
-        env = {"ARM_CLIENT_ID": "c", "ARM_CLIENT_SECRET": "s", "ARM_TENANT_ID": "t",
-               "ARM_SUBSCRIPTION_ID": "5da4a5ee-0000-0000-0000-000000000001"}
-        self.assertEqual(self._verify("azure", env, _proc(0, '{"id": "other-subscription"}')), 3)
-        self.assertEqual(self._verify("azure", env, _proc(0, '{"id": "5DA4A5EE-0000-0000-0000-000000000001"}')), 0)
+        self.assertEqual(self._verify("azure", self.AZ_ENV, _proc(0, '{"id": "other-subscription"}')), 3)
+        self.assertEqual(
+            self._verify("azure", self.AZ_ENV, _proc(0, '{"id": "5DA4A5EE-0000-0000-0000-000000000001"}')), 0)
+
+    def test_gcp_and_azure_compare_the_account_id_the_way_aws_does(self):
+        active = '[{"account": "a@b.iam.gserviceaccount.com", "status": "ACTIVE"}]'
+        self.assertEqual(self._verify("gcp", self.GCP_ENV, _proc(0, active), ["--account-id", "other-project"]), 3)
+        self.assertEqual(self._verify("gcp", self.GCP_ENV, _proc(0, active), ["--account-id", "wiz-lab-42"]), 0)
+        sub = _proc(0, '{"id": "5da4a5ee-0000-0000-0000-000000000001"}')
+        other = "5da4a5ee-0000-0000-0000-000000000002"
+        self.assertEqual(self._verify("azure", self.AZ_ENV, sub, ["--account-id", other]), 3)
+        same = self.AZ_ENV["ARM_SUBSCRIPTION_ID"].upper()
+        self.assertEqual(self._verify("azure", self.AZ_ENV, sub, ["--account-id", same]), 0)
+
+    def test_a_flag_no_cloud_path_reads_is_2(self):
+        for argv, names in (
+            (["--account-id", "111111111111"], "--cloud"),
+        ):
+            with self.subTest(argv=argv):
+                err = io.StringIO()
+                with self._mock_wiz(), self._mock_api():
+                    code = exit_code(wz.cmd_session_verify, argv, err=err)
+                self.assertEqual((code, names in err.getvalue()), (2, True), err.getvalue())
 
 
 class GcpRoleInspect(unittest.TestCase):
@@ -1855,6 +1921,22 @@ class GcpRoleInspect(unittest.TestCase):
 
     def test_empty_tenant_sa_is_environment_3(self):
         self.assertEqual(self._run(_proc(0, self._policy(wz.GCP_WIZ_ROLES)), sa=""), 3)
+
+    def test_a_flag_the_gcp_path_does_not_read_is_2_and_the_shipped_call_is_not(self):
+        # Row 1 is the live `check_wiz_roles.sh` shape; the rest name a flag only another cloud reads.
+        for argv, refused in (
+            (["--cloud", "gcp", "--account-id", "wiz-lab-42"], None),
+            (["--cloud", "gcp", "--account-id", "wiz-lab-42", "--role-name", "WizAccess-Role"], "--role-name"),
+        ):
+            with self.subTest(argv=argv):
+                err = io.StringIO()
+                with mock.patch.object(_owner("_gcp"), "_gcp", return_value=_proc(0, self._policy(wz.GCP_WIZ_ROLES))), \
+                     mock.patch.object(_owner("_wiz_gcp_sa"), "_wiz_gcp_sa", return_value=self.SA):
+                    code = exit_code(wz.cmd_role_inspect, argv, err=err)
+                if refused:
+                    self.assertEqual((code, refused in err.getvalue()), (2, True), err.getvalue())
+                else:
+                    self.assertNotEqual(code, 2, err.getvalue())
 
 
 class SensorDetectionGrading(unittest.TestCase):
@@ -1995,10 +2077,10 @@ class WorkflowGrading(unittest.TestCase):
         self.assertEqual(wz._issue_line({"target": {"_stub": None}, "message": "m"}), "workflow: m")
         self.assertEqual(wz._issue_line({"message": "m"}), "workflow: m")
 
-    def _ensure(self, wf_nodes, *extra):
+    def _ensure(self, wf_nodes, *extra, name="lab-x-night-watch"):
         """The tenant after one `workflow ensure` on a valid definition."""
         wiz = self._wiz(wf_nodes)
-        exit_code(wz.cmd_workflow_ensure, ["--name", "lab-x", "--definition", self._definition_file(), *extra], wiz=wiz)
+        exit_code(wz.cmd_workflow_ensure, ["--name", name, "--definition", self._definition_file(), *extra], wiz=wiz)
         return wiz
 
     @staticmethod
@@ -2021,8 +2103,19 @@ class WorkflowGrading(unittest.TestCase):
         wiz = self._ensure(self.LIVE, "--project-id", "p1")
         sent = wiz.sent("updateAutomationWorkflow")[0]["input"]
         self.assertEqual(sent["id"], "w1")
+        self.assertEqual(sent["patchStrict"]["name"], "lab-x-night-watch")
         self.assertNotIn("projectId", sent["patchStrict"])
         self.assertTrue(sent["patchStrict"]["enabled"])
+
+    def test_ensure_leaves_a_differently_suffixed_sibling_alone(self):
+        """A learner's `lab-<sid>-night-watch` is a prefix match for `--name lab-<sid>`; resolved that way,
+        `ensure` renamed it to the stem through patchStrict.name and deleted every other sibling. Exact-name
+        only: the sibling is neither patched nor deleted, and the stem is created beside it."""
+        wiz = self._ensure(self.LIVE, name="lab-x")
+        self.assertEqual(self._mutations(wiz), ["createAutomationWorkflow"])
+        self.assertEqual(wiz.sent("createAutomationWorkflow")[0]["input"]["workflow"]["name"], "lab-x")
+        argv = ["--name", "lab-x", "--exact-name"]
+        self.assertEqual(self._exit(wz.cmd_workflow_ensure, argv, self._wiz(self.LIVE)), 2)
 
     def test_ensure_creates_when_absent_and_deletes_only_a_duplicate(self):
         self.assertEqual(self._mutations(self._ensure([])), ["createAutomationWorkflow"])

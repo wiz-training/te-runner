@@ -271,15 +271,21 @@ def _patch_aws(args, node, auth, same):
           + f", status={status}")
 
 
+# What only `_aws_auth_params` and `_patch_aws` read: a gcp or azure connector carries no customerRoleARN,
+# no Outpost binding and no authParams the tenant re-runs, so each of these is refused there, never ignored.
+_AWS_ONLY = ("--role-arn", "--scanner-role-arn", "--outpost-id", "--outpost-name", "--reauth")
+
+
 def cmd_connector_ensure(args):
     """Idempotent converge: create the connector if absent, else correct its customerRoleARN if it
     drifted (this is also the repair path — a lab seeds a wrong ARN, `ensure` fixes it). --reauth
     patches even when nothing drifted (_patch_aws)."""
     cloud = args.cloud
     account = core._account_id(args, "connector ensure")
-    if args.reauth and cloud != "aws":
-        core.die(2, f"connector ensure --reauth is aws only: a {cloud} connector carries no authParams "
-                    "the tenant re-runs")
+    if cloud != "aws":
+        core._unused(args, cloud, *_AWS_ONLY)
+    if cloud != "azure":
+        core._unused(args, cloud, "--tenant-id")
     # gcp/azure are create-if-absent (no ARN to drift); only aws falls through to the repair path.
     if cloud == "gcp":
         return _ensure_gcp(args, account)

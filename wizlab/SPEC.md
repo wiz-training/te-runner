@@ -40,7 +40,7 @@ verb cannot make that true it exits 3 naming the difference and mutates nothing.
 |---|---|---|
 | sensor, serviceaccount, mcp | any | delete, re-mint, emit credentials: the secret is shown once and not re-fetchable |
 | connector (aws), workflow | drifted, or connector `--reauth` | patch / reset / rotate to the requested state; `--reauth` patches `authParams` unchanged, which re-inits the connector |
-| user | any | one `action: create` call to the Okta router with a freshly generated password, every run; wizlab reads back only `login` and emits `WIZ_USER`/`WIZ_PWD` |
+| user | any | one `action: create` call to the Okta router with a freshly generated password, every run; wizlab reads back only `login` and emits `WIZ_USER`/`WIZ_PWD`. `user inspect` reads Okta; `--wiz` reads the tenant's `users` record `user delete` removes, with the tenant pair alone |
 | connector (gcp, azure) | any | left as found, exit 0: nothing in it can drift |
 | policy | flags differ from the live params | exit 3, no mutation: a shared tenant fixture other labs grade against changes deliberately |
 | outpost | `--role-arn`/`--region` differ | exit 3, no mutation: a role change is a knowing delete-and-recreate |
@@ -67,7 +67,22 @@ are not rejected), so the repin is what activates the gate. Operator decision, 2
 health under `verify`, not a new noun — a floor is not an API fact and would fail the API-level bar
 below as `runner inspect`.
 
-### The learner shell (v0.1.55+)
+### Verb floors
+The tag that first reads each contract; a lab pins at or above the highest row it calls.
+
+| floor | first read |
+|---|---|
+| v0.1.37 | `--min-runner`, `TE_RUNNER_TAG` |
+| v0.1.46 | `workflow ensure` patches in place (`updateAutomationWorkflow`) |
+| v0.1.47 | `wizlab --check`; an undeclared flag is exit 2 |
+| v0.1.48 | package split (`wizlab/*.py`) |
+| v0.1.49 | `FLAGS` table: typed values, choices, defaults |
+| v0.1.55 | learner shell (`wizlab-grant`, `wizlab-learner`) |
+| v0.1.65 | Okta `OKTA_WF_*` (`user ensure`, `user inspect`) |
+| v0.1.70 | `wiz tenant` emits every key |
+| v0.1.71 | `workflow ensure` exact-name; `user inspect --wiz`; a flag another `--cloud` reads is exit 2 |
+
+### The learner shell
 The image ships a non-root `learner` user, `sudo`, and one sudoers rule: `learner` may run
 `/usr/local/bin/wizlab-learner` without a password, nothing else. A lab keeps every operator secret
 out of `container.environment` (a `terminal` opened as `learner` inherits that env whole) and passes
@@ -167,10 +182,11 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   that is the only signal there is** — `activeVersion`, `draftVersion` and `versions` read null/0 on
   every workflow of a live tenant, so a version-based assertion fails every learner while looking
   correct. It matters because Create leaves a workflow saved-but-inactive, so `exists` alone passes
-  someone who never published. Name resolution is **prefix** on the session stem (`search` is a
-  case-insensitive substring match), because a guide tells a learner to type `lab-<sid>-<scenario>` and
-  the suffix is not the lesson; `--exact-name` pins it, and an `enabled` hit outranks a disabled
-  leftover on the same stem.
+  someone who never published. `inspect` resolves the name by **prefix** on the session stem (`search`
+  is a case-insensitive substring match), because a guide tells a learner to type `lab-<sid>-<scenario>`
+  and the suffix is not the lesson; `--exact-name` pins it, and an `enabled` hit outranks a disabled
+  leftover on the same stem. `ensure` matches the **exact name** only: a prefix hit is the learner's
+  workflow, which the patch would rename to the stem and whose siblings the duplicate sweep would delete.
 
   `ensure --definition <file.json>` **validates, then patches in place, and creates only when absent.**
   `updateAutomationWorkflow(input:{id, patchStrict})` is the mutation the console's Save sends, and
@@ -178,7 +194,7 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   keeps the workflow id, so the test runs earlier activities graded survive a later activity's solve.
   `Workflow versions are currently not supported` is refused for `publishAutomationWorkflowVersion` and
   `updateAutomationWorkflowDraft` only; a create carrying `enabled: true` is already live, so nothing
-  needs publishing. A second exact-name match is a learner's duplicate attempt and is deleted.
+  needs publishing. Only a second exact-name match is deleted, as a learner's duplicate attempt.
   The validate hop is not politeness — a definition with `enabled: true` and any issue is refused as
   `an enabled workflow cannot have validation errors`, naming neither the step nor the expression, while
   `validateAutomationWorkflow(input:{workflow:…}){issues{message target}}` names both, costs no mutation

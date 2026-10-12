@@ -68,11 +68,14 @@ def _workflow_stem(args):
 def _resolve_workflows(name, exact=False):
     """EVERY workflow on the session's stem, enabled first then by name so the order is stable. `search`
     is a case-insensitive substring match, so the stem also matches a suffixed name the guide told the
-    learner to type (lab-<sid>-night-watch) — which is wanted: the suffix is not the lesson and the reap
-    sweep keys on the same prefix. --exact-name pins it.
+    learner to type (lab-<sid>-night-watch) — which is wanted for a read: the suffix is not the lesson and
+    the reap sweep keys on the same prefix. --exact-name pins it. `ensure` always passes exact=True: a
+    prefix hit there is the learner's workflow, which the patch would rename to the stem and whose
+    siblings the duplicate sweep would delete.
 
     Plural because a learner who attempts twice leaves two, and "the first enabled one in API order"
-    grades an arbitrary attempt. Callers that assert state take any match; `ensure` deletes them all."""
+    grades an arbitrary attempt. Callers that assert state take any match; `ensure` deletes every
+    exact-name duplicate past the first."""
     nodes = core._all_nodes(WORKFLOWS_Q, {"f": {"search": name}}, "automationWorkflows")
     hits = [n for n in nodes if (n.get("name") == name if exact else (n.get("name") or "").startswith(name))]
     return sorted(hits, key=lambda n: (not n.get("enabled"), n.get("name") or ""))
@@ -130,7 +133,8 @@ def _issue_line(issue):
 
 
 def cmd_workflow_ensure(args):
-    """Validate, then patch in place, create only when absent (contract: SPEC.md, workflow section).
+    """Validate, then patch in place, create only when absent (contract: SPEC.md, workflow section). The
+    live match is the exact name: the one the definition will carry, never a suffixed sibling on the stem.
     Validation issues exit 2: the definition is the caller's bug, not the environment's. The patch keeps
     the workflow id, so test runs an earlier activity graded survive a later activity's solve. No
     version-bearing mutation is sent: every one is refused live. `--dry-run` validates and stops, which
@@ -145,7 +149,7 @@ def cmd_workflow_ensure(args):
     if args.dry_run:
         print("0 validation issues; nothing submitted")
         return
-    live = _resolve_workflows(name, exact=args.exact_name)
+    live = _resolve_workflows(name, exact=True)
     for stale in live[1:]:
         core.api(DELETE_WORKFLOW, {"input": {"id": stale["id"]}})
         print(f"deleted duplicate workflow {stale['name']} ({stale['id']})")
