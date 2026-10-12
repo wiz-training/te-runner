@@ -2514,6 +2514,49 @@ class MCPGrading(unittest.TestCase):
                                    self._wiz(status="ACTIVE", existing=True))[0], 0)
 
 
+class CredentialRecords(unittest.TestCase):
+    """Every credential noun is a `Credential` record driven by `credential.ensure/inspect/delete`. Four
+    hand-copied handler sets drifted in their stderr lines and label text while sending the same
+    documents; the next credential noun is a record plus its documents, never a module of handlers, and
+    this table is where its row goes. Each record: `ensure` on a present object sends
+    [delete_mutation, create] in that order and emits exactly `emit_keys`; `inspect` absent -> 1,
+    present -> 0; `delete --id` sends the id as a GraphQL variable, never spliced into the document."""
+
+    ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "x"}
+    ROWS: typing.ClassVar = {
+        "sensor": (wz.SENSOR_SA, EnsureContract.SA, {"createServiceAccount": {"serviceAccount": EnsureContract.SA}}),
+        "apiaccount": (wz.API_ACCOUNT, InspectContract.API,
+                       {"createServiceAccount": {"serviceAccount": InspectContract.API}}),
+        "serviceaccount": (wz.CLI_DEPLOYMENT, EnsureContract.CLI["deployment"],
+                           {"createCliDeployment": EnsureContract.CLI}),
+        "mcp": (wz.MCP_INTEGRATION, InspectContract.MCP, {"createIntegration": EnsureContract.MCP}),
+    }
+
+    @staticmethod
+    def _args(name, oid=None):
+        return types.SimpleNamespace(session=None, name=name, require="exists", id=oid, scopes=None, expires_at=None)
+
+    def _run(self, verb, cred, args, fields):
+        out, wiz = io.StringIO(), FakeWiz(**fields)
+        return exit_code(lambda _argv: verb(cred, args), [], wiz=wiz, env=self.ENV, out=out), out.getvalue(), wiz
+
+    def test_every_record_mints_deletes_and_emits_the_same_way(self):
+        hostile = 'x" }) { id } } mutation { deleteTenant(input: { id: "t'
+        for noun, (cred, node, create) in self.ROWS.items():
+            with self.subTest(noun=noun):
+                present, absent = {cred.find_field: _conn(node), **create}, {cred.find_field: _conn(), **create}
+                create_field = FakeWiz._FIELD.match(cred.create_doc).group(1)
+                code, out, wiz = self._run(wz.ensure, cred, self._args(node["name"]), present)
+                self.assertEqual((code, _mutations(wiz)), (0, [cred.delete_mutation, create_field]))
+                self.assertEqual([ln.split("=")[0] for ln in out.splitlines()], list(cred.emit_keys))
+                self.assertEqual(self._run(wz.inspect, cred, self._args(node["name"]), absent)[0], 1)
+                self.assertEqual(self._run(wz.inspect, cred, self._args(node["name"]), present)[0], 0)
+                code, _, wiz = self._run(wz.delete, cred, self._args(None, oid=hostile), absent)
+                self.assertEqual((code, wiz.sent(cred.delete_mutation)), (0, [{"id": hostile}]))
+                self.assertNotIn(hostile, "".join(wiz.docs))
+                self.assertIn(cred.sweep_type, wz._SWEEP_TYPES)
+
+
 class CodeScanGrading(unittest.TestCase):
     """code-scan inspect grades the TENANT verdict (WARN_BY_POLICY exits 0 at the CLI, so the exit
     code can't tell a finding from a pass). Lock pass/fail and the bounded poll."""

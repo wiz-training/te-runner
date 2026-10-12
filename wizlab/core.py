@@ -240,8 +240,8 @@ def _all_nodes(query, variables, field):
 
 
 def _delete_doc(mutation, select="_stub"):
-    # The id is a variable, never spliced: `--id` on `_delete_sa` / `cmd_serviceaccount_delete` is user
-    # input. The mutation name stays in the document text — callers and tests route on it.
+    # The id is a variable, never spliced: `--id` on `credential.delete` is user input. The mutation
+    # name stays in the document text — callers and tests route on it.
     return f"mutation DeleteById($id: ID!) {{ {mutation}(input: {{ id: $id }}) {{ {select} }} }}"
 
 
