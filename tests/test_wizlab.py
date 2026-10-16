@@ -575,6 +575,11 @@ class AuthorTools(unittest.TestCase):
         self.assertEqual(exit_code(wz.cmd_user_login_url, [], wiz=FakeWiz(tid="t1"), env=env, out=out), 0)
         self.assertIn("t1-zz9.auth.", out.getvalue())
         self.assertIn("client_id=cid9", out.getvalue())
+        # The portal idp-login entrypoint wins over the Cognito shape when its client id is set.
+        out = io.StringIO()
+        env = {"WIZ_TENANT": "NEW", "WIZ_NEW_IDP_LOGIN_CLIENT_ID": "pc9", "WIZ_NEW_SSO_IDP_NAME": "Okta-Chronical"}
+        self.assertEqual(exit_code(wz.cmd_user_login_url, [], env=env, out=out), 0)
+        self.assertEqual(out.getvalue().strip(), "https://app.wiz.io/idp-login?clientId=pc9&idp=Okta-Chronical")
 
 
 class PureParsing(unittest.TestCase):
