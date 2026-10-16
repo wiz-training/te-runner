@@ -65,7 +65,7 @@ def _gen_password():
 # so a new tenant is an env pair, like its credential, not an image release.
 _TENANT_SSO = {
     "TBCMP": {"cognito_suffix": "34dq", "client_id": "4lgopniht2g4j58sirh4kh5gtl", "idp_name": "Okta"},
-    "TE": {"cognito_suffix": "o8cy", "client_id": "54snbgo7lek43ct9ph3coc5484", "idp_name": "Okta"},
+    "TE": {"cognito_suffix": "o8cy", "client_id": "54snbgo7lek43ct9ph3coc5484", "idp_name": "Keycloak"},
 }
 
 
