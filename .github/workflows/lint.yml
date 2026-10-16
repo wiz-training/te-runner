@@ -20,3 +20,9 @@ jobs:
       - run: python tests/test_wizlab.py
       - run: python reaper/test_reap_orphans.py
       - run: python test_entrypoint.py
+      # The repo is public: a credential in a tracked file is published the moment it lands.
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scanners: secret
+          exit-code: "1"

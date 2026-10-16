@@ -48,10 +48,18 @@ if [ -n "${GOOGLE_CREDENTIALS:-}" ] && command -v gcloud >/dev/null 2>&1; then
   [ -n "${GOOGLE_PROJECT:-}" ] && gcloud config set project "$GOOGLE_PROJECT" --quiet
 fi
 if [ -n "${ARM_CLIENT_ID:-}" ] && command -v az >/dev/null 2>&1; then
-  az login --service-principal -u "$ARM_CLIENT_ID" -p "$ARM_CLIENT_SECRET" \
+  # `@path` expands to the file's contents, so the secret never sits on an argv any local user can
+  # read from /proc while the login runs.
+  az_secret=$(mktemp /tmp/az-sp.XXXXXX)
+  trap 'rm -f "$az_secret"' EXIT HUP INT TERM
+  chmod 600 "$az_secret"
+  printf '%s' "$ARM_CLIENT_SECRET" > "$az_secret"
+  az login --service-principal -u "$ARM_CLIENT_ID" -p "@$az_secret" \
     --tenant "$ARM_TENANT_ID" >/dev/null 2>&1 \
     && az account set --subscription "$ARM_SUBSCRIPTION_ID" \
     || echo "az service-principal login failed" >&2
+  rm -f "$az_secret"
+  trap - EXIT HUP INT TERM
 fi
 
 exec "$@"

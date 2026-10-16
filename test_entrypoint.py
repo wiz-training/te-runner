@@ -8,32 +8,35 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parent
 
 
-class GcpCredentialFile(unittest.TestCase):
-    def test_failed_login_still_removes_mode_600_key_file(self):
-        with tempfile.TemporaryDirectory() as td:
-            tmp = pathlib.Path(td)
-            capture = tmp / "capture"
-            gcloud = tmp / "gcloud"
-            gcloud.write_text(
-                "#!/bin/sh\n"
-                "case $1 in\n"
-                "  auth) key=${4#--key-file}; stat -c '%a %n' \"$key\" > \"$CAPTURE\"; exit 1 ;;\n"
-                "  *) exit 0 ;;\n"
-                "esac\n"
-            )
-            gcloud.chmod(0o755)
-            env = {
-                **os.environ,
-                "PATH": f"{tmp}:{os.environ['PATH']}",
-                "CAPTURE": str(capture),
-                "GOOGLE_CREDENTIALS": '{"private_key":"secret"}',
-            }
-            result = subprocess.run(["/bin/sh", str(ROOT / "entrypoint.sh"), "true"], env=env,
-                                    capture_output=True, text=True, check=False)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            mode, key = capture.read_text().strip().split(" ", 1)
-            self.assertEqual(mode, "600")
-            self.assertFalse(pathlib.Path(key).exists())
+class CredentialFile(unittest.TestCase):
+    """A CSP secret reaches its CLI through a 0600 file the entrypoint removes even when the login fails,
+    never through argv (readable from /proc by any local user). One row per CLI; the stub exits 1 on the
+    login and records the mode and path of the file it was handed."""
+
+    ROWS = (
+        # binary, env, stub body: records `mode path` of the credential file into $CAPTURE, then fails
+        ("gcloud", {"GOOGLE_CREDENTIALS": '{"private_key":"secret"}'},
+         "case $1 in auth) stat -c '%a %n' \"$4\" > \"$CAPTURE\"; exit 1 ;; *) exit 0 ;; esac\n"),
+        ("az", {"ARM_CLIENT_ID": "i", "ARM_CLIENT_SECRET": "s", "ARM_TENANT_ID": "t", "ARM_SUBSCRIPTION_ID": "u"},
+         "case $1 in login) for a in \"$@\"; do case $a in @*) stat -c '%a %n' \"${a#@}\" > \"$CAPTURE\";; esac; done;"
+         " exit 1 ;; *) exit 0 ;; esac\n"),
+    )
+
+    def test_failed_login_still_removes_mode_600_file(self):
+        for binary, env, body in self.ROWS:
+            with self.subTest(binary=binary), tempfile.TemporaryDirectory() as td:
+                tmp = pathlib.Path(td)
+                capture = tmp / "capture"
+                stub = tmp / binary
+                stub.write_text("#!/bin/sh\n" + body)
+                stub.chmod(0o755)
+                run_env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}", "CAPTURE": str(capture), **env}
+                result = subprocess.run(["/bin/sh", str(ROOT / "entrypoint.sh"), "true"], env=run_env,
+                                        capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                mode, key = capture.read_text().strip().split(" ", 1)
+                self.assertEqual(mode, "600")
+                self.assertFalse(pathlib.Path(key).exists())
 
 
 class DevAccessGate(unittest.TestCase):

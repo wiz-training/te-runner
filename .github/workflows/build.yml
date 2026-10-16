@@ -67,6 +67,8 @@ jobs:
             grep -q "^AWS_DEFAULT_REGION=" /run/lab/wiz.env || exit 1
             grep -q "^OKTA_WF_INVOKE_URL=" /run/lab/wiz.env'
           docker run --rm "$IMG" python3 -c 'import ast, sys; ast.parse(open("/opt/reaper/reap_orphans.py").read())'
-          # Unpinned CLIs float: this log line is where a rebuilt tag's versions are on record.
+          # No host key ships in the image (one shared ssh identity otherwise), and sshd is key-only.
+          docker run --rm "$IMG" sh -c '! ls /etc/ssh/ssh_host_* >/dev/null 2>&1 && ssh-keygen -A >/dev/null && sshd -T | grep -qx "passwordauthentication no"'
+          # The versions this tag carries, on record in the log.
           docker run --rm "$IMG" sh -c 'aws --version; terraform version -json | jq -r .terraform_version; gcloud --version | head -1; az version -o tsv 2>/dev/null | cut -f1; wizcli version; tailscale version | head -1; kubectl version --client -o json | jq -r .clientVersion.gitVersion; crane version'
       - run: docker push "$IMG"
