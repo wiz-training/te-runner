@@ -76,9 +76,14 @@ def _wiz_login_url():
     override = core._tenant_env("LOGIN_URL")
     if override:
         return override
+    idp_name = core._tenant_env("SSO_IDP_NAME") or "Okta"
+    # The portal's own SSO entrypoint. A tenant whose Cognito app client refuses the lab user's SAML
+    # hand-back ("Login option is not available") still completes through it, so it wins when set.
+    idp_login_client = core._tenant_env("IDP_LOGIN_CLIENT_ID")
+    if idp_login_client:
+        return f"https://app.wiz.io/idp-login?clientId={idp_login_client}&idp={idp_name}"
     suffix = core._tenant_env("COGNITO_SUFFIX")
     client_id = core._tenant_env("SSO_CLIENT_ID")
-    idp_name = core._tenant_env("SSO_IDP_NAME") or "Okta"
     if not suffix or not client_id:
         return None
     _tok, _dc, tid = core.token_and_dc()
