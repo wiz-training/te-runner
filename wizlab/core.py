@@ -19,8 +19,18 @@ AUTH_URL = "https://auth.app.wiz.io/oauth/token"
 AUDIENCE = "wiz-api"
 
 
+def _domain():
+    """WIZ_<TENANT>_DOMAIN, default app.wiz.io: a demo-environment tenant lives under demo.wiz.io with the
+    same auth, api and mcp host shapes, so one variable moves every call."""
+    return _tenant_env("DOMAIN") or "app.wiz.io"
+
+
+def auth_url():
+    return AUTH_URL.replace("app.wiz.io", _domain())
+
+
 def api_url(dc):
-    return f"https://api.{dc}.app.wiz.io/graphql"
+    return f"https://api.{dc}.{_domain()}/graphql"
 
 
 CLOUDS = ("aws", "gcp", "azure")
@@ -157,7 +167,7 @@ def token_and_dc():
             "client_secret": sec,
         }
     )
-    res = _post(AUTH_URL, payload, {"Content-Type": "application/x-www-form-urlencoded"})
+    res = _post(auth_url(), payload, {"Content-Type": "application/x-www-form-urlencoded"})
     tok = res.get("access_token")
     if not tok:
         die(3, f"no token returned: {res.get('message') or res}")
