@@ -563,15 +563,13 @@ class OktaContract(unittest.TestCase):
 
 
 class AuthorTools(unittest.TestCase):
-    def test_login_url_is_the_override_or_built_from_the_tenant_or_3(self):
+    def test_login_url_is_the_override_or_the_env_pair_or_3(self):
         out = io.StringIO()
         self.assertEqual(exit_code(wz.cmd_user_login_url, [], env={"WIZ_LOGIN_URL": "https://pinned"}, out=out), 0)
         self.assertEqual(out.getvalue().strip(), "https://pinned")
-        out = io.StringIO()
-        self.assertEqual(exit_code(wz.cmd_user_login_url, [], wiz=FakeWiz(tid="t1"), env={}, out=out), 0)
-        self.assertIn("t1-34dq.auth.us-east-1.amazoncognito.com", out.getvalue())
+        # No literal per tenant in a public image: a tid alone builds nothing.
+        self.assertEqual(exit_code(wz.cmd_user_login_url, [], wiz=FakeWiz(tid="t1"), env={}), 3)
         self.assertEqual(exit_code(wz.cmd_user_login_url, [], env={"WIZ_TENANT": "NOPE"}), 3)
-        # A tenant outside the baked table is an env pair, like its credential — not an image release.
         out = io.StringIO()
         env = {"WIZ_TENANT": "NEW", "WIZ_NEW_COGNITO_SUFFIX": "zz9", "WIZ_NEW_SSO_CLIENT_ID": "cid9"}
         self.assertEqual(exit_code(wz.cmd_user_login_url, [], wiz=FakeWiz(tid="t1"), env=env, out=out), 0)

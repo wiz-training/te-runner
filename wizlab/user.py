@@ -59,16 +59,10 @@ def _gen_password():
     )
 
 
-# Per-tenant SSO constants that CANNOT be derived: the suffix Wiz appends to the tenant id in its
-# Cognito domain, and the SSO app client id. The tenant id itself IS derived (JWT `tid`), so it is
-# not stored here — one source, no drift. WIZ_<T>_COGNITO_SUFFIX / WIZ_<T>_SSO_CLIENT_ID override
-# so a new tenant is an env pair, like its credential, not an image release.
-_TENANT_SSO = {
-    "TBCMP": {"cognito_suffix": "34dq", "client_id": "4lgopniht2g4j58sirh4kh5gtl", "idp_name": "Okta"},
-    "TE": {"cognito_suffix": "o8cy", "client_id": "54snbgo7lek43ct9ph3coc5484", "idp_name": "Okta"},
-}
-
-
+# Per-tenant SSO constants that CANNOT be derived — the suffix Wiz appends to the tenant id in its
+# Cognito domain, and the SSO app client id — come from WIZ_<T>_COGNITO_SUFFIX / WIZ_<T>_SSO_CLIENT_ID,
+# never a literal: the image is public, and a tenant is an env pair, like its credential, not an image
+# release. The tenant id itself IS derived (JWT `tid`).
 _COGNITO_REGION = "us-east-1"  # Wiz's own auth infrastructure, not the lab's cloud region.
 
 
@@ -82,10 +76,9 @@ def _wiz_login_url():
     override = core._tenant_env("LOGIN_URL")
     if override:
         return override
-    sso = _TENANT_SSO.get(core._tenant(), {})
-    suffix = core._tenant_env("COGNITO_SUFFIX") or sso.get("cognito_suffix")
-    client_id = core._tenant_env("SSO_CLIENT_ID") or sso.get("client_id")
-    idp_name = core._tenant_env("SSO_IDP_NAME") or sso.get("idp_name", "Okta")
+    suffix = core._tenant_env("COGNITO_SUFFIX")
+    client_id = core._tenant_env("SSO_CLIENT_ID")
+    idp_name = core._tenant_env("SSO_IDP_NAME") or "Okta"
     if not suffix or not client_id:
         return None
     _tok, _dc, tid = core.token_and_dc()
@@ -185,5 +178,6 @@ def cmd_user_login_url(args):
     changes — the single source that keeps the literal from silently drifting."""
     url = _wiz_login_url()
     if not url:
-        core.die(3, "cannot build login URL: no SSO entry for tenant or no tid in token")
+        core.die(3, "cannot build login URL: WIZ_<T>_LOGIN_URL, or WIZ_<T>_COGNITO_SUFFIX + WIZ_<T>_SSO_CLIENT_ID "
+                    "with a tid in the token, is required")
     print(url)
