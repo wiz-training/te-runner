@@ -10,27 +10,31 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AUTH_URL = "https://auth.app.wiz.io/oauth/token"
-
-
-# The token audience, and the API host pattern every data-center shares. A lab that hands an
-# agent or an SDK its own Wiz credential needs both spelled the same way wizlab spells them
-# (`wiz tenant`), so they are constants here rather than literals at each call site.
+# The token audience. A lab that hands an agent or an SDK its own Wiz credential needs it and the
+# endpoints below spelled the way wizlab spells them (`wiz tenant`), so they live here, never as
+# literals at a call site.
 AUDIENCE = "wiz-api"
 
 
 def _domain():
     """WIZ_<TENANT>_DOMAIN, default app.wiz.io: a demo-environment tenant lives under demo.wiz.io with the
-    same auth, api and mcp host shapes, so one variable moves every call."""
+    same auth, api and mcp host shapes, so one variable moves every call. The portal is the domain
+    itself; every other Wiz host is composed from it through _host. A literal `app.wiz.io` elsewhere is
+    the bug this prevents."""
     return _tenant_env("DOMAIN") or "app.wiz.io"
 
 
+def _host(prefix):
+    """`<prefix>.<domain>`: the auth and api.<dc> hosts share one domain and differ only here."""
+    return f"{prefix}.{_domain()}"
+
+
 def auth_url():
-    return AUTH_URL.replace("app.wiz.io", _domain())
+    return f"https://{_host('auth')}/oauth/token"
 
 
 def api_url(dc):
-    return f"https://api.{dc}.{_domain()}/graphql"
+    return f"https://{_host(f'api.{dc}')}/graphql"
 
 
 CLOUDS = ("aws", "gcp", "azure")
@@ -83,7 +87,7 @@ def _exact(nodes, name):
 def _prefer(nodes, status):
     """The node in `status` if there is one, else the first: a healthy record outranks a stale one left
     on a recycled name."""
-    return sorted(nodes, key=lambda n: n.get("status") != status)[0] if nodes else None
+    return min(nodes, key=lambda n: n.get("status") != status, default=None)
 
 
 def _emit(lines):
@@ -219,6 +223,11 @@ def _next_cursor(conn, seen):
     return cur, None
 
 
+def _gql_msg(errs):
+    """The first GraphQL error's message: the one line a tally or an alert carries."""
+    return errs[0].get("message", "?")
+
+
 def _paged(send, query, variables, field):
     """Every node of connection `field`, following pageInfo through `send(query, variables) -> (data,
     errors)`. Returns (nodes, alert); the alert names why the walk stopped short."""
@@ -226,7 +235,7 @@ def _paged(send, query, variables, field):
     while True:
         data, errs = send(query, {**variables, "after": cursor})
         if errs:
-            return nodes, errs[0].get("message", "?")
+            return nodes, _gql_msg(errs)
         conn = data.get(field) or {}
         nodes += conn.get("nodes") or []
         cursor, alert = _next_cursor(conn, seen)
@@ -264,10 +273,10 @@ def _graphql(tok, dc, query, variables=None):
     return res.get("data") or {}, res.get("errors") or []
 
 
-def _api_full(query, variables, attempts=3):
+def _api_full(query, variables):
     """(data, tid, errors): a GraphQL error is fatal, except a transient one on a read, which is retried;
     errors are returned only when data rides beside them, for the caller to judge."""
-    for i in range(attempts):
+    for i in range(_READ_SUBMISSIONS):
         tok, dc, tid = token_and_dc()
         data, errors = _graphql(tok, dc, query, variables)
         if not errors:
@@ -278,20 +287,29 @@ def _api_full(query, variables, attempts=3):
         # One rule for both layers: whatever may not be resubmitted over HTTP may not be replayed here
         # either, so a transient GraphQL fault is retried for reads and fatal for everything else.
         is_read = _submissions(query) > 1
-        if not (is_read and any(t in msg.lower() for t in _TRANSIENT_GQL)) or i == attempts - 1:
+        if not (is_read and any(t in msg.lower() for t in _TRANSIENT_GQL)) or i == _READ_SUBMISSIONS - 1:
             die(3, msg)
         time.sleep(2**i)  # 1s, 2s
     die(3, "unreachable")  # pragma: no cover
 
 
-def api(query, variables, attempts=3):
+def api(query, variables):
     """(data, tid). A field-level error beside data is tolerated (a mutation's warning) and named on
     stderr; a lookup that must see a whole set goes through _all_nodes, which refuses it."""
-    data, tid, errors = _api_full(query, variables, attempts)
+    data, tid, errors = _api_full(query, variables)
     if errors:
         msg = "; ".join(e.get("message", "?") for e in errors)
         print(f"wizlab: {len(errors)} GraphQL error(s) beside data, ignored: {msg}", file=sys.stderr)
     return data, tid
+
+
+def _created(data, mutation, field):
+    """The `field` record a create/update mutation answered with, or exit 3: a mutation that returns
+    data with no record has not created what the caller is about to print as created."""
+    rec = (data.get(mutation) or {}).get(field) or {}
+    if not rec:
+        die(3, f"{mutation} returned no {field}")
+    return rec
 
 
 def _csp_json(r, cmd):
@@ -319,10 +337,11 @@ def _unused(args, cloud, *flags):
             die(2, f"{flag} is not read for --cloud {cloud}")
 
 
-def _named(args, suffix=""):
-    """--name, else the session stem plus `suffix`: the reaper sweeps the stem, so a default name is
-    always within its reach; --name is for a manual or dev run."""
-    return args.name or f"{_lab_stem(_session_id(args))}{suffix}"
+def _named(args, suffix="", flag="name"):
+    """The `flag` option (default --name), else the session stem plus `suffix`: the reaper sweeps the stem,
+    so a default name is always within its reach; the flag is for a manual or dev run. `getattr` is
+    strict on purpose: a verb whose FLAGS lack the option is a bug here, not a stem by accident."""
+    return getattr(args, flag) or f"{_stem(args)}{suffix}"
 
 
 _SCOPE_RE = re.compile(r"^[a-z_]+:[a-z_]+$")
@@ -339,21 +358,27 @@ def _scopes(args, default):
     return wanted
 
 
+def _sid(args):
+    # The lab session id: unique per play, injected as INSTRUQT_SESSION_ID, and the id labPlayReports
+    # returns — so the out-of-band reaper joins a stopped session straight to its objects by name.
+    return args.session or os.getenv("INSTRUQT_SESSION_ID")
+
+
 def _stem_opt(args):
     """The session stem when it is knowable, else None. Unlike _session_id this never dies: a check
     run by hand has no INSTRUQT_SESSION_ID, and the name-search layer is an optimisation, not a
     requirement."""
-    sid = args.session or os.getenv("INSTRUQT_SESSION_ID")
+    sid = _sid(args)
     return _lab_stem(sid) if sid else None
 
 
 def _session_id(args):
-    # The lab session id: unique per play, injected as INSTRUQT_SESSION_ID, and the id labPlayReports
-    # returns — so the out-of-band reaper joins a stopped session straight to its objects by name.
-    sid = args.session or os.getenv("INSTRUQT_SESSION_ID")
-    if not sid:
-        die(2, "need --session or INSTRUQT_SESSION_ID (the lab session id = naming + reap key)")
-    return sid
+    return _sid(args) or die(2, "need --session or INSTRUQT_SESSION_ID (the lab session id = naming + reap key)")
+
+
+def _stem(args):
+    """The session's naming stem, lab-<session_id>; exit 2 when no session is known."""
+    return _lab_stem(_session_id(args))
 
 
 def _lab_stem(session_id):
@@ -410,9 +435,7 @@ def _az(*a): return _cli("az", *a)
 def _lab_user_email(args):
     # Deterministic from the session id so `ensure` is idempotent and `delete`/reap need no stored
     # state — and the email carries the reaper's join key (lab-<session_id>@).
-    domain = args.domain
-    stem = _lab_stem(_session_id(args))
-    return f"{stem}@{domain}", stem
+    return f"{_stem(args)}@{args.domain}"
 
 
 def _gql(tok, dc, query, variables=None):

@@ -1,5 +1,4 @@
 """Kubernetes connectors the lab owns, and the container-plane check that grades enumeration."""
-import json
 import sys
 
 from . import connector, core
@@ -15,11 +14,7 @@ BY_CLUSTER = """query K8sConnectors($ids: [String!]) {
 }"""
 
 
-# Create and delete are the cloud connector's own documents (connector.CREATE / DELETE); only the
-# patch differs, selecting `enabled` so the toggle's result is read back.
-UPDATE = """mutation UpdateConnector($input: UpdateConnectorInput!) {
-  updateConnector(input: $input) { connector { id name enabled status } }
-}"""
+# Create, update and delete are the cloud connector's own documents (connector.CREATE / UPDATE / DELETE).
 
 
 # graphSearch takes only query/first/after. The CONTAINER -> INSTANCE_OF -> CONTAINER_IMAGE traversal is
@@ -44,14 +39,9 @@ def _kubectl(*a): return core._cli("kubectl", *a)
 
 def _describe_cluster(name):
     r = core._aws("eks", "describe-cluster", "--name", name, "--output", "json")
-    if r.returncode != 0:
-        if "ResourceNotFoundException" in (r.stderr or ""):
-            return None
-        core.die(3, f"aws eks describe-cluster {name} failed: {r.stderr.strip()[:200]}")
-    try:
-        return json.loads(r.stdout or "{}").get("cluster") or None
-    except json.JSONDecodeError:
-        core.die(3, f"aws eks describe-cluster returned no JSON: {r.stdout.strip()[:200]!r}")
+    if r.returncode != 0 and "ResourceNotFoundException" in (r.stderr or ""):
+        return None
+    return (core._csp_json(r, f"aws eks describe-cluster {name}") or {}).get("cluster") or None
 
 
 def _cluster_arn(args):
@@ -60,7 +50,7 @@ def _cluster_arn(args):
     is absent, which is learner-visible state, not an environment fault."""
     if args.cluster_arn:
         return args.cluster_arn, None
-    name = args.cluster or core._lab_stem(core._session_id(args))
+    name = core._named(args, flag="cluster")
     cluster = _describe_cluster(name)
     if cluster is None:
         print(f"no EKS cluster named {name}")
@@ -100,12 +90,10 @@ def _create(args, arn, cluster):
         "authProviderConfig": {"serviceAccountToken": _token(cluster["name"])},
         "isOnPrem": False,
     }
-    name = args.name or f"{core._lab_stem(core._session_id(args))}-k8s"
+    name = core._named(args, "-k8s")
     data, _ = core.api(connector.CREATE, {"input": {"name": name, "type": "eks", "enabled": args.enabled == "true",
                                           "authParams": auth, "extraConfig": {"installationType": "Script"}}})
-    c = (data.get("createConnector") or {}).get("connector") or {}
-    if not c:
-        core.die(3, "createConnector returned no connector")
+    c = core._created(data, "createConnector", "connector")
     print(f"created k8s connector {c['name']} ({c['id']}) status={c['status']}")
 
 
@@ -123,7 +111,7 @@ def cmd_k8sconnector_ensure(args):
     if bool(n.get("enabled")) == want:
         print(f"k8s connector {n['name']} ({n['id']}) already enabled={n['enabled']} status={n['status']}")
         return
-    data, _ = core.api(UPDATE, {"input": {"id": n["id"], "patch": {"enabled": want}}})
+    data, _ = core.api(connector.UPDATE, {"input": {"id": n["id"], "patch": {"enabled": want}}})
     c = (data.get("updateConnector") or {}).get("connector") or {}
     print(f"k8s connector {n['name']}: enabled {n.get('enabled')} -> {c.get('enabled', want)} status={c.get('status')}")
 
@@ -154,7 +142,7 @@ def cmd_k8sconnector_delete(args):
         print(f"no Kubernetes connector for {arn}; nothing to delete")
         return
     for n in nodes:
-        core.api(connector.DELETE, {"input": {"id": n["id"]}})
+        core.api(connector.DELETE, {"id": n["id"]})
         print(f"deleted k8s connector {n['name']} ({n['id']})")
 
 

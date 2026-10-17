@@ -27,9 +27,7 @@ CREATE_WORKFLOW = """mutation CreateWorkflow($input: CreateAutomationWorkflowInp
 }"""
 
 
-DELETE_WORKFLOW = """mutation DeleteWorkflow($input: DeleteAutomationWorkflowInput!) {
-  deleteAutomationWorkflow(input: $input) { _stub }
-}"""
+DELETE_WORKFLOW = core._delete_doc("deleteAutomationWorkflow")
 
 
 # The in-place edit the console's Save button sends. UpdateAutomationWorkflowPatchStrict is
@@ -65,7 +63,7 @@ def _workflow_stem(args):
     return core._named(args)
 
 
-def _resolve_workflows(name, exact=False):
+def _resolve_workflows(name, exact):
     """EVERY workflow on the session's stem, enabled first then by name so the order is stable. `search`
     is a case-insensitive substring match, so the stem also matches a suffixed name the guide told the
     learner to type (lab-<sid>-night-watch) — which is wanted for a read: the suffix is not the lesson and
@@ -81,8 +79,8 @@ def _resolve_workflows(name, exact=False):
     return sorted(hits, key=lambda n: (not n.get("enabled"), n.get("name") or ""))
 
 
-def _resolve_workflow(name, exact=False):
-    hits = _resolve_workflows(name, exact=exact)
+def _resolve_workflow(name, exact):
+    hits = _resolve_workflows(name, exact)
     return hits[0] if hits else None
 
 
@@ -151,7 +149,7 @@ def cmd_workflow_ensure(args):
         return
     live = _resolve_workflows(name, exact=True)
     for stale in live[1:]:
-        core.api(DELETE_WORKFLOW, {"input": {"id": stale["id"]}})
+        core.api(DELETE_WORKFLOW, {"id": stale["id"]})
         print(f"deleted duplicate workflow {stale['name']} ({stale['id']})")
     if live:
         patch = {k: v for k, v in definition.items() if k != "projectId"}
@@ -160,9 +158,7 @@ def cmd_workflow_ensure(args):
     else:
         mutation, verb = "createAutomationWorkflow", "created"
         data, _ = core.api(CREATE_WORKFLOW, {"input": {"workflow": definition}})
-    wf = (data.get(mutation) or {}).get("workflow") or {}
-    if not wf:
-        core.die(3, f"{mutation} returned no workflow")
+    wf = core._created(data, mutation, "workflow")
     print(f"{verb} workflow {wf['name']} ({wf['id']}) enabled={wf.get('enabled')}")
     sys.exit(0 if wf.get("enabled") else 3)
 
@@ -264,9 +260,7 @@ def cmd_workflowrun_ensure(args):
     data, _ = core.api(RUN_WORKFLOW_TEST, {"input": {
         "workflowId": node["id"], "triggerType": args.trigger_type,
         "customData": {"initialSteps": [step["id"]], "data": payload}}})
-    run = (data.get("runAutomationWorkflowTest") or {}).get("workflowRun") or {}
-    if not run.get("id"):
-        core.die(3, "runAutomationWorkflowTest returned no workflowRun")
+    run = core._created(data, "runAutomationWorkflowTest", "workflowRun")
     print(f"test run {run['id']} fired on {node['name']} entering at {step_name!r}")
     _wait_for_run(run["id"], args.timeout, args.interval)
     print(f"test run {run['id']} reached COMPLETED")

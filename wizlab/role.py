@@ -128,24 +128,20 @@ def _role_inspect_azure(args):
     sub = core._norm_account(args.account_id or os.getenv("ARM_SUBSCRIPTION_ID"))
     if not sub:
         core.die(2, "role inspect --cloud azure needs --account-id <subscription id> (or ARM_SUBSCRIPTION_ID)")
-    custom = args.role_name
-    if not custom:
-        # No safe default: every lab uses a session-scoped name (lab-<session_id>-WizCustomRole).
-        # A fallback to any fixed string silently grades as 1 for every correctly-configured learner.
-        core.die(
-            2, "role inspect --cloud azure requires --role-name <display-name> (session-scoped; no default is safe)")
+    # No safe default: every lab uses a session-scoped name (lab-<session_id>-WizCustomRole). A fallback
+    # to any fixed string silently grades as 1 for every correctly-configured learner.
+    custom = args.role_name or core.die(
+        2, "role inspect --cloud azure requires --role-name <display-name> (session-scoped; no default is safe)")
     # --fill-principal-name false is NOT optional: it defaults TRUE and resolves names through
     # Microsoft Graph, which Entra denies here — the call would fail for a reason unrelated to the
     # learner's state.
     res = core._az("role", "assignment", "list", "--scope", f"/subscriptions/{sub}",
               "--assignee-object-id", _wiz_azure_object_id(), "--fill-principal-name", "false",
               "--query", "[].roleDefinitionName", "-o", "json")
-    if res.returncode != 0:
-        # No "not found" here means learner state: the subscription IS the lease, so any az failure
-        # (no session, denied, bad scope) is environment. Branch on the exit code, never on az's
-        # message text.
-        core.die(3, f"az role assignment list failed on /subscriptions/{sub}: {res.stderr.strip()}")
-    assigned = set(core._csp_json(res, "az role assignment list") or [])
+    # No "not found" here means learner state: the subscription IS the lease, so any az failure (no
+    # session, denied, bad scope) is environment, which _csp_json's exit-code check reports — never a
+    # branch on az's message text.
+    assigned = set(core._csp_json(res, f"az role assignment list on /subscriptions/{sub}") or [])
     missing = [r for r in ("Reader", custom) if r not in assigned]
     if missing:
         print(f"subscription {sub}: Wiz's service principal is missing {', '.join(missing)}")
@@ -165,11 +161,9 @@ def _role_inspect_gcp(args):
     if not sa:
         core.die(3, "managedIdentityParameters.gcp.serviceAccountEmail is empty; no Wiz identity to check")
     res = core._gcp("projects", "get-iam-policy", project, "--format=json")
-    if res.returncode != 0:
-        # Unlike AWS get-role, there is no "not found" that means learner state: the project is the
-        # lease itself, so any failure here (no creds, denied, no such project) is environment (3).
-        core.die(3, f"gcloud projects get-iam-policy {project} failed: {res.stderr.strip()}")
     member = f"serviceAccount:{sa}"
+    # Unlike AWS get-role, there is no "not found" that means learner state: the project is the lease
+    # itself, so any failure here (no creds, denied, no such project) is environment (3), via _csp_json.
     policy = core._csp_json(res, f"gcloud projects get-iam-policy {project}") or {}
     bound = {b.get("role") for b in (policy.get("bindings") or []) if member in (b.get("members") or [])}
     missing = [r for r in GCP_WIZ_ROLES if r not in bound]
@@ -181,15 +175,13 @@ def _role_inspect_gcp(args):
 
 def _aws_role(role):
     res = core._aws("iam", "get-role", "--role-name", role, "--output", "json")
-    if res.returncode != 0:
-        # NoSuchEntity is the ONLY failure meaning "not found" (learner state, 1). Everything else
-        # — missing/expired creds, network, AccessDenied — is environment (3): an allowlist of auth
-        # strings here once let "no credentials" grade as "learner wrong".
-        if "nosuchentity" in res.stderr.lower():
-            print(f"role {role} not found")
-            sys.exit(1)
-        core.die(3, f"aws iam get-role failed probing {role}: {res.stderr.strip()}")
-    return (core._csp_json(res, "aws iam get-role") or {}).get("Role") or {}
+    # NoSuchEntity is the ONLY failure meaning "not found" (learner state, 1). Everything else —
+    # missing/expired creds, network, AccessDenied — is environment (3), which _csp_json reports: an
+    # allowlist of auth strings here once let "no credentials" grade as "learner wrong".
+    if res.returncode != 0 and "nosuchentity" in res.stderr.lower():
+        print(f"role {role} not found")
+        sys.exit(1)
+    return (core._csp_json(res, f"aws iam get-role probing {role}") or {}).get("Role") or {}
 
 
 def _inspect_aws_trust(role, role_obj):

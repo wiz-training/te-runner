@@ -89,7 +89,7 @@ class FakeWiz:
         self.tid, self.fields, self.calls, self.docs, self.mints = tid, fields, [], [], 0
 
     def __call__(self, url, data, headers, attempts=3):
-        if url == wz.AUTH_URL or url.endswith("/protocol/openid-connect/token"):
+        if url == wz.auth_url() or url.endswith("/protocol/openid-connect/token"):
             self.mints += 1
             return {"access_token": _jwt(dc="dc", tid=self.tid, exp=int(wz.time.time()) + 3600)}
         m = self._FIELD.match(data["query"])
@@ -580,6 +580,13 @@ class AuthorTools(unittest.TestCase):
         env = {"WIZ_TENANT": "NEW", "WIZ_NEW_IDP_LOGIN_CLIENT_ID": "pc9", "WIZ_NEW_SSO_IDP_NAME": "Okta-Chronical"}
         self.assertEqual(exit_code(wz.cmd_user_login_url, [], env=env, out=out), 0)
         self.assertEqual(out.getvalue().strip(), "https://app.wiz.io/idp-login?clientId=pc9&idp=Okta-Chronical")
+        # One WIZ_<T>_DOMAIN moves every host: the portal entrypoint and the auth URL follow the API's.
+        out = io.StringIO()
+        env["WIZ_NEW_DOMAIN"] = "demo.wiz.io"
+        self.assertEqual(exit_code(wz.cmd_user_login_url, [], env=env, out=out), 0)
+        self.assertTrue(out.getvalue().startswith("https://demo.wiz.io/idp-login?"), out.getvalue())
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(wz.auth_url(), "https://auth.demo.wiz.io/oauth/token")
 
 
 class PureParsing(unittest.TestCase):
@@ -1006,7 +1013,7 @@ class Naming(unittest.TestCase):
 
     def test_user_email_keyed_on_session(self):
         args = wz.parse(("user", "reap"), ["--session", "s1"])
-        self.assertEqual(wz._lab_user_email(args)[0], "lab-s1@wizlabs.cloudseclabs.io")
+        self.assertEqual(wz._lab_user_email(args), "lab-s1@wizlabs.cloudseclabs.io")
 
 
 class ConnectorAndReaperSafety(unittest.TestCase):
@@ -1340,7 +1347,7 @@ class Pagination(unittest.TestCase):
         page1 = [{"id": str(i), "name": f"lab-s1-sensor-{i}"} for i in range(50)]
         side = self._pages("serviceAccounts", page1, [{"id": "sa", "name": "lab-s1-sensor"}])
         with mock.patch.object(_owner("_api_full"), "_api_full", side_effect=side):
-            self.assertEqual(wz._find_sa("lab-s1-sensor")["id"], "sa")
+            self.assertEqual(wz.find(wz.SENSOR_SA, "lab-s1-sensor")["id"], "sa")
         self.assertEqual(side.seen, [None, "c0"])
 
     def test_a_duplicate_past_the_first_page_is_deleted_by_ensure(self):
@@ -1379,7 +1386,7 @@ class Pagination(unittest.TestCase):
 
     def test_a_response_without_page_info_is_one_complete_page(self):
         with fake_api(lambda q, v: ({"serviceAccounts": {"nodes": []}}, "tid")) as api:
-            self.assertIsNone(wz._find_sa("lab-s1-sensor"))
+            self.assertIsNone(wz.find(wz.SENSOR_SA, "lab-s1-sensor"))
         api.assert_called_once()
 
     def test_an_error_beside_a_page_is_a_refusal_not_the_whole_set(self):
@@ -1787,7 +1794,7 @@ class WizTenantFacts(unittest.TestCase):
         code, text = self._run({"aws": {}, "gcp": {}, "azure": {}}, dc="us17")
         self.assertEqual(code, 0)
         for line in ("WIZ_DATA_CENTER=us17", "WIZ_API_URL=https://api.us17.app.wiz.io/graphql",
-                     f"WIZ_AUTH_URL={wz.AUTH_URL}", "WIZ_AUDIENCE=wiz-api"):
+                     f"WIZ_AUTH_URL={wz.auth_url()}", "WIZ_AUDIENCE=wiz-api"):
             self.assertIn(line, text)
 
     def test_emits_gcp_service_account(self):

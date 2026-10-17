@@ -154,13 +154,6 @@ def _reap_session(tenant, sid, commit):
     return DONE if rc == 0 and deleted else FAILED
 
 
-def _tally(outcome, tenant, sid, failed, deferred):
-    if outcome == FAILED:
-        failed.setdefault(tenant, []).append(sid)
-    elif outcome == DEFERRED:
-        deferred.append(sid)
-
-
 def _retry_hints(failed):
     """One line per tenant: REAP_SESSIONS reaps under REAP_SESSIONS_TENANT, so a hint naming only the
     sids retries a TE session under TBCMP, finds nothing, deletes the Okta user and loses the handle."""
@@ -172,18 +165,15 @@ def main():
     # The container's stdout is a pipe, so block-buffered; stderr is not. Unbuffered, the per-session
     # wizlab lines land after the summary that says "see preceding wizlab output".
     sys.stdout.reconfigure(line_buffering=True)
-    total, failed, deferred = 0, {}, []
     # Manual override: reap explicit sids regardless of tag/window. For orphans that predate a track's
     # tid:<tenant> tag (labPlayReports captures tags at play time, so a late tag never back-fills), or
     # any one-off. `REAP_SESSIONS="sid1,sid2"`; reaped under REAP_SESSIONS_TENANT (default: the first
     # REAP_TENANTS key).
     manual = [s.strip() for s in os.getenv("REAP_SESSIONS", "").split(",") if s.strip()]
+    mtenant = os.getenv("REAP_SESSIONS_TENANT") or next(iter(TENANTS), "TBCMP")
     if manual:
-        mtenant = os.getenv("REAP_SESSIONS_TENANT") or next(iter(TENANTS), "TBCMP")
         print(f"# manual: {len(manual)} session(s) under {mtenant}")
-        for sid in manual:
-            total += 1
-            _tally(_reap_session(mtenant, sid, commit), mtenant, sid, failed, deferred)
+    sessions = [(mtenant, sid) for sid in manual]
     unread = []
     for tenant, tag in TENANTS.items():
         try:
@@ -193,9 +183,15 @@ def main():
             unread.append(tenant)
             continue
         print(f"# tenant {tenant} ({tag}): {len(sids)} stopped session(s) in last {WINDOW_H}h")
-        for sid in sids:
-            total += 1
-            _tally(_reap_session(tenant, sid, commit), tenant, sid, failed, deferred)
+        sessions += [(tenant, sid) for sid in sids]
+    failed, deferred = {}, []
+    for tenant, sid in sessions:
+        outcome = _reap_session(tenant, sid, commit)
+        if outcome == FAILED:
+            failed.setdefault(tenant, []).append(sid)
+        elif outcome == DEFERRED:
+            deferred.append(sid)
+    total = len(sessions)
     nfailed = sum(len(v) for v in failed.values())
     completed = total - nfailed - len(deferred)
     print(f"# {completed}/{total} session(s) {'reaped' if commit else 'ready to reap (dry-run)'}"

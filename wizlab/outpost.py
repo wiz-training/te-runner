@@ -39,9 +39,7 @@ UNINSTALL_OUTPOST = """mutation UninstallOutpost($input: UninstallOutpostInput!)
 }"""
 
 
-DELETE_OUTPOST = """mutation DeleteOutpost($input: DeleteOutpostInput!) {
-  deleteOutpost(input: $input) { _stub }
-}"""
+DELETE_OUTPOST = core._delete_doc("deleteOutpost")
 
 
 # Takes a CLUSTER id, not the Outpost's: an Outpost carrying no cluster has no provision pass to re-run.
@@ -153,9 +151,7 @@ def cmd_outpost_ensure(args):
         "allowedRegions": [region],
     }
     data, _ = core.api(CREATE_OUTPOST, {"input": inp})
-    o = (data.get("createOutpost") or {}).get("outpost") or {}
-    if not o:
-        core.die(3, "createOutpost returned no outpost")
+    o = core._created(data, "createOutpost", "outpost")
     print(f"created outpost {o['name']} ({o['id']}) status={o.get('status')}")
 
 
@@ -203,8 +199,8 @@ def cmd_outpost_delete(args):
             return
         oid, status = node["id"], node["status"]
     else:
-        status = (_outpost_by_id(oid) or {}).get("status") or "GONE"
-    if status != "GONE" and status not in _OUTPOST_DELETABLE and status not in _OUTPOST_STUCK:
+        status = _status(oid)
+    if not _terminal(status):
         if not _uninstall_in_flight(status):
             core.api(UNINSTALL_OUTPOST, {"input": {"id": oid}})
             print(f"uninstalling outpost {oid} (was {status})")
@@ -219,13 +215,19 @@ def cmd_outpost_delete(args):
     if status not in _OUTPOST_DELETABLE:
         print(f"outpost {oid} still {status} after the wait; leaving the record for the daily reaper")
         return
-    core.api(DELETE_OUTPOST, {"input": {"id": oid}})
+    core.api(DELETE_OUTPOST, {"id": oid})
     print(f"deleted outpost {oid}")
 
 
-def _outpost_by_id(oid):
+def _status(oid):
+    """The Outpost's status by id, GONE when no record answers: the one terminal state the API never names."""
     data, _ = core.api(OUTPOST_Q, {"id": oid})
-    return data.get("outpost")
+    return (data.get("outpost") or {}).get("status") or "GONE"
+
+
+def _terminal(status):
+    """A status the uninstall flow will not move on its own: deletable, stuck, or already gone."""
+    return status == "GONE" or status in _OUTPOST_DELETABLE or status in _OUTPOST_STUCK
 
 
 def _await_uninstalled(oid, timeout):
@@ -234,7 +236,7 @@ def _await_uninstalled(oid, timeout):
     deadline, status = time.monotonic() + timeout, "UNINSTALLING"
     while time.monotonic() < deadline:
         time.sleep(20)
-        status = (_outpost_by_id(oid) or {}).get("status") or "GONE"
-        if status in _OUTPOST_DELETABLE or status in _OUTPOST_STUCK or status == "GONE":
+        status = _status(oid)
+        if _terminal(status):
             break
     return status

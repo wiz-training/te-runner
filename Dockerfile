@@ -11,9 +11,17 @@ FROM python:3.12-slim-trixie
 # identity and anyone holding the image can impersonate a grader. Removed here, minted per boot by
 # the entrypoint's `ssh-keygen -A`. No account has a password; the config says so rather than rely on it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      curl ca-certificates git jq unzip less groff openssh-server tmux \
+      curl ca-certificates git jq unzip less groff openssh-server tmux sudo \
     && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_* \
     && printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' > /etc/ssh/sshd_config.d/10-keys-only.conf
+
+# The learner shell: a non-root user whose only road to wizlab is a sudoers-scoped wrapper reading a
+# 0600 credential snapshot (bin/wizlab-grant writes it from a setup exec's own environment map). The
+# container env then carries no operator secret, and a `terminal` opened as `learner` inherits none
+# (te-labkit-v2 authoring/instruqt-2.0.md §Secrets and scripts).
+RUN useradd -m -s /bin/bash learner && \
+    printf 'Defaults!/usr/local/bin/wizlab-learner !requiretty\nlearner ALL=(root) NOPASSWD: /usr/local/bin/wizlab-learner\n' \
+      > /etc/sudoers.d/learner && chmod 440 /etc/sudoers.d/learner
 
 # AWS CLI v2 (Amazon names x86_64/aarch64 → uname -m)
 RUN ARCH=$(uname -m) && AWSVER=2.37.12 && \
@@ -87,15 +95,6 @@ ENV TE_RUNNER_TAG=${TE_RUNNER_TAG} \
 LABEL org.opencontainers.image.version=${TE_RUNNER_TAG} \
       org.opencontainers.image.revision=${TE_RUNNER_REV} \
       org.opencontainers.image.source=https://github.com/wiz-training/te-runner
-
-# The learner shell: a non-root user whose only road to wizlab is a sudoers-scoped wrapper reading a
-# 0600 credential snapshot (bin/wizlab-grant writes it from a setup exec's own environment map). The
-# container env then carries no operator secret, and a `terminal` opened as `learner` inherits none
-# (te-labkit-v2 authoring/instruqt-2.0.md §Secrets and scripts).
-RUN apt-get update && apt-get install -y --no-install-recommends sudo && rm -rf /var/lib/apt/lists/* && \
-    useradd -m -s /bin/bash learner && \
-    printf 'Defaults!/usr/local/bin/wizlab-learner !requiretty\nlearner ALL=(root) NOPASSWD: /usr/local/bin/wizlab-learner\n' \
-      > /etc/sudoers.d/learner && chmod 440 /etc/sudoers.d/learner
 
 COPY bin/wizlab bin/wizlab-learner bin/wizlab-grant /usr/local/bin/
 COPY wizlab/*.py /usr/local/lib/python3.12/site-packages/wizlab/

@@ -61,10 +61,6 @@ SENSOR_SA = credential.Credential(
     require=credential.EXISTS)
 
 
-def _find_sa(name):
-    return credential.find(SENSOR_SA, name)
-
-
 def cmd_sensor_ensure(args):
     return credential.ensure(SENSOR_SA, args)
 

@@ -1,51 +1,30 @@
 """The per-lease Okta user behind Wiz SSO, and the tenant's login URL."""
-import json
 import os
 import secrets
 import string
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
 
 from . import core
 
 
 # --- lab user (Okta via Workflows Router): backs Wiz SSO for a learner. ---
 def _okta_env():
-    vals = {}
-    for k in ("OKTA_WF_INVOKE_URL", "OKTA_WF_CLIENT_TOKEN"):
-        v = os.getenv(k)
-        if not v:
-            core.die(3, f"{k} not in environment (Okta Workflows secret; not wired?)")
-        vals[k] = v
-    return vals["OKTA_WF_INVOKE_URL"], vals["OKTA_WF_CLIENT_TOKEN"]
+    def need(k):
+        return os.getenv(k) or core.die(3, f"{k} not in environment (Okta Workflows secret; not wired?)")
+    return need("OKTA_WF_INVOKE_URL"), need("OKTA_WF_CLIENT_TOKEN")
 
 
 def _okta_call(invoke_url, token, body):
-    """POST body to the Okta Workflows Router; returns the parsed response."""
-    req = urllib.request.Request(
-        invoke_url,
-        data=json.dumps(body).encode(),
-        headers={
-            "x-api-client-token": token,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        b = e.read().decode(errors="replace")[:500]
-        core.die(3, f"Okta Workflows HTTP {e.code}: {b}")
-    except Exception as e:
-        core.die(3, f"Okta Workflows transport failure: {type(e).__name__}: {e}")
+    """POST body to the Okta Workflows Router; returns the parsed response. One submission: the router
+    creates the user before it answers, so a resend on a timeout mints a second login."""
+    headers = {"x-api-client-token": token, "Content-Type": "application/json", "Accept": "application/json"}
+    return core._post(invoke_url, body, headers, attempts=1)
 
 
 def _okta_login(args):
     """Session stem as the Okta login: lab-<session_id>. The router appends the domain."""
-    return core._lab_stem(core._session_id(args))
+    return core._stem(args)
 
 
 def _gen_password():
@@ -67,11 +46,13 @@ _COGNITO_REGION = "us-east-1"  # Wiz's own auth infrastructure, not the lab's cl
 
 
 def _wiz_login_url():
-    """The tenant's IdP-initiated Cognito authorize URL, or None if it cannot be built.
+    """The tenant's SSO login URL, or None if it cannot be built: WIZ_<T>_LOGIN_URL verbatim, else the
+    portal's idp-login entrypoint from WIZ_<T>_IDP_LOGIN_CLIENT_ID, else the IdP-initiated Cognito
+    authorize URL from WIZ_<T>_COGNITO_SUFFIX + WIZ_<T>_SSO_CLIENT_ID.
 
-    A lab Okta user CANNOT sign in at app.wiz.io — that renders a real login page the account
-    fails against, and the learner blames their creds. Only this IdP-init URL routes them straight
-    to the lab's Okta. Full-URL env overrides win so a track can pin it.
+    A lab Okta user CANNOT sign in at the portal's front door — that renders a real login page the
+    account fails against, and the learner blames their creds. Only an IdP-init URL routes them
+    straight to the lab's Okta. Full-URL env overrides win so a track can pin it.
     """
     override = core._tenant_env("LOGIN_URL")
     if override:
@@ -81,7 +62,7 @@ def _wiz_login_url():
     # hand-back ("Login option is not available") still completes through it, so it wins when set.
     idp_login_client = core._tenant_env("IDP_LOGIN_CLIENT_ID")
     if idp_login_client:
-        return f"https://app.wiz.io/idp-login?clientId={idp_login_client}&idp={idp_name}"
+        return f"https://{core._domain()}/idp-login?clientId={idp_login_client}&idp={idp_name}"
     suffix = core._tenant_env("COGNITO_SUFFIX")
     client_id = core._tenant_env("SSO_CLIENT_ID")
     if not suffix or not client_id:
@@ -89,7 +70,7 @@ def _wiz_login_url():
     _tok, _dc, tid = core.token_and_dc()
     if not tid:
         return None
-    callback = urllib.parse.quote(f"https://auth.app.wiz.io/api/oidc/idp-init-callback/{tid}", safe="")
+    callback = urllib.parse.quote(f"https://{core._host('auth')}/api/oidc/idp-init-callback/{tid}", safe="")
     return (
         f"https://{tid}-{suffix}.auth.{_COGNITO_REGION}.amazoncognito.com"
         f"/oauth2/authorize?response_type=code&identity_provider={idp_name}"
@@ -154,7 +135,7 @@ def _wiz_users(email):
 
 
 def _inspect_wiz_user(args):
-    email, _stem = core._lab_user_email(args)
+    email = core._lab_user_email(args)
     users = _wiz_users(email)
     if not users:
         print(f"no Wiz user for {email}")
@@ -167,7 +148,7 @@ def cmd_user_delete(args):
     """Delete the Wiz user record(s) for the session's login, lab-<sid>@--domain. Okta expires the login
     itself (its Expire One / Expired Sweep flows), so this reaches Wiz, never the router: the record its
     first SSO sign-in minted outlives the login until something deletes it. Idempotent: absent is OK."""
-    email, _stem = core._lab_user_email(args)
+    email = core._lab_user_email(args)
     users = _wiz_users(email)
     if not users:
         print(f"no Wiz user for {email}; nothing to delete")
@@ -183,6 +164,6 @@ def cmd_user_login_url(args):
     changes — the single source that keeps the literal from silently drifting."""
     url = _wiz_login_url()
     if not url:
-        core.die(3, "cannot build login URL: WIZ_<T>_LOGIN_URL, or WIZ_<T>_COGNITO_SUFFIX + WIZ_<T>_SSO_CLIENT_ID "
-                    "with a tid in the token, is required")
+        core.die(3, "cannot build login URL: WIZ_<T>_LOGIN_URL, WIZ_<T>_IDP_LOGIN_CLIENT_ID, or WIZ_<T>_COGNITO_SUFFIX "
+                    "+ WIZ_<T>_SSO_CLIENT_ID with a tid in the token, is required")
     print(url)

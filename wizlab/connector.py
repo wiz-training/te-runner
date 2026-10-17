@@ -4,9 +4,6 @@ import sys
 
 from . import core, outpost, role
 
-HEALTHY_STATUSES = {"CONNECTED"}  # terminal state; INITIAL_SCANNING is transient, ERROR is failure
-
-
 FIND = f"""query FindConnector($ids: [String!]) {{
   connectors(filterBy: {{ cloudAccountExternalId: $ids }}, first: 10) {{
     nodes {{{core._NODE}
@@ -43,13 +40,12 @@ CREATE = """mutation CreateConnector($input: CreateConnectorInput!) {
 }"""
 
 
-DELETE = """mutation DeleteConnector($input: DeleteConnectorInput!) {
-  deleteConnector(input: $input) { _stub }
-}"""
+DELETE = core._delete_doc("deleteConnector")
 
 
+# Selects `enabled` too: the Kubernetes connector's toggle patch reads it back from this same document.
 UPDATE = """mutation UpdateConnector($input: UpdateConnectorInput!) {
-  updateConnector(input: $input) { connector { id name status } }
+  updateConnector(input: $input) { connector { id name enabled status } }
 }"""
 
 
@@ -121,10 +117,15 @@ def cmd_connector_inspect(args):
         return
     if require == "outpost-bound":
         return _assert_outpost_bound(args, node)
-    # healthy: role-first, a connector sits in INITIAL_SCANNING for ~2-3 min, then CONNECTED, never
-    # ERROR. Require CONNECTED, not merely not-ERROR: INITIAL_SCANNING is the window before Wiz has
-    # actually assumed the role, so not-ERROR there is a false pass.
-    sys.exit(0 if node["enabled"] and node["status"] in HEALTHY_STATUSES else 1)
+    # healthy: role-first, a connector sits in INITIAL_SCANNING for ~2-3 min, then CONNECTED (the
+    # terminal state), never ERROR. Require CONNECTED, not merely not-ERROR: INITIAL_SCANNING is the
+    # window before Wiz has actually assumed the role, so not-ERROR there is a false pass.
+    sys.exit(0 if node["enabled"] and node["status"] == "CONNECTED" else 1)
+
+
+def _connector_name(args):
+    # No --name on the connector verbs: the account is the key, so the name is always the stem's.
+    return f"{core._stem(args)}-connector"
 
 
 def _create_connector(name, cloud, auth, extra):
@@ -132,9 +133,7 @@ def _create_connector(name, cloud, auth, extra):
         CREATE,
         {"input": {"name": name, "type": cloud, "authParams": auth, "extraConfig": extra}},
     )
-    c = (data.get("createConnector") or {}).get("connector") or {}
-    if not c:
-        core.die(3, "createConnector returned no connector")
+    c = core._created(data, "createConnector", "connector")
     print(f"created connector {c['name']} ({c['id']}) status={c['status']}")
 
 
@@ -155,8 +154,7 @@ def _ensure_gcp(args, account):
         "includedRegions": [],
         "excludedRegions": [],
     }
-    name = f"{core._lab_stem(core._session_id(args))}-connector"
-    return _create_connector(name, "gcp", {"isManagedIdentity": True, "project_id": account}, extra)
+    return _create_connector(_connector_name(args), "gcp", {"isManagedIdentity": True, "project_id": account}, extra)
 
 
 def _ensure_azure(args, account):
@@ -183,7 +181,7 @@ def _ensure_azure(args, account):
         "excludedRegions": [],
     }
     auth = {"isManagedIdentity": True, "subscriptionId": account, "tenantId": tenant_id}
-    return _create_connector(f"{core._lab_stem(core._session_id(args))}-connector", "azure", auth, extra)
+    return _create_connector(_connector_name(args), "azure", auth, extra)
 
 
 def _outpost_target(args):
@@ -194,7 +192,7 @@ def _outpost_target(args):
     oid = args.outpost_id
     if oid:
         return oid, oid
-    name = args.outpost_name or core._lab_stem(core._session_id(args))
+    name = core._named(args, flag="outpost_name")
     return (outpost._resolve_outpost(name) or {}).get("id"), name
 
 
@@ -303,11 +301,10 @@ def cmd_connector_ensure(args):
             print(f"connector {n['name']} already targets {account} with {role_arn}; nothing to do")
             return
         return _patch_aws(args, n, auth, same)
-    name = f"{core._lab_stem(core._session_id(args))}-connector"
     # customerRoleARN goes in authParams, NOT extraConfig; extraConfig carries only
     # skipOrganizationScan. The role need not exist yet — the connector sits in ERROR until task 2
     # deploys WizAccess-Role.
-    return _create_connector(name, "aws", auth, {"skipOrganizationScan": True})
+    return _create_connector(_connector_name(args), "aws", auth, {"skipOrganizationScan": True})
 
 
 def cmd_connector_delete(args):
@@ -318,7 +315,7 @@ def cmd_connector_delete(args):
         print(f"no connector targets {account}; nothing to delete")
         return
     for n in matches:
-        core.api(DELETE, {"input": {"id": n["id"]}})
+        core.api(DELETE, {"id": n["id"]})
         print(f"deleted connector {n['name']} ({n['id']})")
 
 

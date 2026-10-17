@@ -35,31 +35,35 @@ fi
 
 # Log the native CLIs in from the lease env (terraform-standard names) so gcloud/az work like the
 # AWS CLI does. Best-effort: a CLI login failing must not stop the grader. AWS needs nothing — the
-# CLI reads AWS_* directly.
-if [ -n "${GOOGLE_CREDENTIALS:-}" ] && command -v gcloud >/dev/null 2>&1; then
-  gcp_key=$(mktemp /tmp/gcp-sa.XXXXXX)
-  trap 'rm -f "$gcp_key"' EXIT HUP INT TERM
-  chmod 600 "$gcp_key"
-  printf '%s' "$GOOGLE_CREDENTIALS" > "$gcp_key"
-  gcloud auth activate-service-account --key-file "$gcp_key" --quiet \
-    || echo "gcloud service-account login failed" >&2
-  rm -f "$gcp_key"
+# CLI reads AWS_* directly. A secret reaches its CLI through a 0600 file, never argv (readable from
+# /proc by any local user while the login runs), and the file goes even when the login fails.
+secret_file=""
+with_secret() {  # with_secret <value> <command...>: runs the command with the secret's path in $secret_file
+  secret_file=$(mktemp /tmp/secret.XXXXXX)
+  trap 'rm -f "$secret_file"' EXIT HUP INT TERM
+  chmod 600 "$secret_file"
+  printf '%s' "$1" > "$secret_file"
+  shift
+  "$@"
+  rm -f "$secret_file"
   trap - EXIT HUP INT TERM
-  [ -n "${GOOGLE_PROJECT:-}" ] && gcloud config set project "$GOOGLE_PROJECT" --quiet
-fi
-if [ -n "${ARM_CLIENT_ID:-}" ] && command -v az >/dev/null 2>&1; then
-  # `@path` expands to the file's contents, so the secret never sits on an argv any local user can
-  # read from /proc while the login runs.
-  az_secret=$(mktemp /tmp/az-sp.XXXXXX)
-  trap 'rm -f "$az_secret"' EXIT HUP INT TERM
-  chmod 600 "$az_secret"
-  printf '%s' "$ARM_CLIENT_SECRET" > "$az_secret"
-  az login --service-principal -u "$ARM_CLIENT_ID" -p "@$az_secret" \
+}
+gcloud_login() {
+  gcloud auth activate-service-account --key-file "$secret_file" --quiet \
+    || echo "gcloud service-account login failed" >&2
+}
+az_login() {  # `@path` expands to the file's contents
+  az login --service-principal -u "$ARM_CLIENT_ID" -p "@$secret_file" \
     --tenant "$ARM_TENANT_ID" >/dev/null 2>&1 \
     && az account set --subscription "$ARM_SUBSCRIPTION_ID" \
     || echo "az service-principal login failed" >&2
-  rm -f "$az_secret"
-  trap - EXIT HUP INT TERM
+}
+if [ -n "${GOOGLE_CREDENTIALS:-}" ] && command -v gcloud >/dev/null 2>&1; then
+  with_secret "$GOOGLE_CREDENTIALS" gcloud_login
+  [ -n "${GOOGLE_PROJECT:-}" ] && gcloud config set project "$GOOGLE_PROJECT" --quiet
+fi
+if [ -n "${ARM_CLIENT_ID:-}" ] && command -v az >/dev/null 2>&1; then
+  with_secret "$ARM_CLIENT_SECRET" az_login
 fi
 
 exec "$@"

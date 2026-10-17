@@ -18,7 +18,7 @@ def _cicd_latest(tag_key, tag_value):
     if not (_TAG_OK.match(tag_key) and _TAG_OK.match(tag_value)):
         core.die(2, "code-scan tag key/value must match [A-Za-z0-9._-]+")
     qy = (
-        'query { cicdScans(first: 5, filterBy: { tag: { key: "' + tag_key + '", value: "' + tag_value + '" } }, '
+        'query { cicdScans(first: 1, filterBy: { tag: { key: "' + tag_key + '", value: "' + tag_value + '" } }, '
         "orderBy: { field: CREATED_AT, direction: DESC }) "
         "{ nodes { id status { state verdict } } totalCount } }"
     )
@@ -33,7 +33,7 @@ def cmd_codescan_inspect(args):
     because publish latency is unmeasured; a definitive FAILED_BY_POLICY exits 1 without waiting."""
     require = args.require
     tag_key = args.tag_key
-    tag_value = args.tag_value or core._lab_stem(core._session_id(args))
+    tag_value = core._named(args, flag="tag_value")
     timeout = args.timeout
     interval = args.interval
     deadline = time.monotonic() + timeout
@@ -151,9 +151,7 @@ def cmd_policy_ensure(args):
         },
     }
     data, _ = core.api(CREATE_CICD_POLICY, {"input": inp})
-    pol = (data.get("createCICDScanPolicy") or {}).get("scanPolicy") or {}
-    if not pol.get("id"):
-        core.die(3, "createCICDScanPolicy returned no policy id")
+    pol = core._created(data, "createCICDScanPolicy", "scanPolicy")
     print(f"created cicd scan policy {name} ({pol['id']}) scoped to control {rule_id}")
 
 

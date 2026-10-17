@@ -1,4 +1,5 @@
 """`user reap`: audit-attributed and prefix-swept teardown of a session's Wiz footprint."""
+import functools
 import json
 import re
 import sys
@@ -49,23 +50,22 @@ def _reap_outpost(tok, dc, _h, oid, name):
     its name, so holding the user does not help the human."""
     data, errs = core._gql(tok, dc, outpost.OUTPOST_Q, {"id": oid})
     if errs:
-        return FAILED, f"status unreadable ({errs[0].get('message', '?')})"
+        return FAILED, f"status unreadable ({core._gql_msg(errs)})"
     status = ((data.get("outpost") or {}).get("status")) or "GONE"
     if status == "GONE":
         return ABSENT, None
-    if status in outpost._OUTPOST_DELETABLE:
-        _d, derr = core._gql(tok, dc, outpost.DELETE_OUTPOST, {"input": {"id": oid}})
-        return (FAILED, derr[0].get("message", "?")) if derr else (REMOVED, None)
-    if status in outpost._OUTPOST_STUCK:
-        _d, derr = core._gql(tok, dc, outpost.DELETE_OUTPOST, {"input": {"id": oid}})
-        if derr:
-            return OPERATOR, f"{status.lower()}; deleteOutpost refused: {derr[0].get('message', '?')} — " \
+    if status in outpost._OUTPOST_DELETABLE or status in outpost._OUTPOST_STUCK:
+        _d, derr = core._gql(tok, dc, outpost.DELETE_OUTPOST, {"id": oid})
+        if not derr:
+            return REMOVED, None
+        if status in outpost._OUTPOST_STUCK:
+            return OPERATOR, f"{status.lower()}; deleteOutpost refused: {core._gql_msg(derr)} — " \
                              f"delete it in the Wiz console"
-        return REMOVED, None
+        return FAILED, core._gql_msg(derr)
     if not outpost._uninstall_in_flight(status):
         _d, derr = core._gql(tok, dc, outpost.UNINSTALL_OUTPOST, {"input": {"id": oid}})
         if derr:
-            return FAILED, f"uninstall refused ({derr[0].get('message', '?')})"
+            return FAILED, f"uninstall refused ({core._gql_msg(derr)})"
     return DEFERRED, f"{status.lower()}; delete deferred to the next pass"
 
 
@@ -92,19 +92,15 @@ def _reap_service_account(tok, dc, h, rid, name):
     dep = m.group("dep")
     data, errs = core._gql(tok, dc, serviceaccount.CLI_DEPLOYMENTS_Q, {"f": {"type": ["WIZ_CLI"], "search": dep}})
     if errs:
-        return FAILED, f"deployment lookup failed ({errs[0].get('message', '?')})"
+        return FAILED, f"deployment lookup failed ({core._gql_msg(errs)})"
     nodes = ((data.get("deployments") or {}).get("nodes") or [])
     owner = core._exact(nodes, dep)
     if not owner:
         # Nothing left that can delete this record, so blocking would retain the user forever with no
         # pass able to clear it. UNKNOWN reports the residue without holding the handle.
         return UNKNOWN, f"orphaned CLI service account; owning deployment {dep!r} is absent"
-    _d, derr = core._gql(tok, dc, core._delete_doc("deleteCliDeployment", "id"), {"id": owner["id"]})
-    if derr:
-        return FAILED, derr[0].get("message", "?")
-    if _reap_find(tok, dc, h, name)[1] == 0:
-        return REMOVED, None
-    return FAILED, "still present after deleting its CLI deployment"
+    return _delete_verified(tok, dc, h, name, core._delete_doc("deleteCliDeployment", "id"), owner["id"],
+                            "still present after deleting its CLI deployment")
 
 
 def _reap_integration_or_uniform(tok, dc, h, rid, name):
@@ -114,16 +110,12 @@ def _reap_integration_or_uniform(tok, dc, h, rid, name):
     sweep that trusted the suffix would silently start failing if that changed."""
     data, errs = core._gql(tok, dc, SA_OWNER_Q, {"id": rid})
     if errs:
-        return FAILED, f"owner lookup failed ({errs[0].get('message', '?')})"
+        return FAILED, f"owner lookup failed ({core._gql_msg(errs)})"
     owner = ((data.get("serviceAccount") or {}).get("integration")) or {}
     if not owner.get("id"):
         return _reap_delete_uniform(tok, dc, h, rid, name)
-    _d, derr = core._gql(tok, dc, core._delete_doc("deleteIntegration"), {"id": owner["id"]})
-    if derr:
-        return FAILED, derr[0].get("message", "?")
-    if _reap_find(tok, dc, h, name)[1] == 0:
-        return REMOVED, None
-    return FAILED, f"still present after deleting its integration {owner.get('name')!r}"
+    return _delete_verified(tok, dc, h, name, core._delete_doc("deleteIntegration"), owner["id"],
+                            f"still present after deleting its integration {owner.get('name')!r}")
 
 
 _REAP_OVERRIDES = {
@@ -183,7 +175,7 @@ def _audit_entries(send, minutes, mutations_only=True):
 def _reap_enumerate(tok, dc, email, minutes):
     """(SUCCESS Create* actions by `email` as (action, input name), alert). A partial list with an alert
     is what the caller turns into FAILED."""
-    entries, alert = _audit_entries(lambda q, v: core._gql(tok, dc, q, v), minutes)
+    entries, alert = _audit_entries(functools.partial(core._gql, tok, dc), minutes)
     out = [(n["action"], _input_name((n.get("actionParameters") or {}).get("input") or {}))
            for n in entries
            if (n.get("performer") or {}).get("name") == email and n.get("status") == "SUCCESS"
@@ -199,7 +191,7 @@ def _reap_list(tok, dc, h, name):
     qy = ("query ReapList($after: String) { " + h["list"] + "(first: 100, after: $after, filterBy: { "
           + h["filter"] + ": " + json.dumps(name) + extra
           + " }) { nodes { id name } pageInfo { hasNextPage endCursor } } }")
-    return core._paged(lambda q, v: core._gql(tok, dc, q, v), qy, {}, h["list"])
+    return core._paged(functools.partial(core._gql, tok, dc), qy, {}, h["list"])
 
 
 def _reap_find(tok, dc, h, name):
@@ -212,12 +204,18 @@ def _reap_find(tok, dc, h, name):
     return (exact[0]["id"] if len(exact) == 1 else None), len(exact), None
 
 
-def _reap_delete_uniform(tok, dc, h, rid, name):
-    # Verified by re-lookup because the mutation can report success without removing the record.
-    _d, derr = core._gql(tok, dc, core._delete_doc(h["delete"]), {"id": rid})
+def _delete_verified(tok, dc, h, name, doc, oid, residue):
+    """Send delete document `doc` for `oid`, then prove `name` gone by re-lookup: the mutation can report
+    success without removing the record, and a refusal whose record is gone anyway is still REMOVED.
+    `residue` names what is left when the lookup still finds it and the mutation gave no reason."""
+    _d, derr = core._gql(tok, dc, doc, {"id": oid})
     if _reap_find(tok, dc, h, name)[1] == 0:
         return REMOVED, None
-    return FAILED, derr[0].get("message", "?") if derr else "still present after delete"
+    return FAILED, core._gql_msg(derr) if derr else residue
+
+
+def _reap_delete_uniform(tok, dc, h, rid, name):
+    return _delete_verified(tok, dc, h, name, core._delete_doc(h["delete"]), rid, "still present after delete")
 
 
 def _reap_delete(tok, dc, h, rid, name):
@@ -293,7 +291,7 @@ def cmd_reap(args):
     user and come back; exit 5 is residue for an operator that the user is no handle to; _reap_exit
     says which, and whether anyone need look."""
     sid = core._session_id(args)
-    email = args.email or core._lab_user_email(args)[0]
+    email = args.email or core._lab_user_email(args)
     stem = core._lab_stem(sid)
     minutes = args.last_min
     commit = args.commit

@@ -5,16 +5,6 @@ import re
 
 from . import core
 
-# The delegator ARN is per-tenant and its `prod-<dc>` segment varies by data center, so it is never
-# a constant — resolved live from managedIdentityParameters.aws.roleArn.
-IDENTITY = """query ManagedIdentityParameters {
-  managedIdentityParameters {
-    aws { roleArn defaultEnvironment }
-    gcp { serviceAccountEmail }
-    azure { commercial { appId } }
-  }
-}"""
-
 
 def _runner_id():
     """This image's own identity — `(tag, rev)`, baked at build from the git tag and sha it was built

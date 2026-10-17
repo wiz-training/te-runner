@@ -1,5 +1,15 @@
 """Author tool against the tenant: `wiz tenant`, the live connector facts a lab's provisioning eval()s."""
-from . import core, session
+from . import core
+
+# The delegator ARN is per-tenant and its `prod-<dc>` segment varies by data center, so it is never
+# a constant — resolved live from managedIdentityParameters.aws.roleArn.
+IDENTITY = """query ManagedIdentityParameters {
+  managedIdentityParameters {
+    aws { roleArn defaultEnvironment }
+    gcp { serviceAccountEmail }
+    azure { commercial { appId } }
+  }
+}"""
 
 
 def cmd_wiz_tenant(args):
@@ -39,13 +49,13 @@ def cmd_wiz_tenant(args):
         # OAuth silently rather than erroring.
         "WIZ_DATA_CENTER": dc,
         "WIZ_API_URL": core.api_url(dc),
-        "WIZ_AUTH_URL": core.AUTH_URL,
+        "WIZ_AUTH_URL": core.auth_url(),
         "WIZ_AUDIENCE": core.AUDIENCE,
     })
     core._emit("".join(f"{k}={v}\n" for k, v in facts.items()))
 
 
 def _managed_identity():
-    data, tid = core.api(session.IDENTITY, {})
+    data, tid = core.api(IDENTITY, {})
     params = data.get("managedIdentityParameters") or {}
     return {"aws": params.get("aws") or {}, "gcp": params.get("gcp") or {}, "azure": params.get("azure") or {}}, tid
