@@ -289,7 +289,8 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   edge: a `graphEntityCorrelations(filterBy:{toType:{equals:[CONTAINER_IMAGE]}})` node under `--rule` whose
   `from.properties.externalId` starts `github.com##<org/name>##`, read on the image side so a sibling
   slot's edge never grades this repo; `ignored` nodes do not count. 0 ≥1 edge · 1 none.
-- `pullrequest inspect --repo <org/name> --number N --require scanned|passed` — the Patch PR's scan: a
+- `pullrequest inspect --repo <org/name> [--number N] --require scanned|passed` — the Patch PR's scan (no
+  `--number`: the open PR on head `patch/<stem>`, read from GitHub, never opened): a
   `cloudEvents` row (`kind CI_CD_SCAN`, `cicdScan.trigger PULL_REQUEST`, `resource.subjectResourceExternalId
   github.com##<org>/<name>`) matched client-side on `codeAnalyzerDetails.pullRequest.id` (no server-side PR
   filter), newest by `timestamp` since each covering VCS connector emits one row. `scanned` = `status.state

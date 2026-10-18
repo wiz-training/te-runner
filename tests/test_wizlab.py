@@ -234,7 +234,7 @@ class InspectContract(unittest.TestCase):
             "present": {"cloudEvents": _conn(PR_SCAN)},
             "absent": [{"cloudEvents": _conn()}, {"cloudEvents": _conn(PR_SCAN_OTHER)},
                        {"cloudEvents": _conn(PR_SCAN_PENDING)}],
-            "invalid": [["--repo", SLOT_REPO], ["--repo", SLOT_REPO, "--number", "seven"]]},
+            "invalid": [["--repo", SLOT_REPO, "--number", "seven"]]},
         # The edge is read on the image side and matched on the Dockerfile's externalId prefix: a sibling
         # slot's edge is absent, and so is the same edge under another rule.
         ("correlation", "inspect"): {
@@ -635,6 +635,20 @@ class PullRequestGrading(unittest.TestCase):
         for state in ("FAILURE", "SKIPPED"):
             with self.subTest(state=state):
                 self.assertEqual(self._code(["--require", "scanned"], self._row(state, None)), 3)
+
+    def test_without_a_number_the_open_pr_on_the_sessions_patch_branch_is_graded(self):
+        """A check must find the learner's PR without opening one: the head is patch/<stem>, read on GitHub."""
+        gh = FakeGitHub(prs=[{"number": 7, "head": {"ref": "patch/lab-x"}}])
+        repo = gh.REPO.split("/repos/", 1)[1]
+        env = {**self.ENV, **GitHubContract.GH_ENV}
+        row = self._row("SUCCESS", "PASSED_BY_POLICY")
+        self.assertEqual(exit_code(wz.cmd_pullrequest_inspect, ["--repo", repo, "--require", "scanned"],
+                                   wiz=FakeWiz(cloudEvents=_conn(row)), env=env, _gh_call=gh), 0)
+        self.assertFalse([c for c in gh.calls if c[0] in ("POST", "PUT") and "access_tokens" not in c[1]],
+                         "a check never mutates GitHub")
+        gh = FakeGitHub(prs=[])
+        self.assertEqual(exit_code(wz.cmd_pullrequest_inspect, ["--repo", repo, "--require", "scanned"],
+                                   wiz=FakeWiz(cloudEvents=_conn(row)), env=env, _gh_call=gh), 1)
 
     def test_the_newest_row_for_the_pr_wins(self):
         old = self._row("PENDING", None, ts="2026-10-18T18:00:03Z")

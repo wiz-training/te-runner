@@ -77,20 +77,26 @@ def _pr_id(node):
 def cmd_pullrequest_inspect(args):
     """Assert the Patch PR's scan: a CI_CD_SCAN cloud event with trigger PULL_REQUEST on the repo, matched
     client-side on pullRequest.id (no server-side PR filter exists), newest first since each covering VCS
-    connector emits its own row. scanned = state SUCCESS; passed = SUCCESS and a verdict in
+    connector emits its own row. Without --number the PR is the open one on head patch/<stem>, read from
+    GitHub. scanned = state SUCCESS; passed = SUCCESS and a verdict in
     PASSING_VERDICTS — WARN_BY_POLICY counts because the default vulnerabilities policy warns on every
     Juice Shop slot's npm tree and the PR plane carries no Dockerfile finding. PENDING or no row is 1; a
     scan that did not run (FAILURE, SKIPPED) is 3."""
     repo = _repo(args)
-    if args.number is None:
-        core.die(2, "--number <pr> is required")
+    number = args.number
+    if number is None:
+        # A check must find the learner's PR without opening one: the head is deterministic.
+        number = _open_pr(repo, f"patch/{core._stem(args)}")
+        if number is None:
+            print(f"no open PR on {repo} head patch/{core._stem(args)}")
+            sys.exit(1)
     filters = {"f": {"kind": {"equals": ["CI_CD_SCAN"]},
                      "cicdScan": {"trigger": {"equals": ["PULL_REQUEST"]}},
                      "resource": {"subjectResourceExternalId": {"equals": [f"github.com##{repo}"]}}}}
     nodes = core._all_nodes(PR_SCANS_Q, filters, "cloudEvents")
-    rows = [n for n in nodes if _pr_id(n) == str(args.number)]
+    rows = [n for n in nodes if _pr_id(n) == str(number)]
     if not rows:
-        print(f"no PR-triggered scan for {repo}#{args.number}")
+        print(f"no PR-triggered scan for {repo}#{number}")
         sys.exit(1)
     row = max(rows, key=lambda n: n.get("timestamp") or "")
     details = row.get("extraDetails") or {}
@@ -98,7 +104,7 @@ def cmd_pullrequest_inspect(args):
     findings = details.get("totalMatches")
     core._emit(f"PR_SCAN_STATE={state}\nPR_SCAN_VERDICT={verdict}\nPR_SCAN_FINDINGS={findings}\n")
     if state in ("FAILURE", "SKIPPED"):
-        core.die(3, f"{repo}#{args.number}: the PR scan did not run ({state})")
+        core.die(3, f"{repo}#{number}: the PR scan did not run ({state})")
     if state != "SUCCESS":
         sys.exit(1)
     if args.require == "passed" and verdict not in PASSING_VERDICTS:
