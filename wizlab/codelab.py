@@ -90,8 +90,10 @@ def cmd_pullrequest_inspect(args):
         if number is None:
             print(f"no open PR on {repo} head patch/{core._stem(args)}")
             sys.exit(1)
+    # cloudEvents answers inside a default window when none is sent; a session is hours, not days.
     filters = {"f": {"kind": {"equals": ["CI_CD_SCAN"]},
                      "cicdScan": {"trigger": {"equals": ["PULL_REQUEST"]}},
+                     "timestamp": {"inLast": {"amount": 7, "unit": "DurationFilterValueUnitDays"}},
                      "resource": {"subjectResourceExternalId": {"equals": [f"github.com##{repo}"]}}}}
     nodes = core._all_nodes(PR_SCANS_Q, filters, "cloudEvents")
     rows = [n for n in nodes if _pr_id(n) == str(number)]

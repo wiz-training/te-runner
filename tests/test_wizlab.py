@@ -650,6 +650,15 @@ class PullRequestGrading(unittest.TestCase):
         self.assertEqual(exit_code(wz.cmd_pullrequest_inspect, ["--repo", repo, "--require", "scanned"],
                                    wiz=FakeWiz(cloudEvents=_conn(row)), env=env, _gh_call=gh), 1)
 
+    def test_the_query_carries_an_explicit_time_window(self):
+        """cloudEvents answers inside a default window when none is sent; a PR scanned earlier in a long
+        session would read absent, so the verb names its own."""
+        wiz = FakeWiz(cloudEvents=_conn(self._row("SUCCESS", "PASSED_BY_POLICY")))
+        exit_code(wz.cmd_pullrequest_inspect, ["--repo", "x/y", "--number", "7", "--require", "scanned"],
+                  wiz=wiz, env=self.ENV)
+        sent = wiz.sent("cloudEvents")[0]["f"]
+        self.assertEqual(sent["timestamp"], {"inLast": {"amount": 7, "unit": "DurationFilterValueUnitDays"}})
+
     def test_the_newest_row_for_the_pr_wins(self):
         old = self._row("PENDING", None, ts="2026-10-18T18:00:03Z")
         new = self._row("SUCCESS", "PASSED_BY_POLICY", ts="2026-10-18T18:04:00Z")
