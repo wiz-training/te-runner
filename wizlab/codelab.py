@@ -59,6 +59,52 @@ def cmd_correlation_inspect(args):
         print(f"edge {e['id']}: {e['from']['properties']['externalId']} -> {(e.get('to') or {}).get('name')}")
 
 
+PR_SCANS_Q = """query PullRequestScans($f: CloudEventFilters, $after: String) {
+  cloudEvents(first: 50, after: $after, filterBy: $f) {
+    nodes { ... on CloudEvent { timestamp externalId extraDetails { ... on CloudEventCICDScanDetails {
+      status { state verdict } totalMatches codeAnalyzerDetails { pullRequest { id infoURL } } } } } }
+    pageInfo { hasNextPage endCursor }
+  }
+}"""
+PASSING_VERDICTS = ("PASSED_BY_POLICY", "WARN_BY_POLICY")
+
+
+def _pr_id(node):
+    details = (node.get("extraDetails") or {}).get("codeAnalyzerDetails") or {}
+    return str((details.get("pullRequest") or {}).get("id"))
+
+
+def cmd_pullrequest_inspect(args):
+    """Assert the Patch PR's scan: a CI_CD_SCAN cloud event with trigger PULL_REQUEST on the repo, matched
+    client-side on pullRequest.id (no server-side PR filter exists), newest first since each covering VCS
+    connector emits its own row. scanned = state SUCCESS; passed = SUCCESS and a verdict in
+    PASSING_VERDICTS — WARN_BY_POLICY counts because the default vulnerabilities policy warns on every
+    Juice Shop slot's npm tree and the PR plane carries no Dockerfile finding. PENDING or no row is 1; a
+    scan that did not run (FAILURE, SKIPPED) is 3."""
+    repo = _repo(args)
+    if args.number is None:
+        core.die(2, "--number <pr> is required")
+    filters = {"f": {"kind": {"equals": ["CI_CD_SCAN"]},
+                     "cicdScan": {"trigger": {"equals": ["PULL_REQUEST"]}},
+                     "resource": {"subjectResourceExternalId": {"equals": [f"github.com##{repo}"]}}}}
+    nodes = core._all_nodes(PR_SCANS_Q, filters, "cloudEvents")
+    rows = [n for n in nodes if _pr_id(n) == str(args.number)]
+    if not rows:
+        print(f"no PR-triggered scan for {repo}#{args.number}")
+        sys.exit(1)
+    row = max(rows, key=lambda n: n.get("timestamp") or "")
+    details = row.get("extraDetails") or {}
+    state, verdict = (details.get("status") or {}).get("state"), (details.get("status") or {}).get("verdict")
+    findings = details.get("totalMatches")
+    core._emit(f"PR_SCAN_STATE={state}\nPR_SCAN_VERDICT={verdict}\nPR_SCAN_FINDINGS={findings}\n")
+    if state in ("FAILURE", "SKIPPED"):
+        core.die(3, f"{repo}#{args.number}: the PR scan did not run ({state})")
+    if state != "SUCCESS":
+        sys.exit(1)
+    if args.require == "passed" and verdict not in PASSING_VERDICTS:
+        sys.exit(1)
+
+
 # --- GitHub as the App ---
 def _app():
     raw = os.getenv("WIZ_LABS_GH_APP") or core.die(3, "WIZ_LABS_GH_APP not in environment")

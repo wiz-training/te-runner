@@ -218,7 +218,23 @@ class InspectContract(unittest.TestCase):
                              "from": {"type": "DOCKERFILE", "name": "Dockerfile",
                                       "properties": {"externalId": f"github.com##{SLOT_REPO}##main##Dockerfile"}},
                              "to": {"type": "CONTAINER_IMAGE", "name": f"ghcr.io/{SLOT_REPO}:lab"}}
+    PR_SCAN: typing.ClassVar = {"timestamp": "2026-10-18T18:00:03Z", "externalId": "conn##github.com##x/y##abc",
+                                "extraDetails": {"status": {"state": "SUCCESS", "verdict": "PASSED_BY_POLICY"},
+                                                 "totalMatches": 0,
+                                                 "codeAnalyzerDetails": {"pullRequest": {"id": "7"}}}}
+    PR_SCAN_OTHER: typing.ClassVar = {**PR_SCAN, "extraDetails": {**PR_SCAN["extraDetails"],
+                                                                   "codeAnalyzerDetails": {"pullRequest": {"id": "8"}}}}
+    PR_SCAN_PENDING: typing.ClassVar = {**PR_SCAN, "extraDetails": {**PR_SCAN["extraDetails"],
+                                                                     "status": {"state": "PENDING", "verdict": None}}}
     ROWS: typing.ClassVar = {
+        # The PR scan is a CI_CD_SCAN cloud event matched client-side on pullRequest.id; another PR's row,
+        # a PENDING one and an empty page are absent.
+        ("pullrequest", "inspect"): {
+            "argv": ["--repo", SLOT_REPO, "--number", "7"],
+            "present": {"cloudEvents": _conn(PR_SCAN)},
+            "absent": [{"cloudEvents": _conn()}, {"cloudEvents": _conn(PR_SCAN_OTHER)},
+                       {"cloudEvents": _conn(PR_SCAN_PENDING)}],
+            "invalid": [["--repo", SLOT_REPO], ["--repo", SLOT_REPO, "--number", "seven"]]},
         # The edge is read on the image side and matched on the Dockerfile's externalId prefix: a sibling
         # slot's edge is absent, and so is the same edge under another rule.
         ("correlation", "inspect"): {
@@ -586,6 +602,45 @@ def _gh_app_env():
                             serialization.NoEncryption())
     secret = {"app_id": "123", "install_id": "456", "key": base64.b64encode(pem).decode()}
     return {"WIZ_LABS_GH_APP": json.dumps(secret)}
+
+
+class PullRequestGrading(unittest.TestCase):
+    """`pullrequest inspect --require passed`: a completed scan whose verdict is PASSED_BY_POLICY or
+    WARN_BY_POLICY passes (the default vulnerabilities policy warns on every Juice Shop slot's npm tree,
+    and the PR plane carries no Dockerfile finding); FAILED_BY_POLICY is 1; a scan that did not run,
+    FAILURE or SKIPPED, is environment 3 under either --require. Two connectors covering one repo emit two
+    rows for one PR; the newest wins."""
+
+    ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "x"}
+
+    def _row(self, state, verdict, ts="2026-10-18T18:00:03Z", pr="7", matches=0):
+        return {"timestamp": ts, "externalId": "c##github.com##x/y##abc",
+                "extraDetails": {"status": {"state": state, "verdict": verdict}, "totalMatches": matches,
+                                 "codeAnalyzerDetails": {"pullRequest": {"id": pr}}}}
+
+    def _code(self, argv, *rows, out=None):
+        return exit_code(wz.cmd_pullrequest_inspect, ["--repo", "x/y", "--number", "7", *argv],
+                         wiz=FakeWiz(cloudEvents=_conn(*rows)), env=self.ENV, out=out)
+
+    def test_passed_accepts_warn_and_rejects_failed(self):
+        out = io.StringIO()
+        warned = self._row("SUCCESS", "WARN_BY_POLICY", matches=10)
+        self.assertEqual(self._code(["--require", "passed"], warned, out=out), 0)
+        self.assertIn("PR_SCAN_VERDICT=WARN_BY_POLICY\n", out.getvalue())
+        self.assertIn("PR_SCAN_FINDINGS=10\n", out.getvalue())
+        self.assertEqual(self._code(["--require", "passed"], self._row("SUCCESS", "FAILED_BY_POLICY")), 1)
+        self.assertEqual(self._code(["--require", "scanned"], self._row("SUCCESS", "FAILED_BY_POLICY")), 0)
+
+    def test_a_scan_that_did_not_run_is_3(self):
+        for state in ("FAILURE", "SKIPPED"):
+            with self.subTest(state=state):
+                self.assertEqual(self._code(["--require", "scanned"], self._row(state, None)), 3)
+
+    def test_the_newest_row_for_the_pr_wins(self):
+        old = self._row("PENDING", None, ts="2026-10-18T18:00:03Z")
+        new = self._row("SUCCESS", "PASSED_BY_POLICY", ts="2026-10-18T18:04:00Z")
+        self.assertEqual(self._code(["--require", "scanned"], old, new), 0)
+        self.assertEqual(self._code(["--require", "scanned"], new, old), 0)
 
 
 class GitHubContract(unittest.TestCase):

@@ -289,6 +289,14 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   edge: a `graphEntityCorrelations(filterBy:{toType:{equals:[CONTAINER_IMAGE]}})` node under `--rule` whose
   `from.properties.externalId` starts `github.com##<org/name>##`, read on the image side so a sibling
   slot's edge never grades this repo; `ignored` nodes do not count. 0 ≥1 edge · 1 none.
+- `pullrequest inspect --repo <org/name> --number N --require scanned|passed` — the Patch PR's scan: a
+  `cloudEvents` row (`kind CI_CD_SCAN`, `cicdScan.trigger PULL_REQUEST`, `resource.subjectResourceExternalId
+  github.com##<org>/<name>`) matched client-side on `codeAnalyzerDetails.pullRequest.id` (no server-side PR
+  filter), newest by `timestamp` since each covering VCS connector emits one row. `scanned` = `status.state
+  SUCCESS`; `passed` = SUCCESS and verdict `PASSED_BY_POLICY` or `WARN_BY_POLICY` — the default
+  vulnerabilities policy warns on every Juice Shop slot's npm tree and the PR plane carries no Dockerfile
+  finding, so the verdict grades a completed scan, never the fix. No row or PENDING is 1; FAILURE or
+  SKIPPED (the scan did not run) is 3. Emits `PR_SCAN_STATE`, `PR_SCAN_VERDICT`, `PR_SCAN_FINDINGS`.
 - `slot claim|release --lab <name>` — the learner-repo pool (te-code-labs `scripts/pool.py` seeds and
   resets it): `claim` takes the first free `te-code-<lab>-NN` by creating `refs/claims/<lab>/slot-NN` in
   te-code-labs on an empty commit whose message is the session stem (atomic, so two graders cannot share
