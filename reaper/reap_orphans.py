@@ -2,7 +2,9 @@
 """Out-of-band reaper. Per tenant: ask Instruqt labPlayReports for STOPPED lab sessions (tagged
 tid:<tenant>), then reap each session's Wiz footprint and the Wiz user its SSO login minted, via
 wizlab, keyed on the session id (objects are named lab-<session_id>). DRY-RUN by default; --commit
-deletes.
+deletes. A lab whose tenant is chosen per play (an embed variable) carries one tid: tag per tenant it
+can sign in to, so every tenant's sweep reaps the same session; on a tenant the play never touched
+the footprint reads ABSENT and `user delete` finds no record, both exit 0.
 
 Stopped is Instruqt's own done-signal (immune to long/paused labs). The session id is the join:
 it's the labPlayReports id AND the naming stem. No account, no Okta attributes, no age heuristic.
@@ -156,7 +158,7 @@ def _reap_session(tenant, sid, commit):
 
 def _retry_hints(failed):
     """One line per tenant: REAP_SESSIONS reaps under REAP_SESSIONS_TENANT, so a hint naming only the
-    sids retries a TE session under TBCMP, finds nothing, deletes the Okta user and loses the handle."""
+    sids retries a TE session under TBCMP, finds nothing, reports done and leaves the TE record."""
     return "; ".join(f'REAP_SESSIONS_TENANT={t} REAP_SESSIONS="{",".join(sids)}"' for t, sids in failed.items())
 
 
