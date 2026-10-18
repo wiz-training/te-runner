@@ -213,7 +213,23 @@ class InspectContract(unittest.TestCase):
                             "type": {"id": "eks"}}
     USER: typing.ClassVar = {"id": "u1", "email": "lab-x@wizlabs.cloudseclabs.io", "status": "ACTIVE",
                              "identityProviderTypeV2": "SAML"}
+    SLOT_REPO: typing.ClassVar = "wiz-training/te-code-juice-shop-101-03"
+    CORR: typing.ClassVar = {"id": "corr1", "ignored": False, "correlationRule": {"name": "Docker Correlation"},
+                             "from": {"type": "DOCKERFILE", "name": "Dockerfile",
+                                      "properties": {"externalId": f"github.com##{SLOT_REPO}##main##Dockerfile"}},
+                             "to": {"type": "CONTAINER_IMAGE", "name": f"ghcr.io/{SLOT_REPO}:lab"}}
     ROWS: typing.ClassVar = {
+        # The edge is read on the image side and matched on the Dockerfile's externalId prefix: a sibling
+        # slot's edge is absent, and so is the same edge under another rule.
+        ("correlation", "inspect"): {
+            "argv": ["--repo", SLOT_REPO],
+            "present": {"graphEntityCorrelations": _conn(CORR)},
+            "absent": [{"graphEntityCorrelations": _conn()},
+                       {"graphEntityCorrelations": _conn({**CORR, "from": {"properties": {
+                           "externalId": "github.com##wiz-training/te-code-juice-shop-101-02##main##Dockerfile"}}})},
+                       {"graphEntityCorrelations": _conn(
+                           {**CORR, "correlationRule": {"name": "Container Image Annotation"}})}],
+            "invalid": [[], ["--repo", "no slash"]]},
         ("connector", "inspect"): {"argv": ["--account-id", "111111111111"],
                                    "present": {"connectors": _conn(CONNECTOR)}, "absent": [{"connectors": _conn()}]},
         # --cluster-arn keeps the row on the Wiz plane; the --cluster path is K8sConnectorGrading's.
@@ -497,6 +513,147 @@ class DeleteContract(unittest.TestCase):
                 self.assertEqual((code, _mutations(wiz)), (0, []))
                 code, wiz = self._run(verb, row["argv"], {row["field"]: FakeWiz.error("denied")})
                 self.assertEqual((code, _mutations(wiz)), (3, []))
+
+
+class FakeGitHub:
+    """GitHub REST behind _gh_call for the code-lab verbs: the App's installation token, the pool's claim
+    refs in te-code-labs, and one slot repo's Dockerfile, branches and pull requests. `claims` is
+    {slot: session stem}; `fail` makes every call a transport failure (3). `calls` holds (method, path)."""
+    LAB = "juice-shop-101"
+    CONTROL = "/repos/wiz-training/te-code-labs"
+    REPO = "/repos/wiz-training/te-code-juice-shop-101-02"
+
+    def __init__(self, slots=("01", "02"), claims=None, dockerfile="FROM x\nUSER root\nENV LAB_SLOT=02\n",
+                 prs=(), fail=False):
+        self.slots, self.claims, self.dockerfile = list(slots), dict(claims or {}), dockerfile
+        self.prs, self.fail = list(prs), fail
+        self.calls, self.branches, self.puts, self.commits = [], {"main": "mainsha"}, [], {}
+
+    def __call__(self, method, path, body=None, token=None):
+        self.calls.append((method, path))
+        if self.fail:
+            raise wz.WizlabError(3, "GitHub transport failure: boom")
+        if path.startswith("/app/installations/") and method == "POST":
+            return 201, {"token": "ghs_test"}
+        if path.startswith("/orgs/wiz-training/repos"):
+            return 200, [{"name": f"te-code-{self.LAB}-{s}"} for s in self.slots]
+        if path.startswith(f"{self.CONTROL}/git/matching-refs/claims/{self.LAB}/"):
+            return 200, [{"ref": f"refs/claims/{self.LAB}/slot-{s}", "object": {"sha": f"sha-{s}"}}
+                         for s in sorted(self.claims)]
+        if path.startswith(f"{self.CONTROL}/git/commits/sha-"):
+            return 200, {"message": self.claims[path.rsplit("sha-", 1)[-1]]}
+        if path == f"{self.CONTROL}/git/commits" and method == "POST":
+            self.commits["pending"] = body["message"]
+            return 201, {"sha": "newsha"}
+        if path == f"{self.CONTROL}/git/refs" and method == "POST":
+            slot = body["ref"].rsplit("slot-", 1)[-1]
+            if slot in self.claims:
+                return 422, {"message": "Reference already exists"}
+            self.claims[slot] = self.commits["pending"]
+            return 201, {}
+        if path.startswith(f"{self.CONTROL}/git/refs/claims/") and method == "DELETE":
+            slot = path.rsplit("slot-", 1)[-1]
+            return (204, {}) if self.claims.pop(slot, None) is not None else (422, {})
+        if path.startswith(f"{self.REPO}/contents/Dockerfile") and method == "GET":
+            return 200, {"content": base64.b64encode(self.dockerfile.encode()).decode(), "sha": "fsha"}
+        if path == f"{self.REPO}/git/ref/heads/main":
+            return 200, {"object": {"sha": "mainsha"}}
+        if path == f"{self.REPO}/git/refs" and method == "POST":
+            name = body["ref"].split("refs/heads/", 1)[-1]
+            if name in self.branches:
+                return 422, {"message": "Reference already exists"}
+            self.branches[name] = body["sha"]
+            return 201, {}
+        if path.startswith(f"{self.REPO}/contents/Dockerfile") and method == "PUT":
+            self.puts.append(body)
+            return 200, {}
+        if path.startswith(f"{self.REPO}/pulls") and method == "POST":
+            self.prs.append({"number": 7, "head": {"ref": body["head"]}})
+            return 201, {"number": 7}
+        if path.startswith(f"{self.REPO}/pulls") and method == "GET":
+            head = path.split("head=", 1)[-1].split("&")[0].split(":", 1)[-1]
+            return 200, [p for p in self.prs if p["head"]["ref"] == head]
+        raise AssertionError(f"unrouted {method} {path}")
+
+
+def _gh_app_env():
+    """WIZ_LABS_GH_APP as the one JSON secret: the App id, installation id and a base64 PEM key, generated
+    here so the RS256 signing path runs for real."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                            serialization.NoEncryption())
+    secret = {"app_id": "123", "install_id": "456", "key": base64.b64encode(pem).decode()}
+    return {"WIZ_LABS_GH_APP": json.dumps(secret)}
+
+
+class GitHubContract(unittest.TestCase):
+    """The code-lab verbs against GitHub: `slot claim` takes the first free pool slot once per session,
+    `slot release` drops the session's claims, `patch open` opens the Dockerfile PR once. Any GitHub
+    fault is 3; a missing App secret is 3 before any request."""
+
+    GH_ENV: typing.ClassVar = _gh_app_env()
+    ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "s1", **GH_ENV}
+    STEM = "lab-s1"
+
+    def _run(self, fn, argv, gh, out=None, env=None):
+        return exit_code(fn, argv, env=self.ENV if env is None else env, out=out, _gh_call=gh)
+
+    def test_claim_takes_the_first_free_slot_and_is_idempotent_per_session(self):
+        gh, out = FakeGitHub(claims={"01": "lab-other"}), io.StringIO()
+        self.assertEqual(self._run(wz.cmd_slot_claim, ["--lab", "juice-shop-101"], gh, out=out), 0)
+        self.assertEqual(gh.claims, {"01": "lab-other", "02": self.STEM})
+        self.assertIn("SLOT=02\n", out.getvalue())
+        self.assertIn("REPO=wiz-training/te-code-juice-shop-101-02\n", out.getvalue())
+        posts = len([c for c in gh.calls if c == ("POST", f"{gh.CONTROL}/git/refs")])
+        self.assertEqual(self._run(wz.cmd_slot_claim, ["--lab", "juice-shop-101"], gh), 0)
+        again = len([c for c in gh.calls if c == ("POST", f"{gh.CONTROL}/git/refs")])
+        self.assertEqual(again, posts, "a held claim is not re-posted")
+
+    def test_claim_with_no_free_slot_is_1(self):
+        gh = FakeGitHub(claims={"01": "lab-a", "02": "lab-b"})
+        self.assertEqual(self._run(wz.cmd_slot_claim, ["--lab", "juice-shop-101"], gh), 1)
+
+    def test_release_drops_only_this_sessions_claims_and_is_a_no_op_when_none(self):
+        gh = FakeGitHub(claims={"01": "lab-other", "02": self.STEM})
+        self.assertEqual(self._run(wz.cmd_slot_release, ["--lab", "juice-shop-101"], gh), 0)
+        self.assertEqual(gh.claims, {"01": "lab-other"})
+        gh2 = FakeGitHub(claims={"01": "lab-other"})
+        self.assertEqual(self._run(wz.cmd_slot_release, ["--lab", "juice-shop-101"], gh2), 0)
+        self.assertFalse([c for c in gh2.calls if c[0] == "DELETE"])
+
+    def test_patch_open_rewrites_user_root_on_its_own_branch_and_opens_one_pr(self):
+        gh, out = FakeGitHub(), io.StringIO()
+        repo = gh.REPO.split("/repos/", 1)[1]
+        self.assertEqual(self._run(wz.cmd_patch_open, ["--repo", repo], gh, out=out), 0)
+        self.assertIn("PR_NUMBER=7\n", out.getvalue())
+        self.assertIn(f"patch/{self.STEM}", gh.branches)
+        put = gh.puts[-1]
+        body = base64.b64decode(put["content"]).decode()
+        self.assertIn("USER node\n", body)
+        self.assertNotIn("USER root", body)
+        self.assertEqual(put["branch"], f"patch/{self.STEM}")
+        self.assertEqual(self._run(wz.cmd_patch_open, ["--repo", repo], gh, out=out), 0)
+        self.assertEqual(len(gh.prs), 1, "a second run finds the PR, never opens another")
+
+    def test_patch_open_with_nothing_to_patch_is_1(self):
+        gh = FakeGitHub(dockerfile="FROM x\nUSER node\n")
+        self.assertEqual(self._run(wz.cmd_patch_open, ["--repo", gh.REPO.split("/repos/", 1)[1]], gh), 1)
+
+    def test_a_github_fault_is_3_and_a_missing_app_secret_is_3_before_any_request(self):
+        gh = FakeGitHub(fail=True)
+        self.assertEqual(self._run(wz.cmd_slot_claim, ["--lab", "juice-shop-101"], gh), 3)
+        gh = FakeGitHub()
+        no_app = {"INSTRUQT_SESSION_ID": "s1"}
+        self.assertEqual(self._run(wz.cmd_slot_claim, ["--lab", "juice-shop-101"], gh, env=no_app), 3)
+        self.assertEqual(gh.calls, [])
+
+    def test_bad_lab_or_repo_is_2_before_any_request(self):
+        gh = FakeGitHub()
+        self.assertEqual(self._run(wz.cmd_slot_claim, ["--lab", "Bad Lab"], gh), 2)
+        self.assertEqual(self._run(wz.cmd_patch_open, ["--repo", "noslash"], gh), 2)
+        self.assertEqual(gh.calls, [])
 
 
 class OktaContract(unittest.TestCase):

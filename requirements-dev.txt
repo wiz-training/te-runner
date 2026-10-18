@@ -1,3 +1,4 @@
 ruff==0.16.9
+cryptography==41.0.7  # the App JWT; the image carries it for azure-cli
 radon==6.0.1
 xenon==0.9.3

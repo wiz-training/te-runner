@@ -285,6 +285,19 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   hard-coded; `--rule-id`/`--severity`/`--count-threshold` override), `default:false` so only a
   `wizcli --policies <name>` scan is gated. `inspect --require exists` verifies setup; `delete`
   removes it. A SHARED, PERSISTENT fixture — the reaper never touches it (not session-scoped).
+- `correlation inspect --repo <org/name> [--rule 'Docker Correlation'] --require edge` — the code-to-cloud
+  edge: a `graphEntityCorrelations(filterBy:{toType:{equals:[CONTAINER_IMAGE]}})` node under `--rule` whose
+  `from.properties.externalId` starts `github.com##<org/name>##`, read on the image side so a sibling
+  slot's edge never grades this repo; `ignored` nodes do not count. 0 ≥1 edge · 1 none.
+- `slot claim|release --lab <name>` — the learner-repo pool (te-code-labs `scripts/pool.py` seeds and
+  resets it): `claim` takes the first free `te-code-<lab>-NN` by creating `refs/claims/<lab>/slot-NN` in
+  te-code-labs on an empty commit whose message is the session stem (atomic, so two graders cannot share
+  a slot) and emits `SLOT`, `REPO`; a slot the session already holds is reprinted; none free is 1.
+  `release` drops the session's claims, a no-op when none. GitHub is reached as the App through the one
+  JSON secret `WIZ_LABS_GH_APP` (`app_id`, `install_id`, base64 PEM `key`); absent is 3 before any request.
+- `patch open --repo <org/name>` — the learner's fix as a PR: branch `patch/<stem>` from `main`,
+  Dockerfile `USER root` → `USER node`, one PR against `main`; emits `PR_NUMBER`. A rerun finds the open
+  PR on that head; a Dockerfile with no `USER root` is 1.
 - `code-scan inspect --require published|pass` — asserts a Wiz Code CI/CD scan for this session,
   scoped by the `session` tag (`--tag-key`/`--tag-value`, default value the session stem), latest scan
   wins. `published` = ≥1 scan exists; `pass` = latest `status.verdict == PASSED_BY_POLICY`
