@@ -285,6 +285,28 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   hard-coded; `--rule-id`/`--severity`/`--count-threshold` override), `default:false` so only a
   `wizcli --policies <name>` scan is gated. `inspect --require exists` verifies setup; `delete`
   removes it. A SHARED, PERSISTENT fixture — the reaper never touches it (not session-scoped).
+- `correlation inspect --repo <org/name> [--rule 'Docker Correlation'] --require edge` — the code-to-cloud
+  edge: a `graphEntityCorrelations(filterBy:{toType:{equals:[CONTAINER_IMAGE]}})` node under `--rule` whose
+  `from.properties.externalId` starts `github.com##<org/name>##`, read on the image side so a sibling
+  slot's edge never grades this repo; `ignored` nodes do not count. 0 ≥1 edge · 1 none.
+- `pullrequest inspect --repo <org/name> [--number N] --require scanned|passed` — the Patch PR's scan (no
+  `--number`: the open PR on head `patch/<stem>`, read from GitHub, never opened): a
+  `cloudEvents` row (`kind CI_CD_SCAN`, `cicdScan.trigger PULL_REQUEST`, `resource.subjectResourceExternalId
+  github.com##<org>/<name>`) matched client-side on `codeAnalyzerDetails.pullRequest.id` (no server-side PR
+  filter), newest by `timestamp` since each covering VCS connector emits one row. `scanned` = `status.state
+  SUCCESS`; `passed` = SUCCESS and verdict `PASSED_BY_POLICY` or `WARN_BY_POLICY` — the default
+  vulnerabilities policy warns on every Juice Shop slot's npm tree and the PR plane carries no Dockerfile
+  finding, so the verdict grades a completed scan, never the fix. No row or PENDING is 1; FAILURE or
+  SKIPPED (the scan did not run) is 3. Emits `PR_SCAN_STATE`, `PR_SCAN_VERDICT`, `PR_SCAN_FINDINGS`.
+- `slot claim|release --lab <name>` — the learner-repo pool (te-code-labs `scripts/pool.py` seeds and
+  resets it): `claim` takes the first free `te-code-<lab>-NN` by creating `refs/claims/<lab>/slot-NN` in
+  te-code-labs on an empty commit whose message is the session stem (atomic, so two graders cannot share
+  a slot) and emits `SLOT`, `REPO`; a slot the session already holds is reprinted; none free is 1.
+  `release` drops the session's claims, a no-op when none. GitHub is reached as the App through the one
+  JSON secret `WIZ_LABS_GH_APP` (`app_id`, `install_id`, base64 PEM `key`); absent is 3 before any request.
+- `patch open --repo <org/name>` — the learner's fix as a PR: branch `patch/<stem>` from `main`,
+  Dockerfile `USER root` → `USER node`, one PR against `main`; emits `PR_NUMBER`. A rerun finds the open
+  PR on that head; a Dockerfile with no `USER root` is 1.
 - `code-scan inspect --require published|pass` — asserts a Wiz Code CI/CD scan for this session,
   scoped by the `session` tag (`--tag-key`/`--tag-value`, default value the session stem), latest scan
   wins. `published` = ≥1 scan exists; `pass` = latest `status.verdict == PASSED_BY_POLICY`
