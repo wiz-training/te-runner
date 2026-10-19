@@ -71,7 +71,8 @@ def classify(command):
         if len(argv) >= 3 and argv[0] == "git" and "push" in argv:
             tags = [a for a in argv[argv.index("push") + 1:] if TAG_RE.match(a)]
             if tags:
-                return ("tag", tags[0], "", None, None)
+                cdir = argv[argv.index("-C") + 1] if "-C" in argv[:argv.index("push")] else None
+                return ("tag", tags[0], "", None, cdir)
     return None
 
 
@@ -157,14 +158,18 @@ def main(argv, stdin):
     if not found:
         return 0
     cwd = pathlib.Path(data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    moved = leading_cd(cmd)
+    kind, subject, body, head, slug = found
+    moved = leading_cd(cmd) or (slug if kind == "tag" else None)
     project = (cwd / moved).resolve() if moved else cwd  # a PR opened from a worktree is read there
     home = pathlib.Path(os.environ.get("CLAUDE_PROJECT_DIR") or cwd)
+    if kind == "pr" and slug and not moved:
+        sibling = home.parent / repo_name(project, slug)
+        if (sibling / ".git").exists() and sibling.resolve() != project.resolve():
+            project = sibling.resolve()  # `-R owner/repo` from another repo's cwd: the work is in that checkout
     docs = pathlib.Path(os.environ.get("TE_DOCS") or home.parent / "te-docs")
     if not (docs / ".git").exists():
         print(f"inbox-note: te-docs not checked out at {docs}; no note written", file=sys.stderr)
         return 0
-    kind, subject, body, head, slug = found
     name, text = note(project, kind, subject, body, head, slug)
     commit, pushed = land(docs, name, text)
     print(f"inbox-note: te-docs inbox/{name} on branch inbox ({commit[:7]}{'' if pushed else ', not pushed'})")
@@ -239,6 +244,31 @@ def self_test():
         for needle in ("branch `feat/wt`", "add c from worktree", "c.txt"):
             if needle not in shown:
                 bad.append(f"worktree PR note lacks {needle!r}: {shown[:80]!r}")
+        # A PR opened with -R for a sibling checkout, from this project's cwd, is read in that checkout.
+        other = d / "te-other"
+        _run(["git", "init", "-q", "-b", "main", str(other)])
+        (other / "o.txt").write_text("o\n")
+        _git(other, "add", "-A")
+        _git(other, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "base")
+        _git(other, "update-ref", "refs/remotes/origin/main", "HEAD")
+        _git(other, "checkout", "-q", "-b", "fix/y")
+        (other / "p.txt").write_text("p\n")
+        _git(other, "add", "-A")
+        _git(other, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "add p")
+        _git(other, "tag", "v0.2.0")
+        _git(other, "checkout", "-q", "main")
+        os.environ["CLAUDE_PROJECT_DIR"] = str(src)
+        fire("gh pr create -R o/te-other --head fix/y --title \"add p\" --body-file - <<'EOF'\nWhy p.\nEOF")
+        _git(docs, "fetch", "-q", "origin", "inbox")
+        shown = _git(docs, "show", f"origin/inbox:inbox/{today}-te-other-fix-y.md").stdout
+        for needle in ("# te-other: PR add p", "branch `fix/y`", "Why p.", "p.txt"):
+            if needle not in shown:
+                bad.append(f"sibling PR note lacks {needle!r}: {shown[:160]!r}")
+        fire(f"git -C {other} push -q origin v0.2.0")
+        _git(docs, "fetch", "-q", "origin", "inbox")
+        shown = _git(docs, "show", f"origin/inbox:inbox/{today}-te-other-v0.2.0.md").stdout
+        if "# te-other: release v0.2.0" not in shown:
+            bad.append(f"sibling tag note missing: {shown[:120]!r}")
     for line in bad:
         print(f"self-test FAIL: {line}", file=sys.stderr)
     print(f"self-test: {'ok' if not bad else 'FAIL'}")
