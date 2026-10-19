@@ -798,6 +798,44 @@ class OktaContract(unittest.TestCase):
 
 
 class AuthorTools(unittest.TestCase):
+    LAB_USER: typing.ClassVar = {"id": "okta-chronical_lab-s1@wizlabs.cloudseclabs.io",
+                                 "email": "lab-s1@wizlabs.cloudseclabs.io", "identityProviderTypeV2": "SSO",
+                                 "identityProviderV2": {"name": "Okta-Chronical"}}
+    IDP_CONFIG: typing.ClassVar = staticmethod(
+        lambda v: {"idpLoginUrl": f"https://app.wiz.io/idp-login?clientId=c1&idp={v['name']}",
+                   "ssoUrl": "https://t-x.auth.us-east-1.amazoncognito.com/saml2/idpresponse"})
+
+    def test_login_url_is_derived_from_the_lab_domains_identity_provider(self):
+        """No per-tenant secret: the IdP is the one the lab domain's users sign in through, and the portal
+        entrypoint is the tenant's own samlIdentityProviderConfig.idpLoginUrl."""
+        wiz = FakeWiz(users=_conn(self.LAB_USER), samlIdentityProviderConfig=self.IDP_CONFIG)
+        out = io.StringIO()
+        self.assertEqual(exit_code(wz.cmd_user_login_url, [], wiz=wiz, env={}, out=out), 0)
+        self.assertEqual(out.getvalue().strip(), "https://app.wiz.io/idp-login?clientId=c1&idp=Okta-Chronical")
+        self.assertEqual(wiz.sent("users")[0]["search"], "@wizlabs.cloudseclabs.io")
+        self.assertEqual(wiz.sent("samlIdentityProviderConfig")[0]["name"], "Okta-Chronical")
+
+    def test_login_url_takes_the_only_identity_provider_when_no_lab_user_exists_yet(self):
+        wiz = FakeWiz(users=_conn(), samlIdentityProviders=_conn({"name": "Only-IdP"}),
+                      samlIdentityProviderConfig=self.IDP_CONFIG)
+        out = io.StringIO()
+        self.assertEqual(exit_code(wz.cmd_user_login_url, [], wiz=wiz, env={}, out=out), 0)
+        self.assertIn("idp=Only-IdP", out.getvalue())
+
+    def test_login_url_with_several_providers_and_no_lab_user_is_2_naming_them(self):
+        wiz = FakeWiz(users=_conn(), samlIdentityProviders=_conn({"name": "A"}, {"name": "B"}))
+        err = io.StringIO()
+        self.assertEqual(exit_code(wz.cmd_user_login_url, [], wiz=wiz, env={}, err=err), 2)
+        self.assertIn("A", err.getvalue())
+        self.assertIn("B", err.getvalue())
+
+    def test_login_url_env_idp_name_skips_the_user_lookup(self):
+        wiz = FakeWiz(samlIdentityProviderConfig=self.IDP_CONFIG)
+        out = io.StringIO()
+        self.assertEqual(exit_code(wz.cmd_user_login_url, [], wiz=wiz, env={"WIZ_SSO_IDP_NAME": "Pinned"}, out=out), 0)
+        self.assertIn("idp=Pinned", out.getvalue())
+        self.assertEqual(wiz.sent("users"), [])
+
     def test_login_url_is_the_override_or_the_env_pair_or_3(self):
         out = io.StringIO()
         self.assertEqual(exit_code(wz.cmd_user_login_url, [], env={"WIZ_LOGIN_URL": "https://pinned"}, out=out), 0)
