@@ -33,8 +33,14 @@ def _git(repo, *args, env=None, input_=None):
     return _run(["git", "-C", str(repo), *args], env=env, input_=input_)
 
 
+def leading_cd(command):
+    """The directory a leading `cd <dir> &&` moves into, or None."""
+    m = re.match(r"\s*cd\s+(\S+)\s*&&", command)
+    return m.group(1).strip("'\"") if m else None
+
+
 def classify(command):
-    """('pr', title, body) | ('tag', tag, '') | None for a command this hook does not record."""
+    """('pr', title, body, head, slug) | ('tag', tag, '', None, None) | None when not recorded."""
     body = ""
     if "<<" in command:
         head, _, rest = command.partition("<<")
@@ -48,35 +54,53 @@ def classify(command):
         except ValueError:
             argv = segment.split()
         if len(argv) >= 3 and argv[0] == "gh" and argv[1:3] == ["pr", "create"]:
-            title = ""
+            title, head, slug = "", None, None
             for i, a in enumerate(argv):
-                if a in ("--title", "-t") and i + 1 < len(argv):
-                    title = argv[i + 1]
+                nxt = argv[i + 1] if i + 1 < len(argv) else ""
+                if a in ("--title", "-t"):
+                    title = nxt
                 elif a.startswith("--title="):
                     title = a.split("=", 1)[1]
-                elif a in ("--body", "-b") and i + 1 < len(argv):
-                    body = argv[i + 1]
-            return ("pr", title, body)
+                elif a in ("--body", "-b"):
+                    body = nxt
+                elif a in ("--head", "-H"):
+                    head = nxt
+                elif a in ("--repo", "-R"):
+                    slug = nxt
+            return ("pr", title, body, head, slug)
         if len(argv) >= 3 and argv[0] == "git" and "push" in argv:
             tags = [a for a in argv[argv.index("push") + 1:] if TAG_RE.match(a)]
             if tags:
-                return ("tag", tags[0], "")
+                return ("tag", tags[0], "", None, None)
     return None
 
 
-def note(project, kind, subject, body):
+def repo_name(project, slug=None):
+    """The checkout's name, also from inside a worktree: `<main checkout>/.git` is the common dir."""
+    if slug and "/" in slug:
+        return slug.rsplit("/", 1)[1]
+    common = _git(project, "rev-parse", "--git-common-dir").stdout.strip()
+    if common:
+        path = pathlib.Path(common)
+        path = path if path.is_absolute() else (pathlib.Path(project) / path)
+        return path.resolve().parent.name
+    return pathlib.Path(project).name
+
+
+def note(project, kind, subject, body, head=None, slug=None):
     project = pathlib.Path(project)
-    repo = project.name
-    branch = _git(project, "branch", "--show-current").stdout.strip() or "detached"
+    repo = repo_name(project, slug)
+    branch = head or _git(project, "branch", "--show-current").stdout.strip() or "detached"
     if kind == "tag":
         prev = _git(project, "describe", "--tags", "--abbrev=0", f"{subject}^").stdout.strip()
         rng = f"{prev}..{subject}" if prev else subject
         label = subject
     else:
-        rng = "origin/main..HEAD"
+        tip = branch if _git(project, "rev-parse", "-q", "--verify", branch).returncode == 0 else "HEAD"
+        rng = f"origin/main..{tip}"
         label = branch
     log = _git(project, "log", "--no-merges", "--format=- %h %s%n%b", rng).stdout.strip()
-    span = f"{rng.split('..')[0]}...HEAD" if ".." in rng else f"{subject}^..{subject}"
+    span = f"{rng.split('..')[0]}...{rng.split('..')[1]}" if ".." in rng else f"{subject}^..{subject}"
     stat = _git(project, "diff", "--stat", span).stdout.strip()
     today = datetime.date.today().isoformat()
     name = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{today}-{repo}-{label}") + ".md"
@@ -120,6 +144,10 @@ def land(docs, name, text):
 def main(argv, stdin):
     if argv == ["--self-test"]:
         return self_test()
+    me = pathlib.Path(__file__).resolve()
+    original = me.parents[3] / "te-labkit-v2" / "scripts" / "hooks" / me.name
+    if original.is_file() and original != me and original.read_bytes() != me.read_bytes():
+        os.execv(sys.executable, [sys.executable, str(original), *argv])  # a copy runs the canonical file
     try:
         data = json.load(stdin)
         cmd = data.get("tool_input", {}).get("command", "")
@@ -128,13 +156,16 @@ def main(argv, stdin):
     found = classify(cmd)
     if not found:
         return 0
-    project = pathlib.Path(data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    docs = pathlib.Path(os.environ.get("TE_DOCS") or project.parent / "te-docs")
+    cwd = pathlib.Path(data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    moved = leading_cd(cmd)
+    project = (cwd / moved).resolve() if moved else cwd  # a PR opened from a worktree is read there
+    home = pathlib.Path(os.environ.get("CLAUDE_PROJECT_DIR") or cwd)
+    docs = pathlib.Path(os.environ.get("TE_DOCS") or home.parent / "te-docs")
     if not (docs / ".git").exists():
         print(f"inbox-note: te-docs not checked out at {docs}; no note written", file=sys.stderr)
         return 0
-    kind, subject, body = found
-    name, text = note(project, kind, subject, body)
+    kind, subject, body, head, slug = found
+    name, text = note(project, kind, subject, body, head, slug)
     commit, pushed = land(docs, name, text)
     print(f"inbox-note: te-docs inbox/{name} on branch inbox ({commit[:7]}{'' if pushed else ', not pushed'})")
     return 0
@@ -190,8 +221,24 @@ def self_test():
             bad.append("local inbox and origin/inbox differ")
         if classify("git push origin feat/x") or classify("ls") or classify("gh pr view 3"):
             bad.append("non-event classified")
-        if classify("cd x && gh pr create --repo o/r --title 'T' --body 'B'") != ("pr", "T", "B"):
+        if classify("cd x && gh pr create --repo o/r --title 'T' --body 'B'") != ("pr", "T", "B", None, "o/r"):
             bad.append("inline PR title/body")
+        if leading_cd("cd /tmp/x && gh pr create") != "/tmp/x" or leading_cd("gh pr create"):
+            bad.append("leading cd")
+        # A PR opened from a worktree while the project checkout sits on main: the note reads the worktree.
+        wt = d / "wt"
+        _git(src, "checkout", "-q", "main")
+        _git(src, "worktree", "add", "-q", "-b", "feat/wt", str(wt), "main")
+        (wt / "c.txt").write_text("c\n")
+        _git(wt, "add", "-A")
+        _git(wt, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "add c from worktree")
+        fire(f"cd {wt} && gh pr create --repo wiz-training/te-src --base main --head feat/wt "
+             "--title 'wt pr' --body 'B'")
+        _git(docs, "fetch", "-q", "origin", "inbox")
+        shown = _git(docs, "show", f"origin/inbox:inbox/{today}-te-src-feat-wt.md").stdout
+        for needle in ("branch `feat/wt`", "add c from worktree", "c.txt"):
+            if needle not in shown:
+                bad.append(f"worktree PR note lacks {needle!r}: {shown[:80]!r}")
     for line in bad:
         print(f"self-test FAIL: {line}", file=sys.stderr)
     print(f"self-test: {'ok' if not bad else 'FAIL'}")
