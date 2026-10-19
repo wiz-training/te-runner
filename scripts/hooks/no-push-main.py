@@ -17,6 +17,7 @@ Reproducers, all exit 2:
 """
 import json
 import os
+import pathlib
 import re
 import shlex
 import subprocess
@@ -106,8 +107,27 @@ def lands_on_main(argv: list[str], cwd: str, is_main=on_main) -> bool:
     return False
 
 
+HEREDOC = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?")
+
+
+def _without_heredoc_bodies(cmd: str) -> str:
+    """The command with every heredoc body dropped: the lines after a `<<MARKER` line up to and
+    including the marker are data for the command, never commands."""
+    out, skip = [], None
+    for line in cmd.split("\n"):
+        if skip is not None:
+            if line.strip() == skip:
+                skip = None
+            continue
+        out.append(line)
+        m = HEREDOC.search(line)
+        if m:
+            skip = m.group(1)
+    return "\n".join(out)
+
+
 def command_lands_on_main(cmd: str, cwd: str, is_main=on_main) -> bool:
-    for seg in re.split(r"[;&|]+|\n", cmd):
+    for seg in re.split(r"[;&|]+|\n", _without_heredoc_bodies(cmd)):
         try:
             argv = shlex.split(seg)
         except ValueError:
@@ -144,6 +164,12 @@ CASES = (
     ("git push origin feature:refs/heads/mainline", "main", False),
     ("gh pr merge --admin 1", "main", False),
     ("echo git push origin main", "main", False),
+    # A heredoc body is text, not commands: a commit message quoting a push, even one whose refspec
+    # carries a backtick or `$`, is no push. Only the line opening the heredoc is a command.
+    ("git commit -F - <<'EOF'\nfix: the body quotes `git push origin main`\nEOF", "feature", False),
+    ("git commit -F - <<'EOF'\nsee `cd ../r && git push origin vX` and $BRANCH here\nEOF", "feature", False),
+    ("gh pr create --body-file - <<'EOF'\nrun git push origin main after merge\nEOF", "main", False),
+    ("git commit -F - <<'EOF'\nbody\nEOF\ngit push origin main", "feature", True),
     ("/usr/bin/git push origin main", "feature", True),
     ("env GIT_TRACE=1 git push origin main", "feature", True),
     ("command git push origin main", "feature", True),
@@ -155,18 +181,55 @@ CASES = (
 )
 
 
+def _canonical_rows():
+    """(label, failure) rows: a differing sibling copy defers, an identical one and the canonical file itself do not."""
+    import tempfile
+    out = []
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        orig = root / "te-labkit-v2" / "scripts" / "hooks" / "no-push-main.py"
+        copy = root / "te-x" / "scripts" / "hooks" / "no-push-main.py"
+        for p, text in ((orig, "canonical\n"), (copy, "stale copy\n")):
+            p.parent.mkdir(parents=True)
+            p.write_text(text)
+        if canonical(copy) != orig.resolve():
+            out.append("a differing copy does not defer")
+        copy.write_text("canonical\n")
+        if canonical(copy) is not None:
+            out.append("an identical copy defers")
+        if canonical(orig) is not None:
+            out.append("the canonical file defers to itself")
+        if canonical(root / "lone" / "scripts" / "hooks" / "no-push-main.py") is not None:
+            out.append("a copy with no canonical defers")
+    return out
+
+
 def self_test() -> int:
     bad = [(c, b) for c, b, want in CASES
            if command_lands_on_main(c, "", lambda cwd, b=b: b == "main") != want]
+    bad += [(row, "canonical") for row in _canonical_rows()]
     for c, b in bad:
         print(f"self-test FAIL: {c!r} on {b}", file=sys.stderr)
-    print(f"self-test: {'ok' if not bad else 'FAIL'} ({len(CASES)} cases)")
+    print(f"self-test: {'ok' if not bad else 'FAIL'} ({len(CASES)} cases + canonical)")
     return 0 if not bad else 3
+
+
+def canonical(me):
+    """te-labkit-v2's copy of this file when `me` is a sibling's copy with different bytes, else None: a
+    copy runs the canonical file, so a fix lands once and the sweep installs only this line."""
+    me = pathlib.Path(me).resolve()
+    original = me.parents[3] / "te-labkit-v2" / "scripts" / "hooks" / me.name
+    if me.is_file() and original.is_file() and original != me and original.read_bytes() != me.read_bytes():
+        return original
+    return None
 
 
 def main() -> int:
     if sys.argv[1:] == ["--self-test"]:
         return self_test()
+    original = canonical(__file__)
+    if original:
+        os.execv(sys.executable, [sys.executable, str(original), *sys.argv[1:]])
     try:
         data = json.load(sys.stdin)
         cmd = data.get("tool_input", {}).get("command", "")
