@@ -48,7 +48,7 @@ _COGNITO_REGION = "us-east-1"  # Wiz's own auth infrastructure, not the lab's cl
 LAB_IDP_Q = """query LabIdp($search: String) {
   users(first: 20, filterBy: { search: $search }) { nodes { identityProviderV2 { name } } }
 }"""
-IDPS_Q = """query Idps { samlIdentityProviders(first: 20) { nodes { name } } }"""
+IDPS_Q = """query Idps { samlIdentityProviders(first: 20) { nodes { name relayState } } }"""
 IDP_CONFIG_Q = """query IdpConfig($name: String!) { samlIdentityProviderConfig(name: $name) { idpLoginUrl ssoUrl } }"""
 
 
@@ -75,13 +75,27 @@ def _lab_idp(domain):
 
 
 def _derived_login_url(domain):
-    """The portal's idp-login entrypoint as the tenant itself states it (samlIdentityProviderConfig.idpLoginUrl),
-    or None when the tenant has no SAML provider."""
+    """The sign-in URL as the tenant itself states it, no secret: by default the Cognito authorize route,
+    `https://<samlIdentityProviderConfig.ssoUrl host>/oauth2/authorize?<samlIdentityProviders.relayState>`;
+    with WIZ_<T>_LOGIN_ROUTE=idp-login, the portal entrypoint `samlIdentityProviderConfig.idpLoginUrl`. The
+    authorize route is the default because the portal entrypoint ends at Cognito's hosted login with 403
+    for a lab user on a tenant whose app client has that UI off; a tenant whose app client refuses the
+    SAML hand-back on the authorize route ("Login option is not available") sets the env. None when the
+    tenant has no SAML provider."""
     idp = _lab_idp(domain)
     if not idp:
         return None
     data, _ = core.api(IDP_CONFIG_Q, {"name": idp})
-    return (data.get("samlIdentityProviderConfig") or {}).get("idpLoginUrl") or None
+    cfg = data.get("samlIdentityProviderConfig") or {}
+    if core._tenant_env("LOGIN_ROUTE") == "idp-login":
+        return cfg.get("idpLoginUrl") or None
+    data, _ = core.api(IDPS_Q, {})
+    relay = next((n.get("relayState") for n in (data.get("samlIdentityProviders") or {}).get("nodes") or []
+                  if n.get("name") == idp), None)
+    host = urllib.parse.urlsplit(cfg.get("ssoUrl") or "").netloc
+    if host and relay:
+        return f"https://{host}/oauth2/authorize?{relay}"
+    return cfg.get("idpLoginUrl") or None
 
 
 def _wiz_login_url(domain):
