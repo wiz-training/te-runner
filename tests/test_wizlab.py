@@ -804,23 +804,41 @@ class AuthorTools(unittest.TestCase):
     IDP_CONFIG: typing.ClassVar = staticmethod(
         lambda v: {"idpLoginUrl": f"https://app.wiz.io/idp-login?clientId=c1&idp={v['name']}",
                    "ssoUrl": "https://t-x.auth.us-east-1.amazoncognito.com/saml2/idpresponse"})
+    RELAY: typing.ClassVar = staticmethod(
+        lambda name: {"name": name, "relayState": f"client_id=c1&identity_provider={name}"
+                      "&redirect_uri=https://auth.app.wiz.io/api/idp-init-callback/t&response_type=code&scope=openid"})
+    AUTHORIZE: typing.ClassVar = ("https://t-x.auth.us-east-1.amazoncognito.com/oauth2/authorize?client_id=c1"
+                                  "&identity_provider={idp}&redirect_uri=https://auth.app.wiz.io/api/idp-init-callback/t"
+                                  "&response_type=code&scope=openid")
 
     def test_login_url_is_derived_from_the_lab_domains_identity_provider(self):
-        """No per-tenant secret: the IdP is the one the lab domain's users sign in through, and the portal
-        entrypoint is the tenant's own samlIdentityProviderConfig.idpLoginUrl."""
-        wiz = FakeWiz(users=_conn(self.LAB_USER), samlIdentityProviderConfig=self.IDP_CONFIG)
-        out = io.StringIO()
-        self.assertEqual(exit_code(wz.cmd_user_login_url, [], wiz=wiz, env={}, out=out), 0)
-        self.assertEqual(out.getvalue().strip(), "https://app.wiz.io/idp-login?clientId=c1&idp=Okta-Chronical")
-        self.assertEqual(wiz.sent("users")[0]["search"], "@wizlabs.cloudseclabs.io")
-        self.assertEqual(wiz.sent("samlIdentityProviderConfig")[0]["name"], "Okta-Chronical")
-
-    def test_login_url_takes_the_only_identity_provider_when_no_lab_user_exists_yet(self):
-        wiz = FakeWiz(users=_conn(), samlIdentityProviders=_conn({"name": "Only-IdP"}),
+        """No per-tenant secret: the IdP is the one the lab domain's users sign in through; the URL is the
+        Cognito authorize route — the config's ssoUrl host plus the provider's relayState — because the
+        portal idp-login entrypoint answers 403 at Cognito's hosted login for the lab user."""
+        wiz = FakeWiz(users=_conn(self.LAB_USER), samlIdentityProviders=_conn(self.RELAY("Okta-Chronical")),
                       samlIdentityProviderConfig=self.IDP_CONFIG)
         out = io.StringIO()
         self.assertEqual(exit_code(wz.cmd_user_login_url, [], wiz=wiz, env={}, out=out), 0)
-        self.assertIn("idp=Only-IdP", out.getvalue())
+        self.assertEqual(out.getvalue().strip(), self.AUTHORIZE.format(idp="Okta-Chronical"))
+        self.assertEqual(wiz.sent("users")[0]["search"], "@wizlabs.cloudseclabs.io")
+        self.assertEqual(wiz.sent("samlIdentityProviderConfig")[0]["name"], "Okta-Chronical")
+
+    def test_login_url_route_env_selects_the_portal_entrypoint(self):
+        """WIZ_<T>_LOGIN_ROUTE=idp-login for a tenant whose Cognito app client refuses the lab user's SAML
+        hand-back on the authorize route."""
+        wiz = FakeWiz(users=_conn(self.LAB_USER), samlIdentityProviders=_conn(self.RELAY("Okta-Chronical")),
+                      samlIdentityProviderConfig=self.IDP_CONFIG)
+        out = io.StringIO()
+        env = {"WIZ_LOGIN_ROUTE": "idp-login"}
+        self.assertEqual(exit_code(wz.cmd_user_login_url, [], wiz=wiz, env=env, out=out), 0)
+        self.assertEqual(out.getvalue().strip(), "https://app.wiz.io/idp-login?clientId=c1&idp=Okta-Chronical")
+
+    def test_login_url_takes_the_only_identity_provider_when_no_lab_user_exists_yet(self):
+        wiz = FakeWiz(users=_conn(), samlIdentityProviders=_conn(self.RELAY("Only-IdP")),
+                      samlIdentityProviderConfig=self.IDP_CONFIG)
+        out = io.StringIO()
+        self.assertEqual(exit_code(wz.cmd_user_login_url, [], wiz=wiz, env={}, out=out), 0)
+        self.assertIn("identity_provider=Only-IdP", out.getvalue())
 
     def test_login_url_with_several_providers_and_no_lab_user_is_2_naming_them(self):
         wiz = FakeWiz(users=_conn(), samlIdentityProviders=_conn({"name": "A"}, {"name": "B"}))
@@ -830,10 +848,10 @@ class AuthorTools(unittest.TestCase):
         self.assertIn("B", err.getvalue())
 
     def test_login_url_env_idp_name_skips_the_user_lookup(self):
-        wiz = FakeWiz(samlIdentityProviderConfig=self.IDP_CONFIG)
+        wiz = FakeWiz(samlIdentityProviders=_conn(self.RELAY("Pinned")), samlIdentityProviderConfig=self.IDP_CONFIG)
         out = io.StringIO()
         self.assertEqual(exit_code(wz.cmd_user_login_url, [], wiz=wiz, env={"WIZ_SSO_IDP_NAME": "Pinned"}, out=out), 0)
-        self.assertIn("idp=Pinned", out.getvalue())
+        self.assertIn("identity_provider=Pinned", out.getvalue())
         self.assertEqual(wiz.sent("users"), [])
 
     def test_login_url_is_the_override_or_the_env_pair_or_3(self):

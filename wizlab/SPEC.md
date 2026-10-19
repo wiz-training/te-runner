@@ -102,6 +102,7 @@ The tag that first reads each contract; a lab pins at or above the highest row i
 | v0.1.74 | credential nouns share one record-driven ensure/inspect/delete; unified success line |
 | v0.1.77 | `correlation inspect`, `pullrequest inspect`, `slot claim\|release`, `patch open`; `WIZ_LABS_GH_APP` |
 | v0.1.78 | `user login-url` derived from the tenant: `samlIdentityProviderConfig.idpLoginUrl` of the lab domain's IdP |
+| v0.1.79 | `user login-url` emits the Cognito authorize route by default; `WIZ_<T>_LOGIN_ROUTE=idp-login` |
 
 ### The learner shell
 The image ships a non-root `learner` user, `sudo`, and one sudoers rule: `learner` may run
@@ -188,11 +189,14 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   Issue/Threat object (tenant-wide anti-burst cap). Default type `GENERATED_THREAT`; `--match-only`
   queries the sibling that matched and raised no threat.
 - `user login-url [--domain D]` — the sign-in URL a note renders: `WIZ_<T>_LOGIN_URL` verbatim, else the
-  portal `idp-login` entrypoint from `WIZ_<T>_IDP_LOGIN_CLIENT_ID`, else the same entrypoint the tenant
-  states in `samlIdentityProviderConfig(name).idpLoginUrl` for the IdP the lab domain signs in through
-  (`WIZ_<T>_SSO_IDP_NAME`, else the `identityProviderV2` of an existing `@<domain>` user, else the tenant's
-  only SAML provider; several and no lab user is exit 2 naming them), else the Cognito authorize URL from
-  `WIZ_<T>_COGNITO_SUFFIX` + `WIZ_<T>_SSO_CLIENT_ID`. The IdP's own SAML `loginURL` is never emitted:
+  portal `idp-login` entrypoint from `WIZ_<T>_IDP_LOGIN_CLIENT_ID`, else the route the tenant itself states
+  for the IdP the lab domain signs in through (`WIZ_<T>_SSO_IDP_NAME`, else the `identityProviderV2` of an
+  existing `@<domain>` user, else the tenant's only SAML provider; several and no lab user is exit 2 naming
+  them): the Cognito authorize URL `https://<samlIdentityProviderConfig.ssoUrl host>/oauth2/authorize?
+  <samlIdentityProviders.relayState>`, or with `WIZ_<T>_LOGIN_ROUTE=idp-login` the portal entrypoint
+  `samlIdentityProviderConfig.idpLoginUrl` (for a tenant whose app client refuses the SAML hand-back on the
+  authorize route; on TE that entrypoint ends at Cognito's hosted login with 403). Last, the Cognito URL
+  from `WIZ_<T>_COGNITO_SUFFIX` + `WIZ_<T>_SSO_CLIENT_ID`. The IdP's own SAML `loginURL` is never emitted:
   Cognito answers it "Invalid samlResponse or relayState".
 - `serviceaccount ensure|inspect|delete` — the on-the-fly credential `wizcli auth` uses, minted via a
   CLI DEPLOYMENT (`createCliDeployment`), NOT `createServiceAccount`: `type:CLI` accounts are internal
