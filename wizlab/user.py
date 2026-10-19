@@ -45,14 +45,56 @@ def _gen_password():
 _COGNITO_REGION = "us-east-1"  # Wiz's own auth infrastructure, not the lab's cloud region.
 
 
-def _wiz_login_url():
+LAB_IDP_Q = """query LabIdp($search: String) {
+  users(first: 20, filterBy: { search: $search }) { nodes { identityProviderV2 { name } } }
+}"""
+IDPS_Q = """query Idps { samlIdentityProviders(first: 20) { nodes { name } } }"""
+IDP_CONFIG_Q = """query IdpConfig($name: String!) { samlIdentityProviderConfig(name: $name) { idpLoginUrl ssoUrl } }"""
+
+
+def _lab_idp(domain):
+    """The SAML identity provider the lab domain signs in through: WIZ_<T>_SSO_IDP_NAME, else the
+    provider of an existing lab-domain user, else the tenant's only provider. Several providers and no
+    lab user yet is invocation error 2 naming them: a guess would route learners to a stranger's IdP."""
+    name = core._tenant_env("SSO_IDP_NAME")
+    if name:
+        return name
+    data, _ = core.api(LAB_IDP_Q, {"search": f"@{domain}"})
+    for n in (data.get("users") or {}).get("nodes") or []:
+        idp = (n.get("identityProviderV2") or {}).get("name")
+        if idp:
+            return idp
+    data, _ = core.api(IDPS_Q, {})
+    names = [n["name"] for n in (data.get("samlIdentityProviders") or {}).get("nodes") or [] if n.get("name")]
+    if len(names) == 1:
+        return names[0]
+    if names:
+        core.die(2, f"{len(names)} identity providers and no @{domain} user yet: "
+                    f"set WIZ_<T>_SSO_IDP_NAME to one of {', '.join(names)}")
+    return None
+
+
+def _derived_login_url(domain):
+    """The portal's idp-login entrypoint as the tenant itself states it (samlIdentityProviderConfig.idpLoginUrl),
+    or None when the tenant has no SAML provider."""
+    idp = _lab_idp(domain)
+    if not idp:
+        return None
+    data, _ = core.api(IDP_CONFIG_Q, {"name": idp})
+    return (data.get("samlIdentityProviderConfig") or {}).get("idpLoginUrl") or None
+
+
+def _wiz_login_url(domain):
     """The tenant's SSO login URL, or None if it cannot be built: WIZ_<T>_LOGIN_URL verbatim, else the
-    portal's idp-login entrypoint from WIZ_<T>_IDP_LOGIN_CLIENT_ID, else the IdP-initiated Cognito
-    authorize URL from WIZ_<T>_COGNITO_SUFFIX + WIZ_<T>_SSO_CLIENT_ID.
+    portal's idp-login entrypoint from WIZ_<T>_IDP_LOGIN_CLIENT_ID, else the same entrypoint read from
+    the tenant (`_derived_login_url`, no secret), else the IdP-initiated Cognito authorize URL from
+    WIZ_<T>_COGNITO_SUFFIX + WIZ_<T>_SSO_CLIENT_ID.
 
     A lab Okta user CANNOT sign in at the portal's front door — that renders a real login page the
-    account fails against, and the learner blames their creds. Only an IdP-init URL routes them
-    straight to the lab's Okta. Full-URL env overrides win so a track can pin it.
+    account fails against, and the learner blames their creds — nor at the IdP's own SAML login URL,
+    which Cognito rejects ("Invalid samlResponse or relayState"). Only the idp-login entrypoint or the
+    Cognito authorize URL routes them straight to the lab's Okta. Full-URL env overrides win so a track
+    can pin it.
     """
     override = core._tenant_env("LOGIN_URL")
     if override:
@@ -63,6 +105,9 @@ def _wiz_login_url():
     idp_login_client = core._tenant_env("IDP_LOGIN_CLIENT_ID")
     if idp_login_client:
         return f"https://{core._domain()}/idp-login?clientId={idp_login_client}&idp={idp_name}"
+    derived = _derived_login_url(domain)
+    if derived:
+        return derived
     suffix = core._tenant_env("COGNITO_SUFFIX")
     client_id = core._tenant_env("SSO_CLIENT_ID")
     if not suffix or not client_id:
@@ -162,8 +207,8 @@ def cmd_user_login_url(args):
     """Print the tenant's Wiz SSO login URL. Author tool: a lab pins this URL as a note literal (it is
     a per-tenant constant, identical for every learner), and regenerates it here when the tenant
     changes — the single source that keeps the literal from silently drifting."""
-    url = _wiz_login_url()
+    url = _wiz_login_url(args.domain)
     if not url:
-        core.die(3, "cannot build login URL: WIZ_<T>_LOGIN_URL, WIZ_<T>_IDP_LOGIN_CLIENT_ID, or WIZ_<T>_COGNITO_SUFFIX "
-                    "+ WIZ_<T>_SSO_CLIENT_ID with a tid in the token, is required")
+        core.die(3, "cannot build login URL: the tenant has no SAML identity provider and none of WIZ_<T>_LOGIN_URL, "
+                    "WIZ_<T>_IDP_LOGIN_CLIENT_ID, or WIZ_<T>_COGNITO_SUFFIX + WIZ_<T>_SSO_CLIENT_ID is set")
     print(url)

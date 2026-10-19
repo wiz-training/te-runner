@@ -158,7 +158,7 @@ FLAGS = {
     ("user", "ensure"): {**_S, "--profile": {}},
     ("user", "inspect"): {**_U, "--wiz": _SWITCH},
     ("user", "delete"): _U,
-    ("user", "login-url"): {},
+    ("user", "login-url"): {**_U},
     ("wiz", "tenant"): {},
     ("user", "reap"): {**_U, "--commit": _SWITCH, "--email": {}, "--last-min": _int(1440)},
 }
