@@ -90,11 +90,20 @@ def _prefer(nodes, status):
     return min(nodes, key=lambda n: n.get("status") != status, default=None)
 
 
-def _emit(lines):
+def _emit(lines, secret=False):
     """KEY=value lines to stdout and, under an Instruqt `exec` resource, to $EXEC_OUTPUT, where a note
-    reads them back as resource.exec.<name>.output.<KEY>."""
-    sys.stdout.write(lines)
+    reads them back as resource.exec.<name>.output.<KEY>.
+
+    `secret=True` keeps the values off stdout when $EXEC_OUTPUT is set: the platform captures an
+    exec's stdout into `instruqt lab logs`, readable by anyone with access to the lab, while the note
+    reads $EXEC_OUTPUT. The keys still print, so an operator reading the log sees the verb published.
+    Without $EXEC_OUTPUT the values print as usual — a hand run has no log and needs them. A verb
+    whose caller parses our stdout for the value cannot pass this."""
     out = os.getenv("EXEC_OUTPUT")
+    if secret and out:
+        sys.stdout.write("".join(f"{ln.split('=', 1)[0]}=<redacted>\n" for ln in lines.splitlines() if ln))
+    else:
+        sys.stdout.write(lines)
     if out:
         with open(out, "a") as f:
             f.write(lines)
