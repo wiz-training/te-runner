@@ -156,7 +156,9 @@ def cmd_user_ensure(args):
     # The router appends the tenant's email domain; what it returns as `login` is what the learner
     # signs in with. A router that returns nothing leaves the stem, which is still the reap key.
     user = res.get("login") or login
-    core._emit(f"WIZ_USER={user}\nWIZ_PWD={pwd}\n")
+    # secret: nothing parses this verb's stdout — the sign-in note reads $EXEC_OUTPUT — and the
+    # password was readable in `instruqt lab logs` for the whole life of every play.
+    core._emit(f"WIZ_USER={user}\nWIZ_PWD={pwd}\n", secret=True)
     print(f"user created: {user} (profile {profile})")
 
 

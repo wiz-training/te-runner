@@ -754,6 +754,22 @@ class OktaContract(unittest.TestCase):
         self.assertIn("WIZ_USER=" + self.LOGIN + "@x.io", out.getvalue())
         self.assertRegex(out.getvalue(), r"WIZ_PWD=\S{8,}")
 
+    def test_the_password_never_reaches_stdout_under_an_exec(self):
+        """The platform captures an exec's stdout into `instruqt lab logs`, so every play of
+        te-code-juice-shop-101 published the learner's password there, readable for the life of the
+        lab (session xb6gwe13tmrn, `provision_user: WIZ_PWD=...` at INFO). The note reads
+        $EXEC_OUTPUT, so the value belongs only in the file."""
+        okta, out = FakeOkta(), io.StringIO()
+        with tempfile.NamedTemporaryFile("r+") as f:
+            env = {**self.ENV, "EXEC_OUTPUT": f.name}
+            self.assertEqual(
+                exit_code(wz.cmd_user_ensure, ["--profile", "wiz-global-reader"],
+                          wiz=FakeWiz(), env=env, out=out, _okta_call=okta), 0)
+            written = f.read()
+        self.assertRegex(written, r"WIZ_PWD=\S{8,}")          # the note still gets it
+        self.assertNotIn(written.split("WIZ_PWD=")[1].strip(), out.getvalue())
+        self.assertIn("WIZ_PWD=<redacted>", out.getvalue())   # the key still shows the verb ran
+
     def test_ensure_requires_profile(self):
         # No --profile and no LAB_PROFILE → invocation error 2
         okta = FakeOkta()
