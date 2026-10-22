@@ -2857,6 +2857,30 @@ class CredentialRecords(unittest.TestCase):
         out, wiz = io.StringIO(), FakeWiz(**fields)
         return exit_code(lambda _argv: verb(cred, args), [], wiz=wiz, env=self.ENV, out=out), out.getvalue(), wiz
 
+    def test_out_file_keeps_the_secret_off_stdout(self):
+        """The platform captures an exec's stdout into `instruqt lab logs`, so a caller that parses
+        stdout for the pair publishes it to anyone with access to the lab — which is what
+        te-code-juice-shop-101's provision_wizcli.sh and te-stack-trace-aws-101's setup_agent.sh both
+        did. `--out-file` is the only way to take the value without logging it; without the flag
+        stdout is unchanged, because that is the hand-run contract."""
+        cred, node, create = self.ROWS["apiaccount"]
+        present = {cred.find_field: _conn(node), **create}
+        with tempfile.TemporaryDirectory() as d:
+            path = pathlib.Path(d) / "cli.env"
+            args = self._args(node["name"])
+            args.out_file = str(path)
+            out = io.StringIO()
+            # EXEC_OUTPUT must be in the env the harness installs: redaction is what an exec gets,
+            # and a hand run (no EXEC_OUTPUT) keeps the values on stdout.
+            env = {**self.ENV, "EXEC_OUTPUT": str(pathlib.Path(d) / "exec.out")}
+            code = exit_code(lambda _argv: wz.ensure(cred, args), [], wiz=FakeWiz(**present), env=env, out=out)
+            self.assertEqual(code, 0)
+            written, out = path.read_text(), out.getvalue()
+        id_key, secret_key = cred.emit_keys
+        self.assertRegex(written, rf"{secret_key}=\S+")      # the caller still gets the pair
+        self.assertNotIn(written.split(f"{secret_key}=")[1].strip(), out)
+        self.assertIn(f"{id_key}=<redacted>", out)           # the key still shows the verb ran
+
     def test_every_record_mints_deletes_and_emits_the_same_way(self):
         hostile = 'x" }) { id } } mutation { deleteTenant(input: { id: "t'
         for noun, (cred, node, create) in self.ROWS.items():
