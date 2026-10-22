@@ -2865,21 +2865,24 @@ class CredentialRecords(unittest.TestCase):
         stdout is unchanged, because that is the hand-run contract."""
         cred, node, create = self.ROWS["apiaccount"]
         present = {cred.find_field: _conn(node), **create}
-        with tempfile.TemporaryDirectory() as d:
-            path = pathlib.Path(d) / "cli.env"
-            args = self._args(node["name"])
-            args.out_file = str(path)
-            out = io.StringIO()
-            # EXEC_OUTPUT must be in the env the harness installs: redaction is what an exec gets,
-            # and a hand run (no EXEC_OUTPUT) keeps the values on stdout.
-            env = {**self.ENV, "EXEC_OUTPUT": str(pathlib.Path(d) / "exec.out")}
-            code = exit_code(lambda _argv: wz.ensure(cred, args), [], wiz=FakeWiz(**present), env=env, out=out)
-            self.assertEqual(code, 0)
-            written, out = path.read_text(), out.getvalue()
         id_key, secret_key = cred.emit_keys
-        self.assertRegex(written, rf"{secret_key}=\S+")      # the caller still gets the pair
-        self.assertNotIn(written.split(f"{secret_key}=")[1].strip(), out)
-        self.assertIn(f"{id_key}=<redacted>", out)           # the key still shows the verb ran
+        # Every $EXEC_OUTPUT shape a caller uses: set (an exec), empty (te-stack-trace-aws-101 blanks
+        # it to keep the pair out of the exec's output attributes), and absent (a hand run).
+        for label, extra in (("set", {"EXEC_OUTPUT": "<tmp>"}), ("empty", {"EXEC_OUTPUT": ""}), ("absent", {})):
+            with self.subTest(exec_output=label), tempfile.TemporaryDirectory() as d:
+                path = pathlib.Path(d) / "cli.env"
+                args = self._args(node["name"])
+                args.out_file = str(path)
+                out = io.StringIO()
+                env = {**self.ENV, **{k: (str(pathlib.Path(d) / "exec.out") if v == "<tmp>" else v)
+                                      for k, v in extra.items()}}
+                code = exit_code(lambda _argv, a=args: wz.ensure(cred, a), [],
+                                 wiz=FakeWiz(**present), env=env, out=out)
+                self.assertEqual(code, 0)
+                written, printed = path.read_text(), out.getvalue()
+                self.assertRegex(written, rf"{secret_key}=\S+")      # the caller still gets the pair
+                self.assertNotIn(written.split(f"{secret_key}=")[1].strip(), printed)
+                self.assertIn(f"{id_key}=<redacted>", printed)       # the key still shows the verb ran
 
     def test_every_record_mints_deletes_and_emits_the_same_way(self):
         hostile = 'x" }) { id } } mutation { deleteTenant(input: { id: "t'

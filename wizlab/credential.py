@@ -73,8 +73,13 @@ def ensure(cred, args):
     # caller's business (the grader is root-only); without it, behaviour is unchanged.
     out_file = getattr(args, "out_file", None)
     if out_file:
+        # The caller has the file, so no other sink needs the value: redaction here cannot depend on
+        # $EXEC_OUTPUT being set. te-stack-trace-aws-101 calls this as `EXEC_OUTPUT='' wizlab
+        # apiaccount ensure` to keep the pair out of the exec's output attributes, and under
+        # `_emit(secret=True)` — which gates on $EXEC_OUTPUT — that put the secret back on stdout,
+        # which the platform captures. Print the keys and nothing else.
         pathlib.Path(out_file).write_text(lines)
-        core._emit(lines, secret=True)
+        sys.stdout.write("".join(f"{k}=<redacted>\n" for k in cred.emit_keys))
     else:
         core._emit(lines)
     print(f"created {cred.label} {name} ({oid})", file=sys.stderr)
