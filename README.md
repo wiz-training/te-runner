@@ -15,6 +15,12 @@ losing either shows up as `manifest unknown`/401 on pull or
 `denied: permission_denied: write_package` on push. Tags through v0.1.50 live
 only at `ghcr.io/eh24905-wiz/te-runner`; v0.1.51+ publish here.
 
+A tag reaches every lab that moves its pin, so it has the blast radius a module
+publish does: `wiz-tenant` 1.0.0 took out 23 labs at once because nothing booted
+it before labs pinned it. Canary a new tag on `te-dev-aws` — bump that lab's pin
+first, boot it, reach "Enter lab" — before any other lab moves. `runner-floor.py`
+checks a pin meets a lab's verb floor, not that the image boots.
+
 Read tags with `git tag --sort=-v:refname` — the default sort is lexicographic
 and puts `v0.1.9` above `v0.1.36`. There are no GitHub release objects, so the
 newest tag IS "the latest released image", and `main` may run ahead of it: what
