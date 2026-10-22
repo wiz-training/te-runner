@@ -1,5 +1,6 @@
 """One record per credential noun: how it is found, minted, read back and deleted."""
 import dataclasses
+import pathlib
 import sys
 from collections.abc import Callable
 
@@ -65,7 +66,17 @@ def ensure(cred, args):
     if not cid or not sec:
         core.die(3, f"{cred.label} create returned no client credentials")
     id_key, secret_key = cred.emit_keys
-    core._emit(f"{id_key}={cid}\n{secret_key}={sec}\n")
+    lines = f"{id_key}={cid}\n{secret_key}={sec}\n"
+    # --out-file is the only way a caller takes the pair without it reaching the play log: the
+    # platform captures an exec's stdout, and a script that parses stdout for the secret publishes it
+    # to anyone with access to the lab. With the flag the values go to the file and 0600 is the
+    # caller's business (the grader is root-only); without it, behaviour is unchanged.
+    out_file = getattr(args, "out_file", None)
+    if out_file:
+        pathlib.Path(out_file).write_text(lines)
+        core._emit(lines, secret=True)
+    else:
+        core._emit(lines)
     print(f"created {cred.label} {name} ({oid})", file=sys.stderr)
 
 
