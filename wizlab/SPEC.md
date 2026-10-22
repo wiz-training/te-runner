@@ -104,6 +104,7 @@ The tag that first reads each contract; a lab pins at or above the highest row i
 | v0.1.78 | `user login-url` derived from the tenant: `samlIdentityProviderConfig.idpLoginUrl` of the lab domain's IdP |
 | v0.1.79 | `user login-url` emits the Cognito authorize route by default; `WIZ_<T>_LOGIN_ROUTE=idp-login` |
 | v0.1.80 | `user ensure` redacts `WIZ_PWD` on stdout under an exec; `serviceaccount\|apiaccount ensure --out-file <path>` takes the pair without the play log seeing it |
+| v0.1.81 | `--out-file` redacts stdout whatever `$EXEC_OUTPUT` holds: on v0.1.80 a caller blanking it got the secret printed anyway |
 
 ### The learner shell
 The image ships a non-root `learner` user, `sudo`, and one sudoers rule: `learner` may run
