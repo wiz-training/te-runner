@@ -1597,6 +1597,22 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         self.assertIn("released slot other-lab/01", out.getvalue())
         self.assertIn("2 slot(s)", err.getvalue())
 
+        # A claim raced away between the ref list and DELETE answers 422 and counts as absent, not removed.
+        gh_raced, out_r, err_r = FakeGitHub(claims={"01": "lab-s1"}), io.StringIO(), io.StringIO()
+
+        def raced(method, path, body=None, token=None):
+            if method == "DELETE":
+                gh_raced.claims.clear()
+            return gh_raced(method, path, body, token)
+
+        code = exit_code(wz.cmd_reap, ["--session", "s1", "--commit"], wiz=FakeWiz(), env=GitHubContract.GH_ENV,
+                         out=out_r, err=err_r, _gh_call=raced,
+                         _reap_enumerate=([], None), _reap_sweep_type=wz.Counter())
+        self.assertEqual(code, 0)
+        self.assertIn("absent slot juice-shop-101/01", out_r.getvalue())
+        self.assertIn("1 absent", err_r.getvalue())
+        self.assertIn("0 slot(s)", err_r.getvalue())
+
     def test_slot_sweep_without_app_secret_is_a_note_not_a_failure(self):
         gh, err = FakeGitHub(claims={"01": "lab-s1"}), io.StringIO()
         code = exit_code(wz.cmd_reap, ["--session", "s1", "--commit"], wiz=FakeWiz(), env={}, err=err,

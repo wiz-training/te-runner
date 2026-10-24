@@ -254,7 +254,7 @@ def release_claims_for(stem, commit):
             continue
         del_status, _ = _gh("DELETE", f"/repos/{ORG}/{CONTROL_REPO}/git/refs/claims/{lab}/slot-{slot}",
                             tolerate=(422, 404))
-        if del_status == 404:
+        if del_status in (404, 422):
             print(f"absent slot {lab}/{slot}")
             out.append((lab, slot, "absent"))
         else:
