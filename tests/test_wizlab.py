@@ -1144,10 +1144,9 @@ class ExitCodeContract(unittest.TestCase):
         script = root / "scripts" / "verb-floors.py"
         st = wz.subprocess.run([sys.executable, str(script), "--self-test"], capture_output=True, text=True)
         self.assertEqual(st.returncode, 0, st.stderr or st.stdout)
-        tags = wz.subprocess.run(["git", "-C", str(root), "tag", "--list", "v*"], capture_output=True, text=True)
-        if not tags.stdout.strip():
-            self.skipTest("clone has no v* tags (shallow checkout)")
         chk = wz.subprocess.run([sys.executable, str(script), "--check"], capture_output=True, text=True)
+        if chk.returncode == 3:
+            self.skipTest((chk.stderr or chk.stdout).strip())
         self.assertEqual(chk.returncode, 0, chk.stdout + chk.stderr)
 
     def test_check_collapses_every_failure_to_1_and_names_the_real_code(self):
