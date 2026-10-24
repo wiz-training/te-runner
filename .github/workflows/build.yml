@@ -12,11 +12,11 @@ jobs:
     uses: ./.github/workflows/lint.yml
   image:
     needs: checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       IMG: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # The reaper runs ghcr.io/wiz-training/te-runner:reap, which the last step below advances after
       # publish; refuse if reap.yml drifted off :reap so a release never ships to an unmaintained line.
       - name: reap.yml pins :reap

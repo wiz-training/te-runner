@@ -62,7 +62,7 @@ class CanaryWorkflowTests(unittest.TestCase):
     def test_workflow_parses_and_runs_on_host_before_reap_cron(self):
         text = CANARY_YML.read_text()
         live = _live(text)
-        self.assertIn("runs-on: ubuntu-latest", live)
+        self.assertIn("runs-on: ubuntu-24.04", live)
         self.assertNotIn("container:", live)
         self.assertNotIn("save-always:", live)
         # `runner.*` is not a context GitHub evaluates in a job-level `env:`; a dispatch of such a file
@@ -234,6 +234,15 @@ class CanaryWorkflowTests(unittest.TestCase):
                 self.assertEqual(len(logged), len(want_cmds), logged)
                 for got, want_sub in zip(logged, want_cmds, strict=True):
                     self.assertIn(want_sub, got)
+
+    def test_all_workflows_pin_ubuntu_24_04_and_current_node24_actions(self):
+        wf_dir = ROOT / ".github" / "workflows"
+        files = sorted(wf_dir.glob("*.yml"))
+        self.assertTrue(files)
+        for p in files:
+            live = _live(p.read_text())
+            for banned in ("ubuntu-latest", "checkout@v4", "setup-python@v5"):
+                self.assertNotIn(banned, live, f"{p.name} still contains {banned!r}")
 
 
 if __name__ == "__main__":
