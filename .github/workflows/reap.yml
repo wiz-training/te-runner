@@ -26,7 +26,9 @@ on:
 jobs:
   reap:
     runs-on: ubuntu-latest
-    container: ghcr.io/wiz-training/te-runner:v0.1.81 # build.yml refuses a tag this line does not pin
+    # Floating tag: build.yml advances :reap only after the versioned image is smoke-tested and pushed,
+    # so the reaper never names an unbuilt tag; rollback = pin vX.Y.Z on this line for one cycle.
+    container: ghcr.io/wiz-training/te-runner:reap
     steps:
       - name: reap orphans
         env:

@@ -17,12 +17,12 @@ jobs:
       IMG: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
-      # The reaper runs whatever reap.yml pins, so a reaper fix under a newer tag silently never runs.
-      # Refusing a tag reap.yml does not pin makes the bump part of every release.
-      - name: reap.yml pins this tag
+      # The reaper runs ghcr.io/wiz-training/te-runner:reap, which the last step below advances after
+      # publish; refuse if reap.yml drifted off :reap so a release never ships to an unmaintained line.
+      - name: reap.yml pins :reap
         run: |
-          if ! grep -q "te-runner:${{ github.ref_name }}\b" .github/workflows/reap.yml; then
-            echo "::error::.github/workflows/reap.yml does not pin te-runner:${{ github.ref_name }}"
+          if ! grep -q "te-runner:reap\b" .github/workflows/reap.yml; then
+            echo "::error::.github/workflows/reap.yml does not pin te-runner:reap"
             exit 1
           fi
       - uses: docker/login-action@v3
@@ -72,3 +72,7 @@ jobs:
           # The versions this tag carries, on record in the log.
           docker run --rm "$IMG" sh -c 'aws --version; terraform version -json | jq -r .terraform_version; gcloud --version | head -1; az version -o tsv 2>/dev/null | cut -f1; wizcli version; tailscale version | head -1; kubectl version --client -o json | jq -r .clientVersion.gitVersion; crane version'
       - run: docker push "$IMG"
+      # Last on purpose: a failed smoke test or versioned push leaves :reap on the previous image.
+      - name: advance :reap
+        run: |
+          docker tag "$IMG" "ghcr.io/${{ github.repository }}:reap" && docker push "ghcr.io/${{ github.repository }}:reap"
