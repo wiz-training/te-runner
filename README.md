@@ -7,8 +7,8 @@ asserts by name; `Dockerfile` holds each pin.
 Build: CI only — push a `v*` tag to `origin` (`wiz-training/te-runner`), whose
 Actions publish the **public** `ghcr.io/wiz-training/te-runner:<tag>` that labs
 pin (Instruqt pulls anonymously; there is no registry-credential path for GHCR).
-The build lints the tagged sha, smoke-tests the image, and refuses a tag
-`reap.yml` does not pin, so bump that pin in the tagged commit. Never `latest`.
+The build lints the tagged sha, smoke-tests and pushes the versioned image,
+and then advances `ghcr.io/wiz-training/te-runner:reap` (which `reap.yml` pins). Never `latest`.
 The package must stay **Public** and list this repo under "Manage Actions
 access" with Write — both live in the package settings, not the workflow, and
 losing either shows up as `manifest unknown`/401 on pull or
