@@ -162,8 +162,8 @@ planes:
     connector_health:
       # Connector left INITIAL_SCANNING and reached CONNECTED between +4.1m and +5.4m of create. The
       # RBAC role assignment (WizCustomRole + Reader) MUST exist first, or it goes ERROR instead --
-      # so a challenge that grades "registered" must grade existence, not health (the --assert-exists
-      # split). CONNECTED is Azure's healthy status; --assert-ok passes it.
+      # so a challenge that grades "registered" must grade existence, not health (the --require exists
+      # split). CONNECTED is Azure's healthy status; --require healthy passes it.
       connected_min: 5.4
       # Second observation (azure-connector-101 validation, identity-first): [2.6, 3.1] -- roughly
       # 2.3m FASTER than the row above. Two runs disagree, so budget for the slower one; the spread

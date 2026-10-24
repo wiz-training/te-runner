@@ -114,8 +114,13 @@ The image ships a non-root `learner` user, `sudo`, and one sudoers rule: `learne
 `/usr/local/bin/wizlab-learner` without a password, nothing else. A lab keeps every operator secret
 out of `container.environment` (a `terminal` opened as `learner` inherits that env whole) and passes
 them through exec and task `environment` maps instead. The setup exec calls
-`wizlab-grant "<noun> <verb>" …`, which snapshots its own `WIZ_*`, `OKTA_WF_*`, `GIT_CONFIG_*` and
-the lease credentials (`AWS_*`, `GOOGLE_*`, `ARM_*`; sudo's `env_reset` strips the caller's) to
+`wizlab-grant "<noun> <verb>" …`, which snapshots its own `WIZ_*`, `INSTRUQT_SESSION_ID`,
+`WIZLAB_SESSION_PREFIX`, `OKTA_WF_INVOKE_URL`, `OKTA_WF_CLIENT_TOKEN`, `LAB_PROFILE`,
+`INSTRUQT_PARTICIPANT_ID`, `GIT_CONFIG_*`, and the lease credentials (`AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_DEFAULT_REGION`, `AWS_ACCOUNT_ID`,
+`GOOGLE_CREDENTIALS`, `GOOGLE_PROJECT`, `ARM_*`; sudo's `env_reset` strips the caller's, and
+`GOOGLE_REGION` is deliberately not admitted because nothing in te-runner reads it — Terraform
+does) to
 `/run/lab/wiz.env` (0600) and lists the admitted pairs in `/run/lab/learner-verbs`. `bin/wizlab`
 re-issues a non-root call as `sudo -n wizlab-learner`, which admits a listed pair, sources the
 snapshot, and execs wizlab; an unlisted pair or no grant is exit 2 with the permitted list on stderr,

@@ -14,11 +14,14 @@ class CredentialFile(unittest.TestCase):
     login and records the mode and path of the file it was handed."""
 
     ROWS = (
-        # binary, env, stub body: records `mode path` of the credential file into $CAPTURE, then fails
+        # binary, env, stub body: records `mode path` of the credential file into $CAPTURE, then fails.
+        # GNU coreutils is `stat -c '%a %n'`; BSD/macOS is `stat -f '%Lp %N'`.
         ("gcloud", {"GOOGLE_CREDENTIALS": '{"private_key":"secret"}'},
-         "case $1 in auth) stat -c '%a %n' \"$4\" > \"$CAPTURE\"; exit 1 ;; *) exit 0 ;; esac\n"),
+         "case $1 in auth) (stat -c '%a %n' \"$4\" 2>/dev/null || stat -f '%Lp %N' \"$4\") > \"$CAPTURE\";"
+         " exit 1 ;; *) exit 0 ;; esac\n"),
         ("az", {"ARM_CLIENT_ID": "i", "ARM_CLIENT_SECRET": "s", "ARM_TENANT_ID": "t", "ARM_SUBSCRIPTION_ID": "u"},
-         "case $1 in login) for a in \"$@\"; do case $a in @*) stat -c '%a %n' \"${a#@}\" > \"$CAPTURE\";; esac; done;"
+         "case $1 in login) for a in \"$@\"; do case $a in @*)"
+         " (stat -c '%a %n' \"${a#@}\" 2>/dev/null || stat -f '%Lp %N' \"${a#@}\") > \"$CAPTURE\";; esac; done;"
          " exit 1 ;; *) exit 0 ;; esac\n"),
     )
 

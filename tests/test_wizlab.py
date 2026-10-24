@@ -1071,6 +1071,31 @@ class ExitCodeContract(unittest.TestCase):
         declared = set().union(*wz.FLAGS.values())
         self.assertEqual(read - declared, set())
 
+    def test_every_flag_in_measurements_yaml_is_declared(self):
+        """measurements.yaml carried `--assert-exists` and `--assert-ok` after connector inspect standardized
+        on `--require exists|healthy`."""
+        root = pathlib.Path(__file__).resolve().parent.parent
+        text = (root / "measurements.yaml").read_text()
+        cited = set(re.findall(r"(?<!rescan )(?<![a-zA-Z0-9_-])(--[a-z][a-z0-9-]*)", text))
+        declared = set().union(*wz.FLAGS.values()) | {"--check"}
+        self.assertEqual(cited - declared, set())
+
+    def test_wizlab_grant_allowlist_matches_spec(self):
+        """SPEC.md §The learner shell overstated `AWS_*`, `GOOGLE_*`, and `OKTA_WF_*` as globs while
+        `bin/wizlab-grant` admits named keys (`GOOGLE_REGION` is deliberately excluded because only
+        Terraform reads it)."""
+        root = pathlib.Path(__file__).resolve().parent.parent
+        grant = (root / "bin" / "wizlab-grant").read_text()
+        case_block = re.search(r'case "\$k" in\n(.*?)\n\s*\*\)', grant, re.DOTALL).group(1)
+        admitted = {p.strip() for ln in case_block.splitlines()
+                    for p in ln.split(";;")[0].strip().rstrip(")").split("|") if p.strip()}
+        spec = (root / "wizlab" / "SPEC.md").read_text()
+        section = re.search(r"### The learner shell\n(.*?)(?=\n## |\Z)", spec, re.DOTALL).group(1)
+        documented = set(re.findall(r"`([A-Z][A-Z0-9_*]+)`", section))
+        self.assertNotIn("GOOGLE_REGION", admitted)
+        self.assertIn("GOOGLE_REGION", documented)
+        self.assertEqual(documented - {"GOOGLE_REGION"}, admitted)
+
     def test_check_collapses_every_failure_to_1_and_names_the_real_code(self):
         err = io.StringIO()
         with mock.patch.dict(wz.VERBS, {("session", "verify"): lambda argv: wz.die(3, "no tenant")}), \
