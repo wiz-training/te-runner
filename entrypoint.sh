@@ -58,12 +58,27 @@ az_login() {  # `@path` expands to the file's contents
     && az account set --subscription "$ARM_SUBSCRIPTION_ID" \
     || echo "az service-principal login failed" >&2
 }
+gcloud_auth=
 if [ -n "${GOOGLE_CREDENTIALS:-}" ] && command -v gcloud >/dev/null 2>&1; then
   with_secret "$GOOGLE_CREDENTIALS" gcloud_login
   [ -n "${GOOGLE_PROJECT:-}" ] && gcloud config set project "$GOOGLE_PROJECT" --quiet
+  gcloud_auth=1
 fi
+az_auth=
 if [ -n "${ARM_CLIENT_ID:-}" ] && command -v az >/dev/null 2>&1; then
   with_secret "$ARM_CLIENT_SECRET" az_login
+  az_auth=1
+fi
+# The learner terminal opens as `learner` (HOME=/home/learner), and neither gcloud nor az reads the
+# lease env vars directly: mirror root's CLI config when the corresponding login block ran.
+if [ -n "$gcloud_auth" ]; then
+  install -d -m 700 -o learner -g learner /home/learner/.config
+  cp -a /root/.config/gcloud /home/learner/.config/gcloud
+  chown -R learner:learner /home/learner/.config/gcloud
+fi
+if [ -n "$az_auth" ]; then
+  cp -a /root/.azure /home/learner/.azure
+  chown -R learner:learner /home/learner/.azure
 fi
 
 exec "$@"

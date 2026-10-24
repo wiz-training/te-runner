@@ -66,6 +66,11 @@ jobs:
             rc=0; su -s /bin/bash learner -c "printenv WIZ_T_CLIENT_SECRET" >/dev/null 2>&1 || rc=$?; test "$rc" -ne 0 || exit 1
             grep -q "^AWS_DEFAULT_REGION=" /run/lab/wiz.env || exit 1
             grep -q "^OKTA_WF_INVOKE_URL=" /run/lab/wiz.env'
+          # Entrypoint mirrors root's CSP CLI config to ~learner owned by learner:learner.
+          docker run --rm -e GOOGLE_CREDENTIALS='{"type":"service_account"}' -e GOOGLE_PROJECT=smoke-proj "$IMG" sh -c '
+            test -d /home/learner/.config/gcloud || exit 1
+            test "$(stat -c %U:%G /home/learner/.config/gcloud)" = "learner:learner" || exit 1
+            test "$(su -s /bin/bash learner -c "gcloud config get-value project 2>/dev/null")" = "smoke-proj"'
           docker run --rm "$IMG" python3 -c 'import ast, sys; ast.parse(open("/opt/reaper/reap_orphans.py").read())'
           # No host key ships in the image (one shared ssh identity otherwise), and sshd is key-only.
           docker run --rm "$IMG" sh -c '! ls /etc/ssh/ssh_host_* >/dev/null 2>&1 && ssh-keygen -A >/dev/null && sshd -T | grep -qx "passwordauthentication no"'
