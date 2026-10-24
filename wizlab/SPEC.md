@@ -22,6 +22,15 @@ declared list puts the session in a terminal `validating_error` — with `wizlab
 which prints the real code on stderr; CI consumes the codes raw. A flag the verb does not read is
 invocation error 2 (`FLAGS`), never ignored.
 
+Deliberate exceptions (never renamed; shipped labs call them):
+
+| pair | why `ensure` / `inspect` / `delete` does not fit |
+|---|---|
+| `slot claim` | a pool slot is claimed from the free set (`refs/claims/<lab>/slot-NN`), not converged by name |
+| `slot release` | drops the session's claimed pool slot refs; inverse of `slot claim` |
+| `patch open` | branches `patch/<stem>` and opens a Dockerfile PR on GitHub, not a converged resource |
+| `user login-url` | read-only author tool that prints a tenant's SAML sign-in URL without grading |
+
 ### What `user reap` exit 0 promises
 One outcome per resource; `failed` outranks `operator`, which outranks `deferred` (`_reap_exit`).
 
@@ -109,6 +118,57 @@ The tag that first reads each contract; a lab pins at or above the highest row i
 | v0.1.81 | `--out-file` redacts stdout whatever `$EXEC_OUTPUT` holds: on v0.1.80 a caller blanking it got the secret printed anyway |
 | v0.1.82 | `user reap` releases code-lab slot claims whose commit message is the stem (`WIZ_LABS_GH_APP`) |
 
+<!-- verb-floors:begin -->
+| noun | verb | first tag |
+|---|---|---|
+| session | verify | v0.1.0 |
+| connector | inspect | v0.1.0 |
+| connector | ensure | v0.1.0 |
+| connector | delete | v0.1.0 |
+| instance | inspect | v0.1.13 |
+| k8sconnector | ensure | v0.1.54 |
+| k8sconnector | inspect | v0.1.54 |
+| k8sconnector | delete | v0.1.54 |
+| container | inspect | v0.1.54 |
+| sensor | ensure | v0.1.29 |
+| sensor | delete | v0.1.29 |
+| sensor | inspect | v0.1.29 |
+| serviceaccount | ensure | v0.1.34 |
+| serviceaccount | inspect | v0.1.34 |
+| serviceaccount | delete | v0.1.34 |
+| apiaccount | ensure | v0.1.63 |
+| apiaccount | inspect | v0.1.63 |
+| apiaccount | delete | v0.1.63 |
+| mcp | ensure | v0.1.61 |
+| mcp | inspect | v0.1.61 |
+| mcp | delete | v0.1.61 |
+| code-scan | inspect | v0.1.34 |
+| correlation | inspect | v0.1.77 |
+| pullrequest | inspect | v0.1.77 |
+| slot | claim | v0.1.77 |
+| slot | release | v0.1.77 |
+| patch | open | v0.1.77 |
+| policy | ensure | v0.1.34 |
+| policy | inspect | v0.1.34 |
+| policy | delete | v0.1.34 |
+| detection | inspect | v0.1.29 |
+| workflow | inspect | v0.1.40 |
+| workflow | ensure | v0.1.40 |
+| workflow-run | inspect | v0.1.40 |
+| workflow-run | ensure | v0.1.40 |
+| outpost | inspect | v0.1.31 |
+| outpost | ensure | v0.1.31 |
+| outpost | delete | v0.1.31 |
+| role | inspect | v0.1.3 |
+| role | ensure | v0.1.3 |
+| user | ensure | v0.1.5 |
+| user | inspect | v0.1.5 |
+| user | delete | v0.1.5 |
+| user | login-url | v0.1.8 |
+| wiz | tenant | v0.1.16 |
+| user | reap | v0.1.10 |
+<!-- verb-floors:end -->
+
 ### The learner shell
 The image ships a non-root `learner` user, `sudo`, and one sudoers rule: `learner` may run
 `/usr/local/bin/wizlab-learner` without a password, nothing else. A lab keeps every operator secret
@@ -131,8 +191,13 @@ readable from every learner terminal.
 ## Nouns
 `session`, `connector`, `role`, `instance`, `user`, `wiz`, `outpost`, for Kubernetes labs `k8sconnector`
 and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`, for Wiz Code labs
-`serviceaccount` and `code-scan`, for agent labs `apiaccount` and `mcp`, and for Workflows labs `workflow` and
-`workflow-run`:
+`serviceaccount`, `code-scan`, `policy`, `correlation`, `pullrequest`, `slot` and `patch`, for agent labs
+`apiaccount` and `mcp`, and for Workflows labs `workflow` and `workflow-run`:
+- `session verify [--min-runner vX.Y.Z]` — env/session health and runner floor check; see §Runner identity, and the floor `session verify` enforces.
+- `role inspect|ensure` — lease-account IAM role trust grading (`inspect`) and AWS trust creation/repair (`ensure`); see §What `ensure` promises and §Credential nouns.
+- `instance inspect --account-id <id> [--type VIRTUAL_MACHINE] [--require exists]` — asserts Wiz enumerates ≥1 cloud resource of `--type` in the account (`cloudResources`); see §Grammar.
+- `user ensure|inspect|delete|reap` — Okta Workflows user provisioning/grading (`ensure`, `inspect`), Wiz user removal (`inspect --wiz`, `delete`), and session footprint cleanup (`reap`); see §What `ensure` promises and §What `user reap` exit 0 promises.
+- `wiz tenant` — emits live tenant connector and endpoint facts as `KEY=value` (+ `$EXEC_OUTPUT`); see §Grammar.
 - `k8sconnector ensure|inspect|delete --cluster <eks name> | --cluster-arn <arn>` — a Kubernetes
   connector the lab owns. Keyed on `connectors(filterBy:{kubernetesClusterExternalIds})`, where the EKS
   external id is the cluster ARN taken from `aws eks describe-cluster`, **never from a

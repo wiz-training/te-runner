@@ -1096,6 +1096,60 @@ class ExitCodeContract(unittest.TestCase):
         self.assertIn("GOOGLE_REGION", documented)
         self.assertEqual(documented - {"GOOGLE_REGION"}, admitted)
 
+    def test_every_verb_fits_the_grammar_or_is_excepted(self):
+        """SPEC.md §Grammar locks the six verb kinds plus the deliberate exceptions table; a verb outside
+        both (e.g. a made-up `count`) fails."""
+        root = pathlib.Path(__file__).resolve().parent.parent
+        spec = (root / "wizlab" / "SPEC.md").read_text()
+        grammar = re.search(r"^## Grammar\n(.*?)(?=\n### |\n## |\Z)", spec, re.MULTILINE | re.DOTALL).group(1)
+        verb_table = re.search(r"\| verb \| means \|\n\|[-|]+\|\n((?:\|.*\|\n)+)", grammar).group(1)
+        kinds = {m.group(1) for m in re.finditer(r"^\|\s*`?([a-z-]+)`?\s*\|", verb_table, re.MULTILINE)}
+        self.assertEqual(kinds, {"inspect", "ensure", "delete", "verify", "reap", "tenant"})
+        exc_table = re.search(r"\| pair \|[^\n]*\n\|[-|]+\|\n((?:\|.*\|\n?)+)", grammar).group(1)
+        exceptions = {(m.group(1), m.group(2))
+                      for m in re.finditer(r"^\|\s*`?([a-z0-9-]+)\s+([a-z0-9-]+)`?\s*\|", exc_table, re.MULTILINE)}
+        self.assertEqual({v for _, v in exceptions} & kinds, set())
+        self.assertTrue(exceptions.issubset(wz.VERBS))
+        def fits(verbs):
+            return [nv for nv in verbs if nv[1] not in kinds and nv not in exceptions]
+        self.assertEqual(fits(wz.VERBS), [])
+        self.assertEqual(fits([*wz.VERBS, ("connector", "count")]), [("connector", "count")])
+
+    def test_every_verb_has_a_floor_row_and_a_noun_section(self):
+        """Every noun in VERBS appears in the `## Nouns` header list and has a `- `<noun> ...`` bullet;
+        every `(noun, verb)` has a row in the generated `<!-- verb-floors:begin -->` block."""
+        root = pathlib.Path(__file__).resolve().parent.parent
+        spec = (root / "wizlab" / "SPEC.md").read_text()
+        nouns_sec = re.search(r"^## Nouns\n(.*?)(?=\n## |\Z)", spec, re.MULTILINE | re.DOTALL).group(1)
+        header_para, _, bullets_body = nouns_sec.partition("\n- ")
+        header_nouns = set(re.findall(r"`([a-z0-9-]+)`", header_para))
+        verbs_nouns = {n for n, _ in wz.VERBS}
+        self.assertEqual(verbs_nouns, header_nouns)
+        bullet_heads = [ln.split(" — ", 1)[0] for ln in ("- " + bullets_body).splitlines() if ln.startswith("- ")]
+        bullet_nouns = {m.group(1) for hd in bullet_heads for m in re.finditer(r"`([a-z0-9-]+)\s+[a-z|-]+", hd)}
+        self.assertEqual(verbs_nouns, bullet_nouns)
+        floors_block = re.search(
+            r"<!-- verb-floors:begin -->\n\| noun \| verb \| first tag \|\n\|[-|]+\|\n(.*?)\n<!-- verb-floors:end -->",
+            spec, re.DOTALL,
+        ).group(1)
+        floor_rows = [(m.group(1), m.group(2)) for m in re.finditer(
+            r"^\|\s*([a-z0-9-]+)\s*\|\s*([a-z0-9-]+)\s*\|\s*v\d+\.\d+\.\d+\s*\|$",
+            floors_block, re.MULTILINE,
+        )]
+        self.assertEqual(floor_rows, list(wz.VERBS))
+
+    def test_verb_floors_block_matches_git_history(self):
+        """`scripts/verb-floors.py --check` verifies SPEC.md's generated block against git tags."""
+        root = pathlib.Path(__file__).resolve().parent.parent
+        script = root / "scripts" / "verb-floors.py"
+        st = wz.subprocess.run([sys.executable, str(script), "--self-test"], capture_output=True, text=True)
+        self.assertEqual(st.returncode, 0, st.stderr or st.stdout)
+        tags = wz.subprocess.run(["git", "-C", str(root), "tag", "--list", "v*"], capture_output=True, text=True)
+        if not tags.stdout.strip():
+            self.skipTest("clone has no v* tags (shallow checkout)")
+        chk = wz.subprocess.run([sys.executable, str(script), "--check"], capture_output=True, text=True)
+        self.assertEqual(chk.returncode, 0, chk.stdout + chk.stderr)
+
     def test_check_collapses_every_failure_to_1_and_names_the_real_code(self):
         err = io.StringIO()
         with mock.patch.dict(wz.VERBS, {("session", "verify"): lambda argv: wz.die(3, "no tenant")}), \
