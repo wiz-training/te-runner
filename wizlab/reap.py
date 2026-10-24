@@ -1,11 +1,12 @@
 """`user reap`: audit-attributed and prefix-swept teardown of a session's Wiz footprint."""
 import functools
 import json
+import os
 import re
 import sys
 from collections import Counter
 
-from . import core, outpost, serviceaccount
+from . import codelab, core, outpost, serviceaccount
 
 # reap: delete a lab user's Wiz footprint from the audit log. Delete is uniform delete<Type>(input:{id})
 # across ~34 of 36 create types; correlation (find by name) is per-type — the generic handler
@@ -315,8 +316,26 @@ def cmd_reap(args):
             audit_only += 1
     for x in _SWEEP_TYPES:
         tally += _reap_sweep_type(tok, dc, x, stem, commit)
+    slot_tally, slots = _reap_slots(stem, commit)
+    tally += slot_tally
     verb = "removed" if commit else "to remove (dry-run)"
     counts = ", ".join(f"{tally[o]} {o}" for o in (ABSENT, DEFERRED, UNKNOWN, OPERATOR, FAILED))
-    print(f"# {tally[REMOVED]} {verb} ({audit_only} audit-only), {counts} for {email} / {stem}*",
+    print(f"# {tally[REMOVED]} {verb} ({audit_only} audit-only), {counts}, {slots} slot(s) for {email} / {stem}*",
           file=sys.stderr)
     sys.exit(_reap_exit(tally) if commit else 0)
+
+
+def _reap_slots(stem, commit):
+    """Sweep code-lab pool claims for `stem`. Returns (Counter of outcomes, released_slot_count).
+    Without WIZ_LABS_GH_APP (a non-code lab's own reap.sh), logs once and returns empty; a GitHub
+    transport fault is DEFERRED (exit 4) so the next daily pass retries without failing the Wiz reap."""
+    if not os.getenv("WIZ_LABS_GH_APP"):
+        print("slot claims: WIZ_LABS_GH_APP not set, not swept", file=sys.stderr)
+        return Counter(), 0
+    try:
+        claims = codelab.release_claims_for(stem, commit)
+    except core.WizlabError as e:
+        print(f"DEFERRED slot claims for {stem}: {e}")
+        return Counter({DEFERRED: 1}), 0
+    tally = Counter(outcome for _, _, outcome in claims)
+    return tally, tally[REMOVED]

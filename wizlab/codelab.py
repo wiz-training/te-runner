@@ -24,6 +24,7 @@ EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 DEFAULT_RULE = "Docker Correlation"
 _LAB_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
+_CLAIM_REF_RE = re.compile(r"^refs/claims/([^/]+)/slot-(.+)$")
 _TOKEN = {}
 
 CORRELATIONS_Q = """query Correlations($f: GraphEntityCorrelationFilters, $after: String) {
@@ -231,6 +232,35 @@ def cmd_slot_release(args):
         if who == stem:
             _gh("DELETE", f"/repos/{ORG}/{CONTROL_REPO}/git/refs/claims/{lab}/slot-{slot}", tolerate=(422, 404))
             print(f"released slot {slot}")
+
+
+def release_claims_for(stem, commit):
+    """Release every pool claim across all labs whose commit message is `stem`. Returns
+    [(lab, slot, outcome)] with outcome 'removed' or 'absent' (`reap.REMOVED`/`reap.ABSENT`, passed as
+    strings so the outcome constants stay defined in `reap` alone)."""
+    status, refs = _gh("GET", f"/repos/{ORG}/{CONTROL_REPO}/git/matching-refs/claims/", tolerate=(404,))
+    out = []
+    for ref in refs if status == 200 else []:
+        m = _CLAIM_REF_RE.match(ref.get("ref") or "")
+        if not m:
+            continue
+        lab, slot = m.groups()
+        _, commit_obj = _gh("GET", f"/repos/{ORG}/{CONTROL_REPO}/git/commits/{ref['object']['sha']}")
+        if commit_obj["message"].strip() != stem:
+            continue
+        if not commit:
+            print(f"DRY-RUN would release slot {lab}/{slot}")
+            out.append((lab, slot, "removed"))
+            continue
+        del_status, _ = _gh("DELETE", f"/repos/{ORG}/{CONTROL_REPO}/git/refs/claims/{lab}/slot-{slot}",
+                            tolerate=(422, 404))
+        if del_status in (404, 422):
+            print(f"absent slot {lab}/{slot}")
+            out.append((lab, slot, "absent"))
+        else:
+            print(f"released slot {lab}/{slot}")
+            out.append((lab, slot, "removed"))
+    return out
 
 
 # --- the Patch PR ---

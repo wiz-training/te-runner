@@ -153,6 +153,7 @@ def exit_code(fn, argv=(), *, wiz=None, env=None, out=None, err=None, **patches)
     attributes: a Mock replaces the attribute, another callable is its side_effect, anything else its
     return_value. `wiz` is a FakeWiz behind _post, with the credentials token_and_dc reads."""
     wz._TOKENS.clear()
+    wz._TOKEN.clear()
     with contextlib.ExitStack() as st:
         if wiz is not None:
             env = {**(os.environ if env is None else env), **FakeWiz.ENV}
@@ -545,6 +546,9 @@ class FakeGitHub:
         self.prs, self.fail = list(prs), fail
         self.calls, self.branches, self.puts, self.commits = [], {"main": "mainsha"}, [], {}
 
+    def _ref_lab_slot(self, key):
+        return key.split("/", 1) if "/" in key else (self.LAB, key)
+
     def __call__(self, method, path, body=None, token=None):
         self.calls.append((method, path))
         if self.fail:
@@ -553,9 +557,12 @@ class FakeGitHub:
             return 201, {"token": "ghs_test"}
         if path.startswith("/orgs/wiz-training/repos"):
             return 200, [{"name": f"te-code-{self.LAB}-{s}"} for s in self.slots]
+        if path == f"{self.CONTROL}/git/matching-refs/claims/":
+            return 200, [{"ref": f"refs/claims/{self._ref_lab_slot(k)[0]}/slot-{self._ref_lab_slot(k)[1]}",
+                          "object": {"sha": f"sha-{k}"}} for k in sorted(self.claims)]
         if path.startswith(f"{self.CONTROL}/git/matching-refs/claims/{self.LAB}/"):
             return 200, [{"ref": f"refs/claims/{self.LAB}/slot-{s}", "object": {"sha": f"sha-{s}"}}
-                         for s in sorted(self.claims)]
+                         for s in sorted(self.claims) if "/" not in s]
         if path.startswith(f"{self.CONTROL}/git/commits/sha-"):
             return 200, {"message": self.claims[path.rsplit("sha-", 1)[-1]]}
         if path == f"{self.CONTROL}/git/commits" and method == "POST":
@@ -568,8 +575,10 @@ class FakeGitHub:
             self.claims[slot] = self.commits["pending"]
             return 201, {}
         if path.startswith(f"{self.CONTROL}/git/refs/claims/") and method == "DELETE":
-            slot = path.rsplit("slot-", 1)[-1]
-            return (204, {}) if self.claims.pop(slot, None) is not None else (422, {})
+            lab, slot_ref = path.split("/git/refs/claims/", 1)[1].split("/", 1)
+            slot = slot_ref.rsplit("slot-", 1)[-1]
+            key = slot if (lab == self.LAB and slot in self.claims) else f"{lab}/{slot}"
+            return (204, {}) if self.claims.pop(key, None) is not None else (422, {})
         if path.startswith(f"{self.REPO}/contents/Dockerfile") and method == "GET":
             return 200, {"content": base64.b64encode(self.dockerfile.encode()).decode(), "sha": "fsha"}
         if path == f"{self.REPO}/git/ref/heads/main":
@@ -1559,6 +1568,73 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         swept = len(wz._SWEEP_TYPES)
         self.assertIn(f"# {2 + swept} removed (1 audit-only), 1 absent, 0 deferred, 0 unknown, 0 operator, 0 failed",
                       err.getvalue())
+
+    def test_slot_claims_are_reaped(self):
+        claims = {"01": "lab-s1", "02": "lab-other", "other-lab/01": "lab-s1", "other-lab/02": "lab-other"}
+        gh_dry, out_dry, err_dry = FakeGitHub(claims=dict(claims)), io.StringIO(), io.StringIO()
+        code = exit_code(wz.cmd_reap, ["--session", "s1"], wiz=FakeWiz(), env=GitHubContract.GH_ENV,
+                         out=out_dry, err=err_dry, _gh_call=gh_dry,
+                         _reap_enumerate=([], None), _reap_sweep_type=wz.Counter())
+        self.assertEqual(code, 0)
+        self.assertFalse([c for c in gh_dry.calls if c[0] == "DELETE"], "dry-run must not delete refs")
+        self.assertIn("DRY-RUN would release slot juice-shop-101/01", out_dry.getvalue())
+        self.assertIn("DRY-RUN would release slot other-lab/01", out_dry.getvalue())
+        self.assertNotIn("02", out_dry.getvalue())
+        self.assertIn("2 slot(s)", err_dry.getvalue())
+
+        gh, out, err = FakeGitHub(claims=dict(claims)), io.StringIO(), io.StringIO()
+        code = exit_code(wz.cmd_reap, ["--session", "s1", "--commit"], wiz=FakeWiz(), env=GitHubContract.GH_ENV,
+                         out=out, err=err, _gh_call=gh,
+                         _reap_enumerate=([], None), _reap_sweep_type=wz.Counter())
+        self.assertEqual(code, 0)
+        deletes = [p for m, p in gh.calls if m == "DELETE"]
+        self.assertEqual(deletes, [
+            f"{gh.CONTROL}/git/refs/claims/juice-shop-101/slot-01",
+            f"{gh.CONTROL}/git/refs/claims/other-lab/slot-01",
+        ])
+        self.assertEqual(gh.claims, {"02": "lab-other", "other-lab/02": "lab-other"})
+        self.assertIn("released slot juice-shop-101/01", out.getvalue())
+        self.assertIn("released slot other-lab/01", out.getvalue())
+        self.assertIn("2 slot(s)", err.getvalue())
+
+        # A claim raced away between the ref list and DELETE answers 422 and counts as absent, not removed.
+        gh_raced, out_r, err_r = FakeGitHub(claims={"01": "lab-s1"}), io.StringIO(), io.StringIO()
+
+        def raced(method, path, body=None, token=None):
+            if method == "DELETE":
+                gh_raced.claims.clear()
+            return gh_raced(method, path, body, token)
+
+        code = exit_code(wz.cmd_reap, ["--session", "s1", "--commit"], wiz=FakeWiz(), env=GitHubContract.GH_ENV,
+                         out=out_r, err=err_r, _gh_call=raced,
+                         _reap_enumerate=([], None), _reap_sweep_type=wz.Counter())
+        self.assertEqual(code, 0)
+        self.assertIn("absent slot juice-shop-101/01", out_r.getvalue())
+        self.assertIn("1 absent", err_r.getvalue())
+        self.assertIn("0 slot(s)", err_r.getvalue())
+
+    def test_slot_sweep_without_app_secret_is_a_note_not_a_failure(self):
+        gh, err = FakeGitHub(claims={"01": "lab-s1"}), io.StringIO()
+        code = exit_code(wz.cmd_reap, ["--session", "s1", "--commit"], wiz=FakeWiz(), env={}, err=err,
+                         _gh_call=gh, _reap_enumerate=([], None),
+                         _reap_sweep_type=wz.Counter({wz.REMOVED: 1}))
+        self.assertEqual(code, 0)
+        self.assertEqual(gh.calls, [])
+        self.assertIn("slot claims: WIZ_LABS_GH_APP not set, not swept", err.getvalue())
+        swept = len(wz._SWEEP_TYPES)
+        self.assertIn(f"# {swept} removed (0 audit-only), 0 absent, 0 deferred, 0 unknown, 0 operator, 0 failed, "
+                      "0 slot(s)", err.getvalue())
+
+    def test_slot_sweep_transport_failure_defers(self):
+        gh, out, err = FakeGitHub(fail=True), io.StringIO(), io.StringIO()
+        code = exit_code(wz.cmd_reap, ["--session", "s1", "--commit"], wiz=FakeWiz(), env=GitHubContract.GH_ENV,
+                         out=out, err=err, _gh_call=gh, _reap_enumerate=([], None),
+                         _reap_sweep_type=wz.Counter({wz.REMOVED: 1}))
+        self.assertEqual(code, 4)
+        self.assertIn("lab-s1", out.getvalue())
+        swept = len(wz._SWEEP_TYPES)
+        self.assertIn(f"# {swept} removed (0 audit-only), 0 absent, 1 deferred, 0 unknown, 0 operator, 0 failed, "
+                      "0 slot(s)", err.getvalue())
 
     def _outpost_reap(self, status, delete_err=None, status_err=None):
         """Drives the real _reap_outpost. Returns (outcome, detail, mutations issued)."""
