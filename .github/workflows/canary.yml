@@ -16,7 +16,7 @@ permissions:
   issues: write
 jobs:
   canary:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     concurrency:
       group: canary-${{ inputs.lab || 'te-dev-aws' }}
       cancel-in-progress: false
@@ -43,15 +43,15 @@ jobs:
             exit 1
           fi
       - name: checkout te-runner
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: checkout te-labkit-v2
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: wiz-training/te-labkit-v2
           token: ${{ secrets.LABKIT_READ_TOKEN }}
           path: labkit
       - name: setup python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: install playwright
