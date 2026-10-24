@@ -70,6 +70,23 @@ class ReapOrdering(unittest.TestCase):
         for args in (list(c.args) for c in wizlab.call_args_list):
             self.assertIn("--domain", args)
 
+    def test_reap_session_derives_last_min_from_window_hours(self):
+        """reap_orphans queried 48h of stopped sessions (WINDOW_H) while calling `wizlab user reap`
+        without `--last-min`, leaving the audit walk at cli.py's 1440m (24h) default."""
+        with mock.patch.dict(rp.os.environ, {}, clear=True), \
+             mock.patch.object(rp, "_wizlab", side_effect=(0, 0)) as wizlab:
+            rp._reap_session("T", "s1", True)
+        reap_args = list(wizlab.call_args_list[0].args)
+        i = reap_args.index("--last-min")
+        self.assertEqual(reap_args[i:i + 2], ["--last-min", "2880"])
+        self.assertNotIn("--last-min", wizlab.call_args_list[1].args)
+        with mock.patch.dict(rp.os.environ, {"REAP_WINDOW_HOURS": "72"}, clear=True), \
+             mock.patch.object(rp, "_wizlab", side_effect=(0, 0)) as wizlab:
+            rp._reap_session("T", "s1", True)
+        reap_args = list(wizlab.call_args_list[0].args)
+        i = reap_args.index("--last-min")
+        self.assertEqual(reap_args[i:i + 2], ["--last-min", "4320"])
+
     def test_operator_residue_deletes_the_user_and_keeps_the_run_red(self):
         """An Outpost left PARTIALLY_UNINSTALLED by a lab's own cleanup (te-aws-outpost-trust-201,
         every play) made `wizlab user reap` exit 3, so the session's Wiz user was retained as "the only
