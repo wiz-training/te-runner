@@ -1,0 +1,21 @@
+# --- inspect (InspectContract.ROWS) ---
+        ("${noun}", "inspect"): {  # TODO: fixture row for ${noun} inspect
+            "argv": ["--name", "lab-x-${noun}"],
+            "present": {"${plural}": _conn({"id": "w1", "name": "lab-x-${noun}"})},
+            "absent": [{"${plural}": _conn()}],
+            "invalid": [[]],
+        },
+# --- ensure (EnsureContract.rows) ---
+            ("${noun}", "ensure"): {  # TODO: fixture row for ${noun} ensure
+                "argv": ["--name", "lab-x-${noun}"],
+                "absent": {"${plural}": _conn(), "create${cap}": {"${noun_key}": {"id": "w1", "name": "lab-x-${noun}"}}},
+                "present": {"${plural}": _conn({"id": "w1", "name": "lab-x-${noun}"})},
+                "creates": ["create${cap}"], "invalid": [[]],
+            },
+# --- footprint (ConnectorAndReaperSafety.FOOTPRINT) ---
+        ("${noun}", "ensure"): "${cap}",  # TODO: Wiz GraphQL type for ${noun} ensure
+# --- delete (DeleteContract.ROWS) ---
+        ("${noun}", "delete"): {  # TODO: fixture row for ${noun} delete
+            "argv": ["--name", "lab-x-${noun}"], "field": "${plural}",
+            "node": {"id": "w1", "name": "lab-x-${noun}"}, "deletes": ["delete${cap}"],
+        },

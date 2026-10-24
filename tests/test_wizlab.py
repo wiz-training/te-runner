@@ -1133,7 +1133,7 @@ class ExitCodeContract(unittest.TestCase):
             spec, re.DOTALL,
         ).group(1)
         floor_rows = [(m.group(1), m.group(2)) for m in re.finditer(
-            r"^\|\s*([a-z0-9-]+)\s*\|\s*([a-z0-9-]+)\s*\|\s*v\d+\.\d+\.\d+\s*\|$",
+            r"^\|\s*([a-z0-9-]+)\s*\|\s*([a-z0-9-]+)\s*\|\s*(?:v\d+\.\d+\.\d+|vNEXT)\s*\|$",
             floors_block, re.MULTILINE,
         )]
         self.assertEqual(floor_rows, list(wz.VERBS))
@@ -1148,6 +1148,60 @@ class ExitCodeContract(unittest.TestCase):
         if chk.returncode == 3:
             self.skipTest((chk.stderr or chk.stdout).strip())
         self.assertEqual(chk.returncode, 0, chk.stdout + chk.stderr)
+
+    def test_verb_shape_all_fits_on_main(self):
+        """Every pair in VERBS on main satisfies `scripts/verb-shape.py --all` (46/46)."""
+        root = pathlib.Path(__file__).resolve().parent.parent
+        script = root / "scripts" / "verb-shape.py"
+        st = wz.subprocess.run([sys.executable, str(script), "--self-test"], capture_output=True, text=True)
+        self.assertEqual(st.returncode, 0, st.stderr or st.stdout)
+        res = wz.subprocess.run([sys.executable, str(script), "--all"], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr or res.stdout)
+        self.assertIn(f"{len(wz.VERBS)}/{len(wz.VERBS)} fit (ok)", res.stdout)
+
+    def test_scaffold_verb_passes_shape(self):
+        """Scaffolding `widget inspect` into a temp copy passes `verb-shape.py`, `InspectContract`, and the
+        three grammar/floor tests in `ExitCodeContract` with its TODOs in place."""
+        root = pathlib.Path(__file__).resolve().parent.parent
+        scaffold_script = root / "scripts" / "scaffold.py"
+        shape_script = root / "scripts" / "verb-shape.py"
+        st = wz.subprocess.run([sys.executable, str(scaffold_script), "--self-test"], capture_output=True, text=True)
+        self.assertEqual(st.returncode, 0, st.stderr or st.stdout)
+        with tempfile.TemporaryDirectory() as tmp:
+            ignore = shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", ".ruff_cache")
+            for item in root.iterdir():
+                if item.name in (".git", "__pycache__", ".pytest_cache", ".ruff_cache"):
+                    continue
+                dst = pathlib.Path(tmp) / item.name
+                if item.is_dir():
+                    shutil.copytree(item, dst, ignore=ignore)
+                else:
+                    shutil.copy2(item, dst)
+            sc = wz.subprocess.run(
+                [sys.executable, str(scaffold_script), "--repo", tmp, "verb", "widget", "inspect"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(sc.returncode, 0, sc.stderr or sc.stdout)
+            touched = ("wizlab/cli.py", "tests/test_wizlab.py", "wizlab/SPEC.md", "wizlab/reap.py", "measurements.yaml")
+            for rel in touched:
+                self.assertIn(f"touched: {rel}", sc.stdout)
+            self.assertIn("TODO ", sc.stdout)
+            sh = wz.subprocess.run(
+                [sys.executable, str(shape_script), "--repo", tmp, "widget", "inspect"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(sh.returncode, 0, sh.stderr or sh.stdout)
+            suite = wz.subprocess.run(
+                [sys.executable, str(pathlib.Path(tmp) / "tests" / "test_wizlab.py"),
+                 "InspectContract",
+                 "ExitCodeContract.test_every_verb_declares_its_flags_and_every_flag_read_is_declared",
+                 "ExitCodeContract.test_every_verb_fits_the_grammar_or_is_excepted",
+                 "ExitCodeContract.test_every_verb_has_a_floor_row_and_a_noun_section",
+                 "ExitCodeContract.test_verb_floors_block_matches_git_history",
+                 "ExitCodeContract.test_verb_shape_all_fits_on_main"],
+                cwd=tmp, capture_output=True, text=True,
+            )
+            self.assertEqual(suite.returncode, 0, suite.stderr or suite.stdout)
 
     def test_check_collapses_every_failure_to_1_and_names_the_real_code(self):
         err = io.StringIO()
@@ -1491,6 +1545,35 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         for verb, created in self.FOOTPRINT.items():
             if created:
                 self.assertIn(created, wz._SWEEP_TYPES, verb)
+
+    def test_ensure_names_on_the_stem(self):
+        """Every `ensure` in FOOTPRINT that leaves a swept Wiz resource names it on the session stem
+        (`lab-<sid>`), so the reaper's prefix sweep reaches what the verb creates."""
+        ec = EnsureContract()
+        ec.setUpClass()
+        try:
+            rows = ec.rows()
+            stem = wz._lab_stem(EnsureContract.ENV["INSTRUQT_SESSION_ID"])
+            for verb, sweep_type in self.FOOTPRINT.items():
+                if not sweep_type:
+                    continue
+                with self.subTest(verb=verb):
+                    if verb in rows:
+                        code, wiz = ec._run(verb, rows[verb]["argv"], rows[verb]["absent"])
+                        create_fn = rows[verb]["creates"][0]
+                    elif verb == ("k8sconnector", "ensure"):
+                        kc = K8sConnectorGrading()
+                        fields = {"connectors": _conn(), "createConnector": {"connector": InspectContract.K8S}}
+                        code, wiz = kc._run(verb, ["--cluster", stem], fields)
+                        create_fn = "createConnector"
+                    else:
+                        self.fail(f"unhandled swept ensure verb {verb}")
+                    self.assertEqual(code, 0)
+                    created_name = wz._input_name(wiz.sent(create_fn)[0]["input"])
+                    self.assertIsInstance(created_name, str)
+                    self.assertTrue(created_name.startswith(stem), f"{verb} created {created_name!r}, want {stem}*")
+        finally:
+            ec.tearDownClass()
 
     SA_HANDLER: typing.ClassVar = {"list": "serviceAccounts", "filter": "name", "soft": True,
                                    "delete": "deleteServiceAccount", "deleter": None}
