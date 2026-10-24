@@ -70,14 +70,17 @@ if [ -n "${ARM_CLIENT_ID:-}" ] && command -v az >/dev/null 2>&1; then
   az_auth=1
 fi
 # The learner terminal opens as `learner` (HOME=/home/learner), and neither gcloud nor az reads the
-# lease env vars directly: mirror root's CLI config when the corresponding login block ran.
-if [ -n "$gcloud_auth" ]; then
-  install -d -m 700 -o learner -g learner /home/learner/.config
-  cp -a /root/.config/gcloud /home/learner/.config/gcloud
+# lease env vars directly: mirror root's CLI config when the corresponding login block ran and populated
+# its config directory. `cp -a src/. dst/` after `install -d` avoids nesting on a second run.
+root_home=${HOME:-/root}
+if [ -n "$gcloud_auth" ] && [ -d "$root_home/.config/gcloud" ]; then
+  install -d -m 700 -o learner -g learner /home/learner/.config /home/learner/.config/gcloud
+  cp -a "$root_home/.config/gcloud/." /home/learner/.config/gcloud/
   chown -R learner:learner /home/learner/.config/gcloud
 fi
-if [ -n "$az_auth" ]; then
-  cp -a /root/.azure /home/learner/.azure
+if [ -n "$az_auth" ] && [ -d "$root_home/.azure" ]; then
+  install -d -m 700 -o learner -g learner /home/learner/.azure
+  cp -a "$root_home/.azure/." /home/learner/.azure/
   chown -R learner:learner /home/learner/.azure
 fi
 

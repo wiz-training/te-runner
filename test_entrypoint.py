@@ -83,34 +83,42 @@ class DevAccessGate(unittest.TestCase):
 
 class LearnerCloudAuth(unittest.TestCase):
     """The learner terminal opens as `learner` (HOME=/home/learner), and neither gcloud nor az reads the
-    container's lease env vars directly. Each login block that runs mirrors root's config dir into
-    /home/learner and chowns it to learner:learner; a block that did not run copies nothing."""
+    container's lease env vars directly. Each login block that runs and populates its config dir mirrors
+    root's config dir into /home/learner (`cp -a src/. dst/` so a second run never nests) and chowns it
+    to learner:learner; a block that did not run or created no config dir copies nothing."""
 
     ROWS = (
-        # env, expected (cp + chown) lines
-        ({}, []),
-        ({"GOOGLE_CREDENTIALS": '{"type":"service_account"}', "GOOGLE_PROJECT": "p"},
-         ["cp -a /root/.config/gcloud /home/learner/.config/gcloud",
-          "chown -R learner:learner /home/learner/.config/gcloud"]),
+        # env, create_dirs, expected (cp + chown) lines
+        ({}, True, []),
+        ({"GOOGLE_CREDENTIALS": '{"type":"service_account"}'}, False, []),
         ({"ARM_CLIENT_ID": "i", "ARM_CLIENT_SECRET": "s", "ARM_TENANT_ID": "t", "ARM_SUBSCRIPTION_ID": "u"},
-         ["cp -a /root/.azure /home/learner/.azure",
+         False, []),
+        ({"GOOGLE_CREDENTIALS": '{"type":"service_account"}', "GOOGLE_PROJECT": "p"}, True,
+         ["cp -a <home>/.config/gcloud/. /home/learner/.config/gcloud/",
+          "chown -R learner:learner /home/learner/.config/gcloud"]),
+        ({"ARM_CLIENT_ID": "i", "ARM_CLIENT_SECRET": "s", "ARM_TENANT_ID": "t", "ARM_SUBSCRIPTION_ID": "u"}, True,
+         ["cp -a <home>/.azure/. /home/learner/.azure/",
           "chown -R learner:learner /home/learner/.azure"]),
         ({"GOOGLE_CREDENTIALS": '{"type":"service_account"}',
-          "ARM_CLIENT_ID": "i", "ARM_CLIENT_SECRET": "s", "ARM_TENANT_ID": "t", "ARM_SUBSCRIPTION_ID": "u"},
-         ["cp -a /root/.config/gcloud /home/learner/.config/gcloud",
+          "ARM_CLIENT_ID": "i", "ARM_CLIENT_SECRET": "s", "ARM_TENANT_ID": "t", "ARM_SUBSCRIPTION_ID": "u"}, True,
+         ["cp -a <home>/.config/gcloud/. /home/learner/.config/gcloud/",
           "chown -R learner:learner /home/learner/.config/gcloud",
-          "cp -a /root/.azure /home/learner/.azure",
+          "cp -a <home>/.azure/. /home/learner/.azure/",
           "chown -R learner:learner /home/learner/.azure"]),
     )
 
-    def _boot(self, extra_env):
+    def _boot(self, extra_env, create_dirs):
         with tempfile.TemporaryDirectory() as td:
             tmp = pathlib.Path(td)
+            home = tmp / "root"
+            home.mkdir()
             capture = tmp / "capture"
             capture.touch()
-            for name in ("gcloud", "az", "install"):
+            gcloud_body = "mkdir -p \"$HOME/.config/gcloud\"\nexit 0\n" if create_dirs else "exit 1\n"
+            az_body = "mkdir -p \"$HOME/.azure\"\nexit 0\n" if create_dirs else "exit 1\n"
+            for name, body in (("gcloud", gcloud_body), ("az", az_body), ("install", "exit 0\n")):
                 stub = tmp / name
-                stub.write_text("#!/bin/sh\nexit 0\n")
+                stub.write_text("#!/bin/sh\n" + body)
                 stub.chmod(0o755)
             for name in ("cp", "chown"):
                 stub = tmp / name
@@ -118,16 +126,17 @@ class LearnerCloudAuth(unittest.TestCase):
                 stub.chmod(0o755)
             clean = {k: v for k, v in os.environ.items()
                      if not k.startswith(("GOOGLE_", "ARM_", "TS_", "TE_DEV_"))}
-            env = {**clean, "PATH": f"{tmp}:{os.environ['PATH']}", "CAPTURE": str(capture), **extra_env}
+            env = {**clean, "HOME": str(home), "PATH": f"{tmp}:{os.environ['PATH']}",
+                   "CAPTURE": str(capture), **extra_env}
             result = subprocess.run(["/bin/sh", str(ROOT / "entrypoint.sh"), "true"], env=env,
                                     capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
-            return capture.read_text().splitlines()
+            return [ln.replace(str(home), "<home>") for ln in capture.read_text().splitlines()]
 
     def test_login_blocks_mirror_and_chown_config_for_learner(self):
-        for extra_env, want in self.ROWS:
-            with self.subTest(keys=sorted(extra_env)):
-                self.assertEqual(self._boot(extra_env), want)
+        for extra_env, create_dirs, want in self.ROWS:
+            with self.subTest(keys=sorted(extra_env), create_dirs=create_dirs):
+                self.assertEqual(self._boot(extra_env, create_dirs), want)
 
 
 if __name__ == "__main__":
