@@ -1,0 +1,152 @@
+name: canary
+# Nightly live boot of te-dev-aws (05:00 UTC, an hour before reap.yml at 06:00 UTC so any session left
+# behind by a crashed run is swept the same morning). Runs on the host runner, never inside the
+# te-runner container, because headless Chromium needs host libraries.
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+    inputs:
+      lab:
+        description: "Lab slug to canary"
+        type: string
+        default: "te-dev-aws"
+permissions:
+  contents: read
+  issues: write
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    env:
+      LAB: ${{ inputs.lab || 'te-dev-aws' }}
+      INSTRUQT_API: ${{ secrets.INSTRUQT_TOKEN }}
+      WIZLAB_PLAY_DIR: ${{ runner.temp }}/wizlab-play-${{ inputs.lab || 'te-dev-aws' }}
+      CANARY_STATE_DIR: ${{ runner.temp }}/canary-state
+    steps:
+      - name: check required secrets
+        env:
+          LABKIT_READ_TOKEN: ${{ secrets.LABKIT_READ_TOKEN }}
+        run: |
+          if [ -z "$LABKIT_READ_TOKEN" ]; then
+            echo "::error::missing secret LABKIT_READ_TOKEN (fine-grained PAT with contents:read on wiz-training/te-labkit-v2)"
+            exit 1
+          fi
+          if [ -z "$INSTRUQT_API" ]; then
+            echo "::error::missing secret INSTRUQT_TOKEN"
+            exit 1
+          fi
+      - name: checkout te-runner
+        uses: actions/checkout@v4
+      - name: checkout te-labkit-v2
+        uses: actions/checkout@v4
+        with:
+          repository: wiz-training/te-labkit-v2
+          token: ${{ secrets.LABKIT_READ_TOKEN }}
+          path: labkit
+      - name: setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install playwright
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+      # A pt_ token binds to the browser identity in WIZLAB_PLAY_DIR; without caching that directory
+      # across runs, `play stop --lab` in the clean step cannot see `Resume lab` to stop an orphan play.
+      - name: cache browser profile
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.WIZLAB_PLAY_DIR }}
+          key: wizlab-play-${{ inputs.lab || 'te-dev-aws' }}-${{ github.run_id }}
+          restore-keys: |
+            wizlab-play-${{ inputs.lab || 'te-dev-aws' }}-
+          save-always: true
+      - name: clean
+        run: |
+          python3 labkit/scripts/wizops play stop --lab "$LAB" || true
+      - name: boot
+        run: |
+          mkdir -p "$CANARY_STATE_DIR"
+          rc=0
+          python3 labkit/scripts/wizops play start --lab "$LAB" --grep "^CANARY" \
+            >"$CANARY_STATE_DIR/attempt1.out" 2>"$CANARY_STATE_DIR/attempt1.err" || rc=$?
+          cat "$CANARY_STATE_DIR/attempt1.out"
+          cat "$CANARY_STATE_DIR/attempt1.err" >&2
+          cp "$CANARY_STATE_DIR/attempt1.out" "$CANARY_STATE_DIR/boot.out"
+          cp "$CANARY_STATE_DIR/attempt1.err" "$CANARY_STATE_DIR/boot.err"
+          attempts=1
+          if [ "$rc" -eq 1 ] && grep -q "Lab failed to start" "$CANARY_STATE_DIR/attempt1.err"; then
+            echo "attempt 1 hit Lab failed to start; retrying once" >&2
+            attempts=2
+            rc=0
+            python3 labkit/scripts/wizops play start --lab "$LAB" --grep "^CANARY" \
+              >"$CANARY_STATE_DIR/attempt2.out" 2>"$CANARY_STATE_DIR/attempt2.err" || rc=$?
+            cat "$CANARY_STATE_DIR/attempt2.out"
+            cat "$CANARY_STATE_DIR/attempt2.err" >&2
+            cp "$CANARY_STATE_DIR/attempt2.out" "$CANARY_STATE_DIR/boot.out"
+            cp "$CANARY_STATE_DIR/attempt2.err" "$CANARY_STATE_DIR/boot.err"
+          fi
+          printf '%s\n' "$rc" >"$CANARY_STATE_DIR/boot.rc"
+          printf '%s\n' "$attempts" >"$CANARY_STATE_DIR/boot.attempts"
+      - name: verdict
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, sys
+          state = pathlib.Path(os.environ["CANARY_STATE_DIR"])
+          lab = os.environ.get("LAB", "te-dev-aws")
+          rc = int((state / "boot.rc").read_text().strip())
+          attempts = int((state / "boot.attempts").read_text().strip())
+          out = (state / "boot.out").read_text() if (state / "boot.out").exists() else ""
+          err1 = (state / "attempt1.err").read_text() if (state / "attempt1.err").exists() else ""
+          err2 = (state / "attempt2.err").read_text() if (state / "attempt2.err").exists() else ""
+          err = (state / "boot.err").read_text().strip() if (state / "boot.err").exists() else ""
+          grep_lines = [ln[5:] for ln in out.splitlines() if ln.startswith("GREP=")]
+          if rc == 0:
+              if "CANARY=ok" in grep_lines:
+                  outcome = "ok"
+              elif "CANARY=degraded" in grep_lines:
+                  outcome = "degraded"
+              elif grep_lines == ["none"] or not any(ln.startswith("CANARY=") for ln in grep_lines):
+                  outcome = "no-verdict"
+              else:
+                  outcome = "error"
+          elif attempts >= 2 and "Lab failed to start" in err1 and "Lab failed to start" in err2:
+              outcome = "no-sandbox"
+          else:
+              outcome = "error"
+          lines = [
+              f"### Canary: `{lab}` — `{outcome}` (attempts: {attempts})",
+              "",
+          ]
+          if grep_lines:
+              lines.extend(f"- `GREP={ln}`" for ln in grep_lines)
+          if err and outcome != "ok":
+              lines.extend(["", f"stderr: `{err.splitlines()[-1]}`"])
+          summary = "\n".join(lines) + "\n"
+          (state / "outcome").write_text(outcome)
+          (state / "summary.md").write_text(summary)
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as fh:
+                  fh.write(summary)
+          print(summary, end="")
+          sys.exit(0 if outcome == "ok" else 1)
+          PY
+      - name: report issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          outcome=$(cat "$CANARY_STATE_DIR/outcome" 2>/dev/null || echo "")
+          case "$outcome" in
+            degraded|no-verdict|no-sandbox) ;;
+            *) exit 0 ;;
+          esac
+          today=$(date -u +%Y-%m-%d)
+          gh label create canary --description "Nightly lab canary failure" --color d93f0b 2>/dev/null || true
+          existing=$(gh issue list --state open --label canary --search "\"on $LAB\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$CANARY_STATE_DIR/summary.md"
+          else
+            gh issue create --label canary --title "canary $today: $outcome on $LAB" --body-file "$CANARY_STATE_DIR/summary.md"
+          fi

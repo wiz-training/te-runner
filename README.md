@@ -53,5 +53,19 @@ while IFS= read -r -d '' kv; do export "$kv"; done < /proc/1/environ
 
 `wizlab` exit codes and the `--check` remap learner checks use: `wizlab/SPEC.md` §Grammar.
 
+## Nightly canary
+
+`.github/workflows/canary.yml` runs daily at 05:00 UTC (an hour before `reap.yml` at 06:00 UTC) and on manual dispatch (`gh workflow run canary.yml -f lab=te-dev-aws`). It checks out `wiz-training/te-labkit-v2`, stops any leftover session cached in `WIZLAB_PLAY_DIR`, boots `--lab` via `wizops play start --grep "^CANARY"` (retrying once on `"Lab failed to start"`), writes `$GITHUB_STEP_SUMMARY`, and opens or comments on a `canary`-labelled issue on non-`ok` outcomes.
+
+| Outcome | Condition | Exit / Issue |
+|---|---|---|
+| `ok` | `GREP=CANARY=ok` | exit 0, no issue |
+| `degraded` | `GREP=CANARY=degraded` | exit 1, issue / comment |
+| `no-verdict` | booted (`rc=0`), `GREP=none` | exit 1, issue / comment |
+| `no-sandbox` | both attempts failed with `Lab failed to start` | exit 1, issue / comment |
+| `error` | any other non-zero exit | exit 1, no issue |
+
+Secrets: `INSTRUQT_TOKEN` (mapped to `INSTRUQT_API`) and `LABKIT_READ_TOKEN` (fine-grained PAT with `contents:read` on `wiz-training/te-labkit-v2`).
+
 Open items for the repo family live in `te-labkit-v2/TODO.md`; review backlogs behind them are
 `research/review.md` and `research/health-plan.md`.
