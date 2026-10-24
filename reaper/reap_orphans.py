@@ -33,6 +33,10 @@ TEAM = os.getenv("INSTRUQT_TEAM", "wiz")
 WINDOW_H = int(os.getenv("REAP_WINDOW_HOURS", "48"))
 
 
+def _window_h():
+    return int(os.getenv("REAP_WINDOW_HOURS", str(WINDOW_H)))
+
+
 def _tenants(spec):
     """tenant key (the WIZ_TENANT value wizlab keys creds on) -> the lab's Instruqt tag, tid:<key lower-cased>.
     Env-driven so a tenant onboards with a workflow line and its secret pair, not a rebuild."""
@@ -82,7 +86,7 @@ def _instruqt(query, variables):
 
 def stopped_sessions(tag):
     now = datetime.now(UTC)
-    frm = (now - timedelta(hours=WINDOW_H)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    frm = (now - timedelta(hours=_window_h())).strftime("%Y-%m-%dT%H:%M:%SZ")
     q = ("query($team:String!, $tag:String!, $from:Time!, $to:Time!, $skip:Int!, $take:Int!) {"
          " labPlayReports(input:{teamSlug:$team, tags:[$tag],"
          " dateRangeFilter:{from:$from, to:$to}, pagination:{skip:$skip, take:$take}})"
@@ -139,7 +143,8 @@ def _reap_session(tenant, sid, commit):
     # Footprint first, user last: the user is the only handle back to the leftover objects, so keep it
     # when the footprint survives. Only a run inside WINDOW_H retries on its own — past that the sid
     # has aged out of labPlayReports and an operator must pass it via REAP_SESSIONS.
-    rc = _wizlab(tenant, "user", "reap", "--session", sid, "--commit", *_domain_args())
+    rc = _wizlab(tenant, "user", "reap", "--session", sid, "--commit",
+                 "--last-min", str(_window_h() * 60), *_domain_args())
     if rc not in (0, 5):
         # wizlab routes it (wizlab.reap._reap_exit): 4 finishes on its own, 3 does not. Either way the
         # handle stays until a pass proves the footprint gone.
