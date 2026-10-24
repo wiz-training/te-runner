@@ -32,8 +32,10 @@ One outcome per resource; `failed` outranks `operator`, which outranks `deferred
 | `deferred` | 4 | kept, sid retried: teardown in flight; the next daily pass finishes it |
 | `removed`, `absent`, `unknown` | 0 | deleted |
 
-Exit 0 promises that every guaranteed-type resource (`_SWEEP_TYPES`) named for the session, and every
-audit-attributed create carrying a handler and a name, is removed or absent; other residue is `unknown`.
+Exit 0 promises that every guaranteed-type resource (`_SWEEP_TYPES`) named for the session, every
+code-lab slot claim whose commit message is the stem (needs `WIZ_LABS_GH_APP`; absent = not swept, said
+once; a GitHub transport fault is `deferred`), and every audit-attributed create carrying a handler and a
+name, is removed or absent; other residue is `unknown`.
 Blocking on `unknown` would fail every reap and retain every user, since handler coverage is partial by
 construction. Operator decision, 2026-09-05.
 
@@ -105,6 +107,7 @@ The tag that first reads each contract; a lab pins at or above the highest row i
 | v0.1.79 | `user login-url` emits the Cognito authorize route by default; `WIZ_<T>_LOGIN_ROUTE=idp-login` |
 | v0.1.80 | `user ensure` redacts `WIZ_PWD` on stdout under an exec; `serviceaccount\|apiaccount ensure --out-file <path>` takes the pair without the play log seeing it |
 | v0.1.81 | `--out-file` redacts stdout whatever `$EXEC_OUTPUT` holds: on v0.1.80 a caller blanking it got the secret printed anyway |
+| v0.1.82 | `user reap` releases code-lab slot claims whose commit message is the stem (`WIZ_LABS_GH_APP`) |
 
 ### The learner shell
 The image ships a non-root `learner` user, `sudo`, and one sudoers rule: `learner` may run
@@ -317,8 +320,10 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   resets it): `claim` takes the first free `te-code-<lab>-NN` by creating `refs/claims/<lab>/slot-NN` in
   te-code-labs on an empty commit whose message is the session stem (atomic, so two graders cannot share
   a slot) and emits `SLOT`, `REPO`; a slot the session already holds is reprinted; none free is 1.
-  `release` drops the session's claims, a no-op when none. GitHub is reached as the App through the one
-  JSON secret `WIZ_LABS_GH_APP` (`app_id`, `install_id`, base64 PEM `key`); absent is 3 before any request.
+  `release` drops the session's claims, a no-op when none; `user reap` releases code-lab slot claims whose
+  commit message is the stem (needs `WIZ_LABS_GH_APP`; absent = not swept, said once). GitHub is reached as
+  the App through the one JSON secret `WIZ_LABS_GH_APP` (`app_id`, `install_id`, base64 PEM `key`); absent
+  is 3 before any request.
 - `patch open --repo <org/name>` — the learner's fix as a PR: branch `patch/<stem>` from `main`,
   Dockerfile `USER root` → `USER node`, one PR against `main`; emits `PR_NUMBER`. A rerun finds the open
   PR on that head; a Dockerfile with no `USER root` is 1.

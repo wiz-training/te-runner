@@ -31,6 +31,8 @@ jobs:
       - name: reap orphans
         env:
           INSTRUQT_TOKEN: ${{ secrets.INSTRUQT_TOKEN }}
+          # Code-lab pool claims live in te-code-labs; without the App secret, stopped code-lab plays leak slots.
+          WIZ_LABS_GH_APP: ${{ secrets.WIZ_LABS_GH_APP }}
           # One line and one secret pair per tenant; the tag swept is tid:<key lower-cased>.
           REAP_TENANTS: TBCMP,TE
           WIZ_TBCMP_CLIENT_ID: ${{ secrets.WIZ_TBCMP_CLIENT_ID }}
