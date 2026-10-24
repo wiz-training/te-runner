@@ -65,6 +65,12 @@ class CanaryWorkflowTests(unittest.TestCase):
         self.assertIn("runs-on: ubuntu-latest", live)
         self.assertNotIn("container:", live)
         self.assertNotIn("save-always:", live)
+        # `runner.*` is not a context GitHub evaluates in a job-level `env:`; a dispatch of such a file
+        # is refused with HTTP 422 "Unrecognized named-value: 'runner'" (first live dispatch, 2026-10-24).
+        job_env = live.split("    steps:")[0]
+        self.assertNotIn("runner.", job_env)
+        self.assertIn('WIZLAB_PLAY_DIR=$RUNNER_TEMP', live)
+        self.assertIn('CANARY_STATE_DIR=$RUNNER_TEMP', live)
         canary_hr = _cron_hour(text)
         reap_hr = _cron_hour(REAP_YML.read_text())
         self.assertIsNotNone(canary_hr)
@@ -74,6 +80,7 @@ class CanaryWorkflowTests(unittest.TestCase):
         self.assertEqual(
             steps,
             [
+                "paths",
                 "check required secrets",
                 "checkout te-runner",
                 "checkout te-labkit-v2",
