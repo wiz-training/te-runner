@@ -17,6 +17,9 @@ permissions:
 jobs:
   canary:
     runs-on: ubuntu-latest
+    concurrency:
+      group: canary-${{ inputs.lab || 'te-dev-aws' }}
+      cancel-in-progress: false
     env:
       LAB: ${{ inputs.lab || 'te-dev-aws' }}
       INSTRUQT_API: ${{ secrets.INSTRUQT_TOKEN }}
@@ -60,7 +63,6 @@ jobs:
           key: wizlab-play-${{ inputs.lab || 'te-dev-aws' }}-${{ github.run_id }}
           restore-keys: |
             wizlab-play-${{ inputs.lab || 'te-dev-aws' }}-
-          save-always: true
       - name: clean
         run: |
           python3 labkit/scripts/wizops play stop --lab "$LAB" || true

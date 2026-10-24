@@ -64,6 +64,7 @@ class CanaryWorkflowTests(unittest.TestCase):
         live = _live(text)
         self.assertIn("runs-on: ubuntu-latest", live)
         self.assertNotIn("container:", live)
+        self.assertNotIn("save-always:", live)
         canary_hr = _cron_hour(text)
         reap_hr = _cron_hour(REAP_YML.read_text())
         self.assertIsNotNone(canary_hr)
@@ -84,6 +85,13 @@ class CanaryWorkflowTests(unittest.TestCase):
                 "verdict",
                 "report issue",
             ],
+        )
+
+    def test_concurrency_group_is_per_lab_and_does_not_cancel_in_progress(self):
+        live = _live(CANARY_YML.read_text())
+        self.assertRegex(
+            live,
+            r"concurrency:\s*\n\s*group:\s*canary-\$\{\{\s*inputs\.lab\s*\|\|\s*'te-dev-aws'\s*\}\}\s*\n\s*cancel-in-progress:\s*false",
         )
 
     def test_step_1_refuses_when_labkit_read_token_is_missing(self):
