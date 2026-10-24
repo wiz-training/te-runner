@@ -51,10 +51,15 @@ def list_tags(repo):
     )
     if r.returncode != 0:
         raise OSError(f"git tag failed in {repo}: {r.stderr.strip()}")
+    sh = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--is-shallow-repository"],
+        capture_output=True, text=True, check=False,
+    )
+    shallow = sh.stdout.strip() == "true"
     tags = [t.strip() for t in r.stdout.splitlines() if version_key(t.strip()) is not None]
     tags.sort(key=version_key)
-    if not tags:
-        raise OSError(f"{repo}: no v* tags in clone (`git fetch --tags`?)")
+    if shallow or "v0.1.0" not in tags:
+        raise OSError(f"history incomplete: {len(tags)} tags, shallow={shallow}; fetch --tags --unshallow")
     return tags
 
 
@@ -155,12 +160,19 @@ def self_test():
         git("add", "wizlab/cli.py")
         git("commit", "-q", "-m", "init")
 
-        try:
-            compute_floors(repo)
-            print("self-test FAIL: expected OSError with no tags", file=sys.stderr)
-            return 1
-        except OSError:
-            pass
+        for bad_tag in (None, "v0.1.83"):
+            if bad_tag:
+                git("tag", bad_tag)
+            try:
+                compute_floors(repo)
+                print(f"self-test FAIL: expected OSError with incomplete history (tag={bad_tag})", file=sys.stderr)
+                return 1
+            except OSError as e:
+                if "history incomplete:" not in str(e):
+                    print(f"self-test FAIL: unexpected error {e}", file=sys.stderr)
+                    return 1
+            if bad_tag:
+                git("tag", "-d", bad_tag)
 
         git("tag", "v0.1.0")
         cli.write_text(
