@@ -23,9 +23,13 @@ jobs:
     env:
       LAB: ${{ inputs.lab || 'te-dev-aws' }}
       INSTRUQT_API: ${{ secrets.INSTRUQT_TOKEN }}
-      WIZLAB_PLAY_DIR: ${{ runner.temp }}/wizlab-play-${{ inputs.lab || 'te-dev-aws' }}
-      CANARY_STATE_DIR: ${{ runner.temp }}/canary-state
     steps:
+      # `runner.temp` is not a valid context in a job-level `env:` (GitHub rejects the dispatch with
+      # "Unrecognized named-value: 'runner'"), so the two paths are set from inside a step instead.
+      - name: paths
+        run: |
+          echo "WIZLAB_PLAY_DIR=$RUNNER_TEMP/wizlab-play-$LAB" >> "$GITHUB_ENV"
+          echo "CANARY_STATE_DIR=$RUNNER_TEMP/canary-state" >> "$GITHUB_ENV"
       - name: check required secrets
         env:
           LABKIT_READ_TOKEN: ${{ secrets.LABKIT_READ_TOKEN }}
