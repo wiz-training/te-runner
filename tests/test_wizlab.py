@@ -1489,6 +1489,50 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         with fake_api(self._api(find, bytype)):
             self.assertEqual([n["id"] for n in wz.find_connector("111111111111")], ["a"])
 
+    def test_recycled_account_foreign_connector_is_deleted_by_ensure_and_ignored_by_inspect(self):
+        """A recycled lease account carrying a previous session's `lab-<other>` connector (or a connector
+        bound to `lab-<other>`'s Outpost) must be evicted by `ensure` before converging, and ignored by
+        `inspect` so it neither grades a fresh check as passed nor shadows this session's connector."""
+        env = {"INSTRUQT_SESSION_ID": "x"}
+        acct, sub = "111111111111", AzureConnector.SUB
+        foreign_aws = {**InspectContract.CONNECTOR, "id": "old", "name": "lab-old-connector"}
+        foreign_outpost = {**InspectContract.CONNECTOR, "id": "old-o", "name": "custom-conn",
+                           "outpost": {"id": "o-old", "name": "lab-old"}}
+        foreign_gcp = {"id": "old-g", "name": "lab-old-connector", "enabled": True, "status": "CONNECTED",
+                       "type": {"id": "gcp"}, "config": {"projectId": "wiz-lab-42"}}
+        foreign_az = {"id": "old-z", "name": "lab-old-connector", "enabled": True, "status": "CONNECTED",
+                      "type": {"id": "azure"}, "config": {"subscriptionId": sub}}
+        for argv, node, created in (
+            (["--account-id", acct], foreign_aws, InspectContract.CONNECTOR),
+            (["--account-id", acct], foreign_outpost, InspectContract.CONNECTOR),
+            (["--cloud", "gcp", "--account-id", "wiz-lab-42"], foreign_gcp,
+             {**foreign_gcp, "id": "new-g", "name": "lab-x-connector"}),
+            (["--cloud", "azure", "--account-id", sub, "--tenant-id", "dir-1"], foreign_az,
+             {**foreign_az, "id": "new-z", "name": "lab-x-connector"}),
+        ):
+            with self.subTest(argv=argv, foreign=node["id"]):
+                wiz = FakeWiz(connectors=_conn(node), deleteConnector={"_stub": None},
+                              createConnector={"connector": created})
+                code = exit_code(wz.cmd_connector_ensure, argv, wiz=wiz, env=env)
+                self.assertEqual((code, _mutations(wiz)), (0, ["deleteConnector", "createConnector"]))
+                self.assertEqual(wiz.sent("deleteConnector"), [{"id": node["id"]}])
+                self.assertEqual(wiz.sent("createConnector")[0]["input"]["name"], "lab-x-connector")
+        # inspect ignores a foreign CONNECTED connector when alone, and grades this session's when both exist.
+        wiz_only_foreign = FakeWiz(connectors=_conn(foreign_aws))
+        self.assertEqual(exit_code(wz.cmd_connector_inspect, ["--account-id", acct],
+                                   wiz=wiz_only_foreign, env=env), 1)
+        mine_scanning = {**InspectContract.CONNECTOR, "id": "mine", "status": "INITIAL_SCANNING"}
+        wiz_both = FakeWiz(connectors=_conn(foreign_aws, mine_scanning))
+        self.assertEqual(exit_code(wz.cmd_connector_inspect, ["--account-id", acct, "--require", "exists"],
+                                   wiz=wiz_both, env=env), 0)
+        self.assertEqual(exit_code(wz.cmd_connector_inspect, ["--account-id", acct, "--require", "healthy"],
+                                   wiz=wiz_both, env=env), 1)
+        # delete remains unfiltered so a reaper removes every connector on the account.
+        wiz_del = FakeWiz(connectors=_conn(foreign_aws), deleteConnector={"_stub": None})
+        self.assertEqual(exit_code(wz.cmd_connector_delete, ["--account-id", acct],
+                                   wiz=wiz_del, env=env), 0)
+        self.assertEqual(wiz_del.sent("deleteConnector"), [{"id": "old"}])
+
     HANDLER: typing.ClassVar = {"list": "reports", "filter": "search", "delete": "deleteReport",
                                 "soft": False, "deleter": None}
 
@@ -2208,6 +2252,17 @@ class ConnectorLookupLayers(unittest.TestCase):
         # Nothing linked yet, but the stem finds it — and BY_TYPE is never consulted.
         with fake_api(self._api(find=[], search=[self.GCP])) as api:
             self.assertEqual([n["id"] for n in wz.find_connector("proj-1", "gcp", "lab-s1")], ["g"])
+        self.assertNotIn(wz.BY_TYPE, [c[0][0] for c in api.call_args_list])
+
+    def test_search_runs_when_find_returns_only_a_foreign_connector_and_ranks_owned_first(self):
+        # A linked leftover from a prior session must not retire SEARCH during the 1-2 min pre-link window
+        # for this session's connector; duplicates across layers merge by id, and stem-owned ranks first,
+        # then learner-named, then foreign.
+        foreign = {**self.GCP, "id": "old", "name": "lab-old-connector"}
+        learner = {**self.GCP, "id": "lrn", "name": "my-gcp-connector"}
+        with fake_api(self._api(find=[foreign, learner], search=[foreign, self.GCP])) as api:
+            got = [n["id"] for n in wz.find_connector("proj-1", "gcp", "lab-s1")]
+        self.assertEqual(got, ["g", "lrn", "old"])
         self.assertNotIn(wz.BY_TYPE, [c[0][0] for c in api.call_args_list])
 
     def test_search_result_must_still_target_the_account(self):
@@ -2964,6 +3019,32 @@ class OutpostConnectorBinding(unittest.TestCase):
         patch = calls[0][1]["input"]["patch"]["authParams"]
         self.assertEqual(patch["outpostId"], "o1")
         self.assertEqual(patch["diskAnalyzer"], {"scanner": {"roleARN": "arn:s"}})
+
+    def test_learner_named_connector_bound_to_this_sessions_outpost_survives_ensure(self):
+        # In te-wiz-outpost-aws-201 the guide never tells the learner to name the connector `lab-<sid>`,
+        # and solve_bind.sh runs `connector ensure --outpost-name lab-<sid>`: a non-`lab-` connector is
+        # never foreign, so it is preserved (no-op when already bound, patched in place when unbound).
+        learner_bound = {**self._node({"id": "o1", "name": "lab-x"}), "id": "lrn", "name": "aws-prod-conn"}
+        argv = ["--account-id", "111111111111", "--session", "x", "--outpost-name", "lab-x",
+                "--scanner-role-arn", "arn:s", "--role-arn",
+                "arn:aws:iam::111111111111:role/WizAccess-Role"]
+        with mock.patch.object(_owner("find_connector"), "find_connector", return_value=[learner_bound]), \
+             mock.patch.object(_owner("_resolve_outpost"), "_resolve_outpost", return_value={"id": "o1"}), \
+             mock.patch.object(_owner("api"), "api") as api, exits() as cm:
+            call(wz.cmd_connector_ensure, argv)
+        self.assertEqual(cm.code, 0)
+        api.assert_not_called()
+        # And when a foreign `lab-old-connector` sits beside the learner's connector, only the foreign
+        # one is deleted and the learner's connector is kept.
+        foreign = {**self._node({"id": "o-old", "name": "lab-old"}), "id": "old", "name": "lab-old-connector"}
+        calls = []
+        with mock.patch.object(_owner("find_connector"), "find_connector", return_value=[learner_bound, foreign]), \
+             mock.patch.object(_owner("_resolve_outpost"), "_resolve_outpost", return_value={"id": "o1"}), \
+             mock.patch.object(_owner("api"), "api", side_effect=lambda q, v: (calls.append((q, v)), ({}, "tid"))[1]), \
+             exits() as cm:
+            call(wz.cmd_connector_ensure, argv)
+        self.assertEqual(cm.code, 0)
+        self.assertEqual(calls, [(wz.DELETE, {"id": "old"})])
 
 
 class ServiceAccountGrading(unittest.TestCase):
