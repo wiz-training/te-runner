@@ -73,41 +73,84 @@ def _parents(nodes, cloud):
     return [n for n in nodes if (n.get("type") or {}).get("id") == cloud]
 
 
-def find_connector(account_id, cloud="aws", stem=None):
-    """Connectors whose OWN config targets the account, active-first.
+def _foreign(node, stem):
+    """True when `node` carries another session's `lab-<sid>` name or Outpost binding. A non-`lab-`
+    connector (learner-named in the console) is never foreign."""
+    if not stem:
+        return False
+    prefix = f"{os.getenv('WIZLAB_SESSION_PREFIX', 'lab')}-"
+    name = node.get("name") or ""
+    oname = (node.get("outpost") or {}).get("name") or ""
+    return (name.startswith(prefix) and not name.startswith(stem)) or (
+        oname.startswith(prefix) and oname != stem
+    )
 
-    Three lookups, cheapest-and-most-correct first. Gate each on finding no PARENT, never on no
-    nodes: Wiz attaches a builtin pseudo-connector to every account, so "no nodes" never occurs and
-    would silently retire the fallbacks — the exact bug that made delete miss a 3s-old connector.
+
+def _owned(node, stem):
+    """True when `node` is named on `stem` and not bound to another session's Outpost."""
+    return bool(stem and (node.get("name") or "").startswith(stem) and not _foreign(node, stem))
+
+
+def _merge_parents(existing, nodes, cloud, account_id=None):
+    seen = {n.get("id") for n in existing}
+    extra = [n for n in _parents(nodes, cloud) if not account_id or _targets(n, account_id)]
+    return existing + [n for n in extra if n.get("id") not in seen]
+
+
+def find_connector(account_id, cloud="aws", stem=None):
+    """Connectors whose OWN config targets the account, stem-owned and active-first.
+
+    Three lookups, cheapest-and-most-correct first. Gate each on finding no PARENT (or no stem-owned /
+    non-foreign parent when `stem` is known), never on no nodes: Wiz attaches a builtin pseudo-connector
+    to every account, so "no nodes" never occurs and would silently retire the fallbacks — the exact bug
+    that made delete miss a 3s-old connector, and a leftover `lab-<old>` connector on a recycled lease
+    account must not hide this session's `lab-<sid>-connector` in the 1-2 min pre-link window.
 
     1. cloudAccountExternalId — the account LINK, which Wiz creates 1-2 min AFTER the connector, so a
        check run right after create/onboarding won't match yet.
-    2. name search, when the caller knows this session's stem — server-side, bounded by a
-       session-unique name, so it covers the pre-link window with no page-size cliff.
+    2. name search, when the caller knows this session's stem and step 1 returned no stem-owned parent —
+       server-side, bounded by a session-unique name, so it covers the pre-link window with no page-size
+       cliff.
     3. BY_TYPE — matches the connector's own config for anything NOT named on the stem (a learner who
-       typed a different name, a pre-existing connector). It walks every page: a tenant holds far more
-       connectors than one page, and stopping at the first would make "no match" stop meaning "absent",
-       which reports learner state that was never read and lets `ensure` create a duplicate of a
-       connector it merely couldn't see. A walk that cannot be trusted to be complete exits 3
-       (core._all_nodes) rather than concluding."""
+       typed a different name, a pre-existing connector) when steps 1-2 found no non-foreign parent. It
+       walks every page: a tenant holds far more connectors than one page, and stopping at the first
+       would make "no match" stop meaning "absent", which reports learner state that was never read and
+       lets `ensure` create a duplicate of a connector it merely couldn't see. A walk that cannot be
+       trusted to be complete exits 3 (core._all_nodes) rather than concluding."""
     data, _ = core.api(FIND, {"ids": [account_id]})
-    parents = _parents(((data.get("connectors") or {}).get("nodes")) or [], cloud)
-    if not parents and stem:
+    parents = _merge_parents([], ((data.get("connectors") or {}).get("nodes")) or [], cloud)
+    if stem and not any(_owned(n, stem) for n in parents):
         data, _ = core.api(SEARCH, {"s": stem})
-        nodes = [n for n in (((data.get("connectors") or {}).get("nodes")) or []) if _targets(n, account_id)]
-        parents = _parents(nodes, cloud)
-    if not parents:
+        parents = _merge_parents(parents, ((data.get("connectors") or {}).get("nodes")) or [], cloud, account_id)
+    if not [n for n in parents if not _foreign(n, stem)]:
         nodes = core._all_nodes(BY_TYPE, {"t": [cloud]}, "connectors")
-        parents = _parents([n for n in nodes if _targets(n, account_id)], cloud)
-    # An active connector outweighs a stale ERROR one left on a recycled account.
-    return sorted(parents, key=lambda n: not (n.get("enabled") and n.get("status") != "ERROR"))
+        parents = _merge_parents(parents, nodes, cloud, account_id)
+    # This session's stem outweighs a learner name, which outweighs a foreign leftover; within each tier,
+    # an active connector outweighs a stale ERROR one.
+    return sorted(
+        parents,
+        key=lambda n: (not _owned(n, stem), _foreign(n, stem), not (n.get("enabled") and n.get("status") != "ERROR")),
+    )
+
+
+def _reap_foreign(account, cloud, stem):
+    """Delete any foreign `lab-<other>` connector on `account` and return the remaining matches."""
+    matches = []
+    for n in find_connector(account, cloud, stem):
+        if _foreign(n, stem):
+            core.api(DELETE, {"id": n["id"]})
+            print(f"deleted stale connector {n['name']} ({n['id']})")
+        else:
+            matches.append(n)
+    return matches
 
 
 def cmd_connector_inspect(args):
     cloud = args.cloud
     account = core._account_id(args, "connector inspect")
     require = args.require
-    matches = find_connector(account, cloud, core._stem_opt(args))
+    stem = core._stem_opt(args)
+    matches = [n for n in find_connector(account, cloud, stem) if not _foreign(n, stem)]
     if not matches:
         print(f"no connector targets {account}")
         sys.exit(1)
@@ -141,7 +184,7 @@ def _ensure_gcp(args, account):
     """GCP has nothing to converge: the connector carries a project id and Wiz's own managed identity,
     neither of which can drift the way an AWS customerRoleARN does (there is no customer-side role).
     So this is create-if-absent only — the repair path AWS needs has no GCP equivalent."""
-    matches = find_connector(account, "gcp", core._stem_opt(args))
+    matches = _reap_foreign(account, "gcp", core._stem_opt(args))
     if matches:
         print(f"connector {matches[0]['name']} already targets project {account}; nothing to do")
         return
@@ -167,7 +210,7 @@ def _ensure_azure(args, account):
     if not tenant_id:
         core.die(2, "connector ensure --cloud azure needs --tenant-id (or ARM_TENANT_ID): the connector "
                "stores the directory the subscription belongs to")
-    matches = find_connector(account, "azure", core._stem_opt(args))
+    matches = _reap_foreign(account, "azure", core._stem_opt(args))
     if matches:
         print(f"connector {matches[0]['name']} already targets subscription {account}; nothing to do")
         return
@@ -291,7 +334,7 @@ def cmd_connector_ensure(args):
         return _ensure_azure(args, account)
     auth = _aws_auth_params(args, account)
     role_arn, outpost_id = auth["customerRoleARN"], auth.get("outpostId")
-    matches = find_connector(account, cloud, core._stem_opt(args))
+    matches = _reap_foreign(account, cloud, core._stem_opt(args))
     if matches:
         n = matches[0]
         cur = (n.get("config") or {}).get("customerRoleARN") or ""

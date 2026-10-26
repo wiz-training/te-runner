@@ -56,9 +56,9 @@ verb cannot make that true it exits 3 naming the difference and mutates nothing.
 | noun | object exists | rule |
 |---|---|---|
 | sensor, apiaccount, serviceaccount, mcp | any | delete, re-mint, emit credentials: the secret is shown once and not re-fetchable |
-| connector (aws), workflow | drifted, or connector `--reauth` | patch / reset / rotate to the requested state; `--reauth` patches `authParams` unchanged, which re-inits the connector |
+| connector (aws), workflow | drifted, foreign session, or connector `--reauth` | delete any foreign `lab-<other>` connector on the account first; patch / reset / rotate to the requested state, or create when none remains; `--reauth` patches `authParams` unchanged, which re-inits the connector |
 | user | any | one `action: create` call to the Okta router with a freshly generated password, every run; wizlab reads back only `login` and emits `WIZ_USER`/`WIZ_PWD`. `user inspect` reads Okta; `--wiz` reads the tenant's `users` record `user delete` removes, with the tenant pair alone |
-| connector (gcp, azure) | any | left as found, exit 0: nothing in it can drift |
+| connector (gcp, azure) | any | delete any foreign `lab-<other>` connector on the account first; an existing non-foreign one is left as found, exit 0: nothing in it can drift |
 | policy | flags differ from the live params | exit 3, no mutation: a shared tenant fixture other labs grade against changes deliberately |
 | outpost | `--role-arn`/`--region` differ | exit 3, no mutation: a role change is a knowing delete-and-recreate |
 
@@ -117,6 +117,7 @@ The tag that first reads each contract; a lab pins at or above the highest row i
 | v0.1.80 | `user ensure` redacts `WIZ_PWD` on stdout under an exec; `serviceaccount\|apiaccount ensure --out-file <path>` takes the pair without the play log seeing it |
 | v0.1.81 | `--out-file` redacts stdout whatever `$EXEC_OUTPUT` holds: on v0.1.80 a caller blanking it got the secret printed anyway |
 | v0.1.82 | `user reap` releases code-lab slot claims whose commit message is the stem (`WIZ_LABS_GH_APP`) |
+| v0.1.84 | `connector ensure` deletes any foreign `lab-<other>` connector on the account before converging (preserving learner-named connectors); `connector inspect` filters foreign `lab-<other>` connectors out and ranks this session's first |
 
 <!-- verb-floors:begin -->
 | noun | verb | first tag |
@@ -252,7 +253,11 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   `authParams.customerRoleARN`; `--outpost-id`, or `--outpost-name` (default: the session stem, the name
   the console dropdown shows), with `--scanner-role-arn` also sets `authParams.outpostId` and
   `authParams.diskAnalyzer.scanner.roleARN` — the second phase of an Outpost deploy, without which Wiz
-  builds no scan cluster. `inspect --require exists|healthy|outpost-bound`.
+  builds no scan cluster. `inspect --require exists|healthy|outpost-bound`. On a recycled lease account,
+  a connector whose name or bound Outpost name carries another session's `lab-<sid>` prefix is foreign:
+  `ensure` deletes foreign connectors before converging or creating (leaving a non-`lab-` learner-named
+  connector untouched), `inspect` filters foreign connectors out and ranks a stem-named connector ahead
+  of a learner-named one, and `delete` removes all connectors for the account.
 - `sensor ensure|delete|inspect` — a `type:SENSOR` service account is the sensor's credential
   (`ensure` re-mints it named on the session stem, emits `WIZ_API_CLIENT_ID/SECRET`; `delete` removes it;
   the reaper's ServiceAccount sweep also covers it). `inspect --require active` asserts the sensor
