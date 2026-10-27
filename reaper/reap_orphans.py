@@ -174,22 +174,24 @@ def _reap_session(tenant, sid, commit):
     return DONE if rc == 0 and deleted else FAILED
 
 
-def _reap_slot_claims(sids):
+def _reap_slot_claims(sids, commit):
     """Sweep code-lab pool claims once across all stopped sessions and expired claims instead of repeating
-    matching-refs and commit lookups inside every `wizlab user reap` subprocess."""
+    matching-refs and commit lookups inside every `wizlab user reap` subprocess. A dry run reads the same
+    refs, so it lists the slot backlog a commit run would release."""
     if not os.getenv("WIZ_LABS_GH_APP"):
         print("slot claims: WIZ_LABS_GH_APP not set, not swept", file=sys.stderr)
         return False
     stems = {_core._lab_stem(sid) for sid in sids}
     _codelab._TOKEN.clear()
     try:
-        claims = _codelab.release_claims_for(stems, True)
+        claims = _codelab.release_claims_for(stems, commit)
     except _core.WizlabError as e:
         print(f"DEFERRED slot claims: {e}")
         return True
     removed = sum(1 for _, _, o in claims if o == "removed")
     absent = sum(1 for _, _, o in claims if o == "absent")
-    print(f"# slot claims: {removed} removed, {absent} absent", file=sys.stderr)
+    verb = "removed" if commit else "to release (dry-run)"
+    print(f"# slot claims: {removed} {verb}, {absent} absent", file=sys.stderr)
     return False
 
 
@@ -233,7 +235,7 @@ def main():
             failed.setdefault(tenant, []).append(sid)
         elif outcome == DEFERRED:
             deferred.append(sid)
-    slots_deferred = _reap_slot_claims([sid for _, sid in sessions]) if commit else False
+    slots_deferred = _reap_slot_claims([sid for _, sid in sessions], commit)
     total = len(sessions)
     nfailed = sum(len(v) for v in failed.values())
     completed = total - nfailed - len(deferred)
