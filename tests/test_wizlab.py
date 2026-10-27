@@ -580,8 +580,10 @@ class FakeGitHub:
     REPO = "/repos/wiz-training/te-code-juice-shop-101-02"
 
     def __init__(self, slots=("01", "02"), claims=None, claim_ages=None,
-                 dockerfile="FROM x\nUSER root\nENV LAB_SLOT=02\n", prs=(), branches=None, fail=False):
+                 dockerfile="FROM x\nUSER root\nENV LAB_SLOT=02\n", prs=(), branches=None, fail=False,
+                 extra_repos=()):
         self.slots, self.claims, self.claim_ages = list(slots), dict(claims or {}), dict(claim_ages or {})
+        self.extra_repos = list(extra_repos)
         self.claim_shas = {k: f"sha-{k}" for k in self.claims}
         self.dockerfile, self.prs, self.fail = dockerfile, [dict(p) for p in prs], fail
         self.calls, self.bodies, self.puts, self.commits = [], [], [], {}
@@ -598,7 +600,15 @@ class FakeGitHub:
         if path.startswith("/app/installations/") and method == "POST":
             return 201, {"token": "ghs_test"}
         if path.startswith("/orgs/wiz-training/repos"):
-            return 200, [{"name": f"te-code-{self.LAB}-{s}"} for s in self.slots]
+            all_repos = [{"name": f"te-code-{self.LAB}-{s}"} for s in self.slots] + [
+                {"name": name} for name in self.extra_repos
+            ]
+            m_page = re.search(r"[?&]page=(\d+)", path)
+            m_per = re.search(r"[?&]per_page=(\d+)", path)
+            page = int(m_page.group(1)) if m_page else 1
+            per_page = int(m_per.group(1)) if m_per else 100
+            start = (page - 1) * per_page
+            return 200, all_repos[start:start + per_page]
         if path == f"{self.CONTROL}/git/matching-refs/{wz.CLAIM_NS}/":
             return 200, [{"ref": f"refs/{wz.CLAIM_NS}/{self._ref_lab_slot(k)[0]}/slot-{self._ref_lab_slot(k)[1]}",
                           "object": {"sha": self.claim_shas.get(k, f"sha-{k}")}} for k in sorted(self.claims)]
@@ -625,7 +635,7 @@ class FakeGitHub:
             slot = body["ref"].rsplit("slot-", 1)[-1]
             if slot in self.claims:
                 return 422, {"message": "Reference already exists"}
-            self.claims[slot] = self.commits["pending"]
+            self.claims[slot] = (self.commits.get(body["sha"]) or {}).get("message", self.commits["pending"])
             self.claim_shas[slot] = body["sha"]
             self.claim_ages.pop(slot, None)
             return 201, {}
@@ -884,6 +894,63 @@ class GitHubContract(unittest.TestCase):
         self.assertEqual(self._run(wz.cmd_slot_claim, ["--lab", "juice-shop-101"], gh_full, _gh_call=raced_full), 1)
         self.assertEqual(gh_full.claims, {"01": "lab-winner", "02": "lab-fresh"})
         self.assertFalse([m for m, _ in gh_full.calls if m == "DELETE"])
+
+    def test_claim_filters_non_numeric_suffixes_paginates_org_repos_and_reuses_fresh_commit(self):
+        # Prefix-sharing repos without a pure numeric slot suffix must not be treated as pool slots.
+        gh_suffix, out_suffix = FakeGitHub(
+            slots=("02",),
+            extra_repos=("te-code-juice-shop-101-v2-01", "te-code-juice-shop-101-extra", "te-code-juice-shop-101-"),
+        ), io.StringIO()
+        self.assertEqual(self._run(wz.cmd_slot_claim, ["--lab", "juice-shop-101"], gh_suffix, out=out_suffix), 0)
+        self.assertIn("SLOT=02\n", out_suffix.getvalue())
+        self.assertEqual(gh_suffix.claims, {"02": self.STEM})
+
+        # Public org repo listing paginates past 100 items and stops on the first short page.
+        filler = [f"other-repo-{i:03d}" for i in range(105)] + ["te-code-juice-shop-101-01"]
+        gh_paged, out_paged = FakeGitHub(slots=("02",), extra_repos=filler), io.StringIO()
+        self.assertEqual(self._run(wz.cmd_slot_claim, ["--lab", "juice-shop-101"], gh_paged, out=out_paged), 0)
+        self.assertIn("SLOT=01\n", out_paged.getvalue())
+        repo_gets = [p for m, p in gh_paged.calls if m == "GET" and p.startswith("/orgs/wiz-training/repos")]
+        self.assertEqual(len(repo_gets), 2)
+        self.assertIn("page=1", repo_gets[0])
+        self.assertIn("page=2", repo_gets[1])
+
+        # Safety cap: an endpoint that returns 100 repos on every page exits 3 rather than looping forever.
+        def endless_repos(method, path, body=None, token=None):
+            if path.startswith("/orgs/wiz-training/repos"):
+                gh_paged.calls.append((method, path))
+                gh_paged.bodies.append(body)
+                return 200, [{"name": f"other-{i}"} for i in range(100)]
+            return gh_paged(method, path, body, token)
+
+        self.assertEqual(self._run(wz.cmd_slot_claim, ["--lab", "juice-shop-101"], gh_paged, _gh_call=endless_repos), 3)
+
+        # Contended unclaimed slots reuse one fresh root commit instead of POST /git/commits per 422.
+        gh_race, out_race = FakeGitHub(slots=("01", "02", "03")), io.StringIO()
+
+        def contend_first_two(method, path, body=None, token=None):
+            if method == "POST" and path == f"{gh_race.CONTROL}/git/refs":
+                if body["ref"].endswith("/slot-01"):
+                    gh_race.claims["01"] = "lab-r1"
+                elif body["ref"].endswith("/slot-02"):
+                    gh_race.claims["02"] = "lab-r2"
+            return gh_race(method, path, body, token)
+
+        self.assertEqual(
+            self._run(wz.cmd_slot_claim, ["--lab", "juice-shop-101"], gh_race,
+                      out=out_race, _gh_call=contend_first_two),
+            0,
+        )
+        self.assertIn("SLOT=03\n", out_race.getvalue())
+        self.assertEqual(gh_race.claims, {"01": "lab-r1", "02": "lab-r2", "03": self.STEM})
+        commit_posts = [b for (m, p), b in zip(gh_race.calls, gh_race.bodies, strict=True)
+                        if m == "POST" and p == f"{gh_race.CONTROL}/git/commits"]
+        self.assertEqual(len(commit_posts), 1)
+        self.assertEqual(commit_posts[0]["parents"], [])
+        ref_shas = [b["sha"] for (m, p), b in zip(gh_race.calls, gh_race.bodies, strict=True)
+                    if m == "POST" and p == f"{gh_race.CONTROL}/git/refs"]
+        self.assertEqual(len(ref_shas), 3)
+        self.assertEqual(len(set(ref_shas)), 1)
 
     def test_release_drops_only_this_sessions_claims_and_closes_its_patch_pr_and_branch(self):
         gh = FakeGitHub(
