@@ -199,7 +199,7 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
 `apiaccount` and `mcp`, and for Workflows labs `workflow` and `workflow-run`:
 - `session verify [--min-runner vX.Y.Z]` — env/session health and runner floor check; see §Runner identity, and the floor `session verify` enforces.
 - `role inspect|ensure` — lease-account IAM role trust grading (`inspect`) and AWS trust creation/repair (`ensure`); see §What `ensure` promises and §Credential nouns.
-- `instance inspect --account-id <id> [--type VIRTUAL_MACHINE] [--require exists]` — asserts Wiz enumerates ≥1 cloud resource of `--type` in the account (`cloudResources`); see §Grammar.
+- `instance inspect --account-id <id> [--type VIRTUAL_MACHINE]` — asserts Wiz enumerates ≥1 cloud resource of `--type` in the account (`cloudResources`); see §Grammar.
 - `user ensure|inspect|delete|reap` — Okta Workflows user provisioning/grading (`ensure`, `inspect`), Wiz user removal (`inspect --wiz`, `delete`), and session footprint cleanup (`reap`); see §What `ensure` promises and §What `user reap` exit 0 promises. `user reap --commit` requires a 12-char `[a-z0-9]` Instruqt play id (exit 2 otherwise; dry-run accepts any session id).
 - `wiz tenant` — emits live tenant connector and endpoint facts as `KEY=value` (+ `$EXEC_OUTPUT`); see §Grammar.
 - `k8sconnector ensure|inspect|delete --cluster <eks name> | --cluster-arn <arn>` — a Kubernetes
