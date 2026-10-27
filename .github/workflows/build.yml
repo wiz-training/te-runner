@@ -62,6 +62,9 @@ jobs:
           docker run --rm "$IMG" sh -c '
             WIZ_TENANT=T WIZ_T_CLIENT_ID=i WIZ_T_CLIENT_SECRET=s AWS_DEFAULT_REGION=us-east-1 \
               OKTA_WF_INVOKE_URL=u OKTA_WF_CLIENT_TOKEN=t LAB_PROFILE=p wizlab-grant "session verify" || exit 1
+            rc=0; err=$(su -s /bin/bash learner -c "wizlab session verify --min-runner v99.0.0" 2>&1 >/dev/null) || rc=$?
+            test "$rc" -eq 2 || exit 1
+            printf "%s\n" "$err" | grep -qF "below this lab'\''s floor" || exit 1
             rc=0; su -s /bin/bash learner -c "wizlab connector inspect" >/dev/null 2>&1 || rc=$?; test "$rc" -eq 2 || exit 1
             rc=0; su -s /bin/bash learner -c "printenv WIZ_T_CLIENT_SECRET" >/dev/null 2>&1 || rc=$?; test "$rc" -ne 0 || exit 1
             grep -q "^AWS_DEFAULT_REGION=" /run/lab/wiz.env || exit 1

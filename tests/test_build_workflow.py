@@ -82,6 +82,80 @@ class BuildWorkflowTests(unittest.TestCase):
             self.assertEqual(bad.returncode, 1)
             self.assertIn("::error::", bad.stdout + bad.stderr)
 
+    def test_smoke_test_exercises_granted_learner_verb_past_wrapper(self):
+        """Before IMAGE-3, smoke-test checked learner exit 2 before wizlab-grant and ungranted
+        `connector inspect` after wizlab-grant, never executing wizlab-learner's `. /run/lab/wiz.env`
+        and `exec /usr/local/bin/wizlab "$@"` positive path."""
+        steps = dict(_image_steps(BUILD_YML.read_text()))
+        smoke = (_run_block(steps["smoke-test the image"])
+                 .replace("${{ github.ref_name }}", "v0.1.88")
+                 .replace("${{ github.sha }}", "3986dec"))
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            grant_inner = tmp / "grant_inner.sh"
+            docker = tmp / "docker"
+            docker.write_text(
+                "#!/bin/sh\n"
+                "prev2=''; prev=''\n"
+                "for a in \"$@\"; do\n"
+                "  if [ \"$prev2\" = \"sh\" ] && [ \"$prev\" = \"-c\" ]; then\n"
+                "    sh -n -c \"$a\" || exit 1\n"
+                "    case \"$a\" in *wizlab-grant*) printf '%s\\n' \"$a\" > \"$GRANT_INNER\" ;; esac\n"
+                "    exit 0\n"
+                "  fi\n"
+                "  prev2=\"$prev\"; prev=\"$a\"\n"
+                "done\n"
+                "case \"$*\" in *\" wizlab\"*) exit 2 ;; esac\n"
+                "exit 0\n"
+            )
+            docker.chmod(0o755)
+            env = {"PATH": f"{tmp}:/usr/bin:/bin", "IMG": "ghcr.io/wiz-training/te-runner:v0.1.88",
+                   "GRANT_INNER": str(grant_inner)}
+            outer = subprocess.run(["sh", "-e", "-c", smoke], env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(outer.returncode, 0, outer.stdout + outer.stderr)
+            self.assertTrue(grant_inner.is_file())
+
+            run_lab = tmp / "run" / "lab"
+            inner = grant_inner.read_text().replace("/run/lab", str(run_lab))
+            grant_bin = tmp / "wizlab-grant"
+            grant_bin.write_text((ROOT / "bin" / "wizlab-grant").read_text().replace("/run/lab", str(run_lab)))
+            grant_bin.chmod(0o755)
+            su_calls = tmp / "su_calls"
+            su_bin = tmp / "su"
+            su_bin.write_text(
+                "#!/bin/sh\n"
+                "# su -s /bin/bash learner -c <cmd>\n"
+                "cmd=\"$5\"\n"
+                "printf '%s\\n' \"$cmd\" >> \"$SU_CALLS\"\n"
+                "case \"$cmd\" in\n"
+                "  \"wizlab session verify --min-runner v99.0.0\")\n"
+                "    if [ \"${FLOOR_TO_STDOUT:-0}\" = \"1\" ]; then printf '%s\\n' \"$FLOOR_ERR\";\n"
+                "    else printf '%s\\n' \"$FLOOR_ERR\" >&2; fi\n"
+                "    exit \"$FLOOR_RC\" ;;\n"
+                "  \"wizlab connector inspect\") exit 2 ;;\n"
+                "  \"printenv \"*) exit 1 ;;\n"
+                "  *) exit 99 ;;\n"
+                "esac\n"
+            )
+            su_bin.chmod(0o755)
+
+            def run_inner(floor_rc, floor_err, to_stdout="0"):
+                su_calls.write_text("")
+                return subprocess.run(
+                    ["sh", "-e", "-c", inner],
+                    env={"PATH": f"{tmp}:/usr/bin:/bin", "SU_CALLS": str(su_calls),
+                         "FLOOR_RC": str(floor_rc), "FLOOR_ERR": floor_err, "FLOOR_TO_STDOUT": to_stdout},
+                    capture_output=True, text=True, check=False,
+                )
+
+            ok = run_inner(2, "wizlab: runner v0.1.88 is below this lab's floor v99.0.0")
+            self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+            self.assertIn("wizlab session verify --min-runner v99.0.0", su_calls.read_text().splitlines())
+            self.assertEqual(run_inner(2, "wizlab: 'session verify' is not permitted").returncode, 1)
+            self.assertEqual(run_inner(3, "wizlab: runner v0.1.88 is below this lab's floor v99.0.0").returncode, 1)
+            self.assertEqual(
+                run_inner(2, "wizlab: runner v0.1.88 is below this lab's floor v99.0.0", to_stdout="1").returncode, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
