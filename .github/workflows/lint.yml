@@ -4,6 +4,10 @@ on:
     branches: [main]
   pull_request:
   workflow_call:   # build.yml runs this on the tagged sha before it publishes
+# A called workflow inherits the caller's token scope unless it narrows it; build.yml carries
+# packages: write, which none of these third-party steps need.
+permissions:
+  contents: read
 jobs:
   lint:
     runs-on: ubuntu-24.04
@@ -23,6 +27,8 @@ jobs:
       - run: python tests/test_wizlab.py
       - run: python reaper/test_reap_orphans.py
       - run: python test_entrypoint.py
+      - run: python tests/test_build_workflow.py
+      - run: python tests/test_canary_workflow.py
       # The repo is public: a credential in a tracked file is published the moment it lands.
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
