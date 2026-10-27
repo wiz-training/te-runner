@@ -169,6 +169,7 @@ def cmd_user_inspect(args):
     confirms the delete. `--wiz` needs the tenant pair alone, never OKTA_WF_*."""
     if args.wiz:
         return _inspect_wiz_user(args)
+    core._unused(args, "Okta (pass --wiz)", "--domain")
     invoke_url, token = _okta_env()
     login = _okta_login(args)
     res = _okta_call(invoke_url, token, {"action": "inspect", "login": login})
@@ -196,6 +197,7 @@ def _wiz_users(email):
 
 
 def _inspect_wiz_user(args):
+    args.domain = args.domain or "wizlabs.cloudseclabs.io"
     email = core._lab_user_email(args)
     users = _wiz_users(email)
     if not users:

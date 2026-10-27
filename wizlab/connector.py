@@ -150,6 +150,8 @@ def cmd_connector_inspect(args):
     cloud = args.cloud
     account = core._account_id(args, "connector inspect")
     require = args.require
+    if require != "outpost-bound":
+        core._unused(args, f"--require {require}", "--outpost-id", "--outpost-name")
     stem = core._stem_opt(args)
     matches = [n for n in find_connector(account, cloud, stem) if not _foreign(n, stem)]
     if not matches:

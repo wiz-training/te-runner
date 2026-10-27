@@ -250,6 +250,7 @@ def cmd_role_inspect(args):
         core.die(2, "--trusts-service is aws-only; a service principal is an IAM trust-policy concept")
     if cloud in handlers:
         return handlers[cloud](args)
+    core._unused(args, "aws", "--account-id")
     role = args.role_name or ROLE_NAME
     role_obj = _aws_role(role)
     if service:
