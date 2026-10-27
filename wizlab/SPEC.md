@@ -72,7 +72,7 @@ print `label`, the stem `suffix`, the find document, field and variable builder,
 selection, the two `emit_keys`, an optional `status_field`, the `--require` predicates and the
 `_SWEEP_TYPES` member the reaper reaches it through. A new credential noun is a record plus its documents
 in its own module, and a row in `CredentialRecords`. Not records: `connector`, `k8sconnector`, `outpost`
-and `workflow` patch in place or exit 3 on drift, never re-mint; `role` is lease-account IAM; `user` is Okta.
+and `workflow` patch in place or exit 3 on drift, never re-mint; `role` is lease-account IAM (`role inspect [--cloud aws|gcp|azure] [--role-name N] [--account-id <id>] [--trusts-service <principal>]`; `role ensure [--cloud aws] [--role-name N] [--external-id <id>]`); `user` is Okta.
 
 ### Runner identity, and the floor `session verify` enforces
 The image carries its own `TE_RUNNER_TAG` + `TE_RUNNER_REV`, baked from the git tag and sha CI built
@@ -197,16 +197,17 @@ readable from every learner terminal.
 and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`, for Wiz Code labs
 `serviceaccount`, `code-scan`, `policy`, `correlation`, `pullrequest`, `slot` and `patch`, for agent labs
 `apiaccount` and `mcp`, and for Workflows labs `workflow` and `workflow-run`:
-- `session verify [--min-runner vX.Y.Z]` — env/session health and runner floor check; see §Runner identity, and the floor `session verify` enforces.
+- `session verify [--min-runner vX.Y.Z] [--cloud aws|gcp|azure] [--account-id <id>]` — env/session health, optional CSP identity check, and runner floor check; see §Runner identity, and the floor `session verify` enforces.
 - `role inspect|ensure` — lease-account IAM role trust grading (`inspect`) and AWS trust creation/repair (`ensure`); see §What `ensure` promises and §Credential nouns.
 - `instance inspect --account-id <id> [--type VIRTUAL_MACHINE]` — asserts Wiz enumerates ≥1 cloud resource of `--type` in the account (`cloudResources`); see §Grammar.
 - `user ensure|inspect|delete|reap` — Okta Workflows user provisioning/grading (`ensure`, `inspect`), Wiz user removal (`inspect --wiz`, `delete`), and session footprint cleanup (`reap`); see §What `ensure` promises and §What `user reap` exit 0 promises. `user reap --commit` requires a 12-char `[a-z0-9]` Instruqt play id (exit 2 otherwise; dry-run accepts any session id).
+  Flags (`--session <sid>` overrides `INSTRUQT_SESSION_ID` on all four): `ensure [--profile P]`; `inspect [--wiz] [--domain D]`; `delete [--domain D]`; `reap [--commit] [--domain D] [--email E] [--last-min 1440]`.
 - `wiz tenant` — emits live tenant connector and endpoint facts as `KEY=value` (+ `$EXEC_OUTPUT`); see §Grammar.
-- `k8sconnector ensure|inspect|delete --cluster <eks name> | --cluster-arn <arn>` — a Kubernetes
+- `k8sconnector ensure|inspect|delete [--session <sid>] [--cluster <eks name> | --cluster-arn <arn>]` — a Kubernetes
   connector the lab owns. Keyed on `connectors(filterBy:{kubernetesClusterExternalIds})`, where the EKS
   external id is the cluster ARN taken from `aws eks describe-cluster`, **never from a
   `KUBERNETES_CLUSTER` graph entity**: in the state these verbs grade (no connector) that entity does not
-  exist. `ensure --enabled true|false` is create-or-correct: `createConnector(type:"eks",
+  exist. `ensure [--name N] [--enabled true|false]` is create-or-correct: `createConnector(type:"eks",
   authParams:{apiServerEndpoint, authProvider:"service-account", clusterExternalID, tlsConfig:{serverCA},
   authProviderConfig:{serviceAccountToken}, isOnPrem:false}, extraConfig:{installationType:"Script"})`
   with a 24 h bound token from `kubectl create token kube-system/wiz-connector` (the lab applies that
@@ -223,11 +224,11 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   carrying the value; a CONTAINER_IMAGE's `subscriptionExternalId` is the repository owner's account; and
   `sourceProvider` is null on most scanned private images. Registry counters are not a signal in
   deployed-only mode, so nothing here reads `containerRegistries`.
-- `outpost ensure|delete|inspect` — a Wiz Outpost (Automated deploy in the customer account). `ensure`
+- `outpost ensure|delete|inspect [--session <sid>] [--name N]` — a Wiz Outpost (Automated deploy in the customer account). `ensure`
   createsOutpost named on the session stem, given `--role-arn` (the orchestrator TF module output Wiz
-  assumes); `inspect --require exists|initialized|connected` asserts the `OutpostStatus` enum and
+  assumes) and optional `--region`; `inspect --require exists|initialized|connected` asserts the `OutpostStatus` enum and
   `--require scanned` counts workload scans performed BY this Outpost (`resourceScanMetricsTrend`,
-  `--lookback-days` default 2); `delete` reaps by name as uninstall → poll to UNINSTALLED → delete
+  `--lookback-days` default 2); `delete` (`--id <id>` or `--name`) reaps as uninstall → poll to UNINSTALLED → delete
   (`--timeout`, default 600s); exit 0 when the uninstall outlives the wait (the record is left for the
   daily reaper), exit 1 on `PARTIALLY_UNINSTALLED` (`_OUTPOST_STUCK`): the uninstall cannot be re-fired
   and a solve must not wait on a delete that may be refused. `user reap` owns the same lifecycle as a
@@ -241,7 +242,7 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   All measured — grade and reap off `measurements.yaml outpost_lifecycle.aws`, never off the status
   name's plain meaning. On `ensure`, an existing Outpost with `allowedRegions: []` (the console
   default, unrestricted) is compatible with any `--region`; a non-empty list that differs exits 3.
-- `connector ensure|inspect|delete` — a Cloud Connector. `ensure` converges only on AWS: it creates
+- `connector ensure|inspect|delete --account-id <id> [--cloud aws|gcp|azure] [--session <sid>]` — a Cloud Connector. `ensure` (`[--role-arn <arn>]` on AWS, `[--tenant-id <id>]` on Azure) converges only on AWS: it creates
   the connector if absent, else corrects a drifted `authParams.customerRoleARN` (the repair path).
   `--reauth` patches `authParams` even when nothing drifted: the patch is synchronous and drops the
   connector to `INITIAL_SCANNING` with `errorCode` and `lastActivity` null. It does NOT recover a
@@ -257,18 +258,18 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   `authParams.customerRoleARN`; `--outpost-id`, or `--outpost-name` (default: the session stem, the name
   the console dropdown shows), with `--scanner-role-arn` also sets `authParams.outpostId` and
   `authParams.diskAnalyzer.scanner.roleARN` — the second phase of an Outpost deploy, without which Wiz
-  builds no scan cluster. `inspect --require exists|healthy|outpost-bound`. On a recycled lease account,
+  builds no scan cluster. `inspect --require exists|healthy|outpost-bound` (`--outpost-id` / `--outpost-name` narrow `outpost-bound`). On a recycled lease account,
   a connector whose name or bound Outpost name carries another session's `lab-<sid>` prefix is foreign:
   `ensure` deletes foreign connectors before converging or creating (leaving a non-`lab-` learner-named
   connector untouched), `inspect` filters foreign connectors out and ranks a stem-named connector ahead
   of a learner-named one, and `delete` removes all connectors for the account.
-- `sensor ensure|delete|inspect` — a `type:SENSOR` service account is the sensor's credential
-  (`ensure` re-mints it named on the session stem, emits `WIZ_API_CLIENT_ID/SECRET`; `delete` removes it;
-  the reaper's ServiceAccount sweep also covers it). `inspect --require active` asserts the sensor
+- `sensor ensure|delete|inspect [--session <sid>] [--name N]` — a `type:SENSOR` service account is the sensor's credential
+  (`ensure` re-mints it named on the session stem, emits `WIZ_API_CLIENT_ID/SECRET`; `delete` by `--id` or `--name` removes it;
+  the reaper's ServiceAccount sweep also covers it). `inspect [--require exists|active]` asserts the sensor
   named for the session reports `ACTIVE`. Scoping key: the installed sensor's name == the host name,
   which a lab pins to the session stem (neither `SensorFilters` nor `DetectionFilters` has a
   cloud-account/instance field).
-- `detection inspect --rule-name N [--match-only]` — asserts ≥1 detection, keyed on
+- `detection inspect --rule-name N [--name <sensor>] [--session <sid>] [--since-minutes 120] [--match-only]` — asserts ≥1 detection, keyed on
   `matchedRuleName` + `type` + the resolved `sensorId`. Never a rule id (tenant-specific) and never an
   Issue/Threat object (tenant-wide anti-burst cap). Default type `GENERATED_THREAT`; `--match-only`
   queries the sibling that matched and raised no threat.
@@ -282,12 +283,12 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   authorize route; on TE that entrypoint ends at Cognito's hosted login with 403). Last, the Cognito URL
   from `WIZ_<T>_COGNITO_SUFFIX` + `WIZ_<T>_SSO_CLIENT_ID`. The IdP's own SAML `loginURL` is never emitted:
   Cognito answers it "Invalid samlResponse or relayState".
-- `serviceaccount ensure|inspect|delete` — the on-the-fly credential `wizcli auth` uses, minted via a
+- `serviceaccount ensure|inspect|delete [--session <sid>] [--name N]` — the on-the-fly credential `wizcli auth` uses, minted via a
   CLI DEPLOYMENT (`createCliDeployment`), NOT `createServiceAccount`: `type:CLI` accounts are internal
-  and that mutation rejects them. `ensure` names it `<stem>-cli` and converges to one fresh deployment
+  and that mutation rejects them. `ensure [--out-file <path>]` names it `<stem>-cli` (or `--name`) and converges to one fresh deployment
   (delete-then-mint, since the secret is shown once), emitting `WIZ_CLIENT_ID` (the deployment SA's
-  `clientId`) + `WIZ_CLIENT_SECRET` (the payload's `clientSecret`) to stdout + `$EXEC_OUTPUT`.
-  `inspect --require exists` and `delete` (by `--id` or name) go through `deployments(type:WIZ_CLI)` /
+  `clientId`) + `WIZ_CLIENT_SECRET` (the payload's `clientSecret`) to stdout + `$EXEC_OUTPUT` (or writing the pair to `--out-file` and redacting stdout).
+  `inspect --require exists` (author/legacy-only: 0 lab-script callers, kept in `VERBS` for verb-floor compatibility) and `delete` (by `--id` or `--name`) go through `deployments(type:WIZ_CLI)` /
   `deleteCliDeployment`. The deployment's SA is named `<stem>-cli-deployment-<uuid>`, which the
   reaper's `ServiceAccount` `lab-<id>*` sweep finds and **cannot delete directly**:
   `deleteServiceAccount` answers `Internal service account cannot be deleted`, so the sweep routes the
@@ -296,7 +297,7 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   gone leaves the SA `unknown`, not `failed`: blocking would retain the session's user with no later
   pass able to clear it. The `sensor` path stays on `createServiceAccount(type:SENSOR)`, deletable
   directly.
-- `workflow inspect|ensure` and `workflow-run inspect|ensure` — an Automation Workflow, for labs whose
+- `workflow inspect|ensure [--session <sid>] [--name N]` and `workflow-run inspect|ensure [--session <sid>] [--name N]` — an Automation Workflow, for labs whose
   artifact is the workflow itself. `inspect --require exists|published`: **`published` is `enabled`, and
   that is the only signal there is** — `activeVersion`, `draftVersion` and `versions` read null/0 on
   every workflow of a live tenant, so a version-based assertion fails every learner while looking
@@ -307,7 +308,7 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   leftover on the same stem. `ensure` matches the **exact name** only: a prefix hit is the learner's
   workflow, which the patch would rename to the stem and whose siblings the duplicate sweep would delete.
 
-  `ensure --definition <file.json>` **validates, then patches in place, and creates only when absent.**
+  `ensure --definition <file.json> [--project-id <id>] [--dry-run]` **validates, then patches in place, and creates only when absent.**
   `updateAutomationWorkflow(input:{id, patchStrict})` is the mutation the console's Save sends, and
   `UpdateAutomationWorkflowPatchStrict` is `AutomationWorkflowDefinition` minus `projectId`. The patch
   keeps the workflow id, so the test runs earlier activities graded survive a later activity's solve.
@@ -324,7 +325,7 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   lab lands on the reap stem. **The definition JSON lives in the lab**, since which steps and cases a
   scenario wants is a config-shape assertion barred from `--require` below.
 
-  `workflow-run inspect --require completed|branch --branch N|error-path` grades a run's own signal —
+  `workflow-run inspect [--exact-name] [--run-id <id>] [--run-type TEST] --require completed|branch --branch N|error-path` grades a run's own signal —
   `AutomationWorkflowRunStepResult.outboundEdge`: a `SWITCH_CASE` case's `branchName` or its
   `defaultBranchName`, a `CONDITION`'s `true`/`false`, an unbranched step's `main` — so this asserts the
   routing *decision*, not the definition. `error-path` is the `outpost-bound` carve-out: every failed step
@@ -338,7 +339,7 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   the first 20 completed runs (an earlier run can satisfy a later check, or >20 runs can push a fresh run
   out of the window); `--run-id <id>` fetches only that run via the existing `id` filter and grades its
   steps alone.
-  `workflow-run ensure --data <file.json> --initial-step <step name>` fires a test run with a synthetic
+  `workflow-run ensure --data <file.json> --initial-step <step name> [--exact-name] [--trigger-type EVENT] [--timeout 60] [--interval 2.0]` fires a test run with a synthetic
   trigger payload and waits on **that run's id**, never "a completed run of this workflow" — the
   workflow's earlier runs already satisfy the latter, so a second call reports success while its own run
   is still in flight. `customData.initialSteps` is non-optional and step ids are minted per create, so
@@ -349,19 +350,19 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   No `delete` verb: `AutomationWorkflow` is already a `_SWEEP_TYPES` member, so the generic prefix sweep
   reaches it and a second path would be two places holding one fact. Never `TRIGGER_BLUE_AGENT` in a lab
   flow: manual Blue Agent runs are 5/day/tenant and a cohort exhausts them on learner two.
-- `apiaccount ensure|inspect|delete` — a `THIRD_PARTY` service account, the plain API credential an agent
+- `apiaccount ensure|inspect|delete [--session <sid>] [--name N]` — a `THIRD_PARTY` service account, the plain API credential an agent
   or a script in a lab reads the tenant with; the remote MCP server takes it in the `Wiz-Client-Id` /
-  `Wiz-Client-Secret` / `Wiz-DataCenter` headers with no integration object behind it. `ensure` names it
-  `<stem>-api` and converges to one fresh account (delete-then-mint, `clientSecret` readable only in the
-  create payload), emitting `WIZ_CLIENT_ID` / `WIZ_CLIENT_SECRET` to stdout + `$EXEC_OUTPUT`:
+  `Wiz-Client-Secret` / `Wiz-DataCenter` headers with no integration object behind it. `ensure [--scopes S] [--expires-at <RFC3339>] [--out-file <path>]` names it
+  `<stem>-api` (or `--name`) and converges to one fresh account (delete-then-mint, `clientSecret` readable only in the
+  create payload), emitting `WIZ_CLIENT_ID` / `WIZ_CLIENT_SECRET` to stdout + `$EXEC_OUTPUT` (or writing the pair to `--out-file` and redacting stdout):
   `createServiceAccount(input:{name, type: THIRD_PARTY, scopes, assignedProjectIds: [], expiresAt})`.
   `--scopes` defaults to `read:all` under the same `<verb>:<object>` check as `mcp`; `--expires-at` is
   null by default, so the reap is the account's only end of life. `inspect --require exists` and `delete
   --id|--name` go through `serviceAccounts(filterBy:{name, deleted:false})` / `deleteServiceAccount`,
   which **accepts this type**: no owner object, so the reaper's `ServiceAccount` prefix sweep deletes it
   on the uniform path. The caller needs `create:service_accounts` + `delete:service_accounts`.
-- `mcp ensure|inspect|delete` — the Wiz MCP integration an agent in a lab reads the tenant through.
-  `ensure` names it `<stem>-mcp` and converges to one fresh integration (delete-then-mint: `clientSecret`
+- `mcp ensure|inspect|delete [--session <sid>] [--name N]` — *(author/legacy-only: 0 lab-script callers; agent labs use `apiaccount`, kept in `VERBS` for verb-floor compatibility)* the Wiz MCP integration an agent in a lab reads the tenant through.
+  `ensure [--scopes S] [--expires-at <RFC3339>]` names it `<stem>-mcp` (or `--name`) and converges to one fresh integration (delete-then-mint: `clientSecret`
   is readable only in the create payload), emitting `WIZ_CLIENT_ID` / `WIZ_CLIENT_SECRET` to stdout +
   `$EXEC_OUTPUT`. `createIntegration(input:{name, type: WIZ_MCP, serviceAccountScopes, overrideScopes,
   isAccessibleToAllProjects, serviceAccountExpiresAt})`; the type takes no `params`. `--scopes` defaults
@@ -381,13 +382,13 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   `_SWEEP_TYPES` member ahead of `ServiceAccount`, so the ordinary path deletes the owner first and finds
   the account already absent.
 - `policy ensure|inspect|delete --name N` — the BLOCK CI/CD IaC scan policy a code-scan gate needs.
-  `ensure` is idempotent by name (§What `ensure` promises); absent, it creates a `type:IAC` policy with `enforcementMethod
+  `ensure [--control-search 'Last User Is'] [--rule-id <id>] [--severity S] [--count-threshold K]` is idempotent by name (§What `ensure` promises); absent, it creates a `type:IAC` policy with `enforcementMethod
   BLOCK` on `deploymentLifecycle CLI`, scoped (`iacParams.cloudConfigurationRules`) to the builtin
-  Dockerfile control 'Last User Is root' (resolved live via `cloudConfigurationRules`, never
+  Dockerfile control 'Last User Is root' (resolved live via `cloudConfigurationRules` matching `--control-search`, never
   hard-coded; `--rule-id`/`--severity`/`--count-threshold` override), `default:false` so only a
   `wizcli --policies <name>` scan is gated. `inspect --require exists` verifies setup; `delete`
-  removes it. A SHARED, PERSISTENT fixture — the reaper never touches it (not session-scoped).
-- `correlation inspect --repo <org/name> [--rule 'Docker Correlation'] [--since <RFC3339>|--since-boot] --require edge` — the code-to-cloud
+  (author/legacy-only: 0 lab-script callers, kept in `VERBS` for operator teardown and verb-floor compatibility) removes it. A SHARED, PERSISTENT fixture — the reaper never touches it (not session-scoped).
+- `correlation inspect --repo <org/name> [--session <sid>] [--rule 'Docker Correlation'] [--since <RFC3339>|--since-boot] --require edge` — the code-to-cloud
   edge: a `graphEntityCorrelations(filterBy:{toType:{equals:[CONTAINER_IMAGE]}})` node under `--rule` whose
   `from.properties.externalId` starts `github.com##<org/name>##`, read on the image side so a sibling
   slot's edge never grades this repo; `ignored` nodes do not count. 0 ≥1 edge · 1 none. With `--since` (or
@@ -397,7 +398,7 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   rebuilt while `createdAt` stays fixed — measured 2026-10-27 on TE: slot-01 `createdAt 2026-10-16T22:21:24Z`,
   `updatedAt 2026-10-26T21:53:26Z` after a solve play, and neither slot-01 nor slot-02 `updatedAt` moved during
   no-solve play `mwgvp4n6aj5j`).
-- `pullrequest inspect --repo <org/name> [--number N] --require scanned|passed` — the Patch PR's scan (no
+- `pullrequest inspect --repo <org/name> [--number N] [--session <sid>] --require scanned|passed` — the Patch PR's scan (no
   `--number`: the open PR on head `patch/<stem>`, read from GitHub, never opened): a
   `cloudEvents` row (`kind CI_CD_SCAN`, `cicdScan.trigger PULL_REQUEST`, `resource.subjectResourceExternalId
   github.com##<org>/<name>`) matched client-side on `codeAnalyzerDetails.pullRequest.id` (no server-side PR
@@ -406,7 +407,7 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   vulnerabilities policy warns on every Juice Shop slot's npm tree and the PR plane carries no Dockerfile
   finding, so the verdict grades a completed scan, never the fix. No row or PENDING is 1; FAILURE or
   SKIPPED (the scan did not run) is 3. Emits `PR_SCAN_STATE`, `PR_SCAN_VERDICT`, `PR_SCAN_FINDINGS`.
-- `slot claim|release --lab <name>` — the learner-repo pool (te-code-labs `scripts/pool.py` seeds and
+- `slot claim|release --lab <name> [--session <sid>]` — the learner-repo pool (te-code-labs `scripts/pool.py` seeds and
   resets it): `claim` takes the first free `te-code-<lab>-NN` by creating `refs/heads/claims/<lab>/slot-NN` in
   te-code-labs on an empty commit whose message is the session stem (atomic, so two graders cannot share
   a slot) and emits `SLOT`, `REPO`; a slot the session already holds is reprinted; a claim whose commit is
@@ -420,10 +421,10 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   `WIZ_LABS_GH_APP`; absent = not swept, said once). GitHub is reached as
   the App through the one JSON secret `WIZ_LABS_GH_APP` (`app_id`, `install_id`, base64 PEM `key`); absent
   is 3 before any request.
-- `patch open --repo <org/name>` — the learner's fix as a PR: branch `patch/<stem>` from `main`,
+- `patch open --repo <org/name> [--session <sid>]` — the learner's fix as a PR: branch `patch/<stem>` from `main`,
   Dockerfile `USER root` → `USER node`, one PR against `main`; emits `PR_NUMBER`. A rerun finds the open
   PR on that head; a Dockerfile with no `USER root` is 1.
-- `code-scan inspect --require published|pass` — asserts a Wiz Code CI/CD scan for this session,
+- `code-scan inspect --require published|pass [--session <sid>] [--tag-key session] [--tag-value <stem>] [--timeout 180] [--interval 10]` — asserts a Wiz Code CI/CD scan for this session,
   scoped by the `session` tag (`--tag-key`/`--tag-value`, default value the session stem), latest scan
   wins. `published` = ≥1 scan exists; `pass` = latest `status.verdict == PASSED_BY_POLICY`
   (`FAILED_BY_POLICY` exits 1 at once). Grades the TENANT verdict, not the CLI exit code, because
