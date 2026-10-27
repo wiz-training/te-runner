@@ -16,10 +16,11 @@ def _okta_env():
 
 
 def _okta_call(invoke_url, token, body):
-    """POST body to the Okta Workflows Router; returns the parsed response. One submission: the router
-    creates the user before it answers, so a resend on a timeout mints a second login."""
+    """POST body to the Okta Workflows Router; returns the parsed response. `inspect` is a read and keeps
+    `_READ_SUBMISSIONS`; mutations submit once because the router creates the user before answering."""
     headers = {"x-api-client-token": token, "Content-Type": "application/json", "Accept": "application/json"}
-    return core._post(invoke_url, body, headers, attempts=1)
+    attempts = core._READ_SUBMISSIONS if body.get("action") == "inspect" else 1
+    return core._post(invoke_url, body, headers, attempts=attempts)
 
 
 def _okta_login(args):
