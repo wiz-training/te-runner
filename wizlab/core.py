@@ -338,12 +338,13 @@ def _account_id(args, verb):
 
 
 def _unused(args, cloud, *flags):
-    """Exit 2 for a flag this --cloud path never reads: `FLAGS` refuses a flag the verb does not read, and a
-    flag only another cloud's branch reads was parsed, then ignored, so the call graded as if it had
+    """Exit 2 for a flag this --cloud or mode path never reads: `FLAGS` refuses a flag the verb does not
+    read, and a flag only another branch reads was parsed, then ignored, so the call graded as if it had
     taken effect."""
+    where = f"--cloud {cloud}" if cloud in CLOUDS else cloud
     for flag in flags:
         if getattr(args, flag.lstrip("-").replace("-", "_")):
-            die(2, f"{flag} is not read for --cloud {cloud}")
+            die(2, f"{flag} is not read for {where}")
 
 
 def _named(args, suffix="", flag="name"):

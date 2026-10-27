@@ -1075,6 +1075,25 @@ class FlagParsing(unittest.TestCase):
             wz.parse(("user", "reap"), ["--session", "--commit"])
         self.assertEqual(cm.code, 2)
 
+    def test_an_unread_flag_for_a_branch_or_mode_is_2_naming_the_flag(self):
+        # Every declared flag must be read on the path taken or refused with exit 2 naming the flag
+        # (SPEC.md §Grammar). Covers the five mode-specific paths: workflow-run inspect --branch without
+        # --require branch, connector inspect --outpost-* without --require outpost-bound, role inspect
+        # --account-id on aws, user inspect --domain without --wiz, and user login-url --session.
+        for fn, argv, flag in (
+            (wz.cmd_workflowrun_inspect, ["--name", "lab-x", "--require", "completed", "--branch", "b"], "--branch"),
+            (wz.cmd_connector_inspect, ["--account-id", "111111111111", "--outpost-id", "o1"], "--outpost-id"),
+            (wz.cmd_connector_inspect,
+             ["--account-id", "111111111111", "--require", "healthy", "--outpost-name", "lab-x"], "--outpost-name"),
+            (wz.cmd_role_inspect, ["--account-id", "111111111111"], "--account-id"),
+            (wz.cmd_user_inspect, ["--domain", "other.io"], "--domain"),
+            (wz.cmd_user_login_url, ["--session", "s1"], "--session"),
+        ):
+            with self.subTest(fn=fn.__name__, argv=argv):
+                err = io.StringIO()
+                code = exit_code(fn, argv, wiz=FakeWiz(), env=InspectContract.ENV, err=err)
+                self.assertEqual((code, flag in err.getvalue()), (2, True), err.getvalue())
+
 
 class CliHelper(unittest.TestCase):
     def test_a_missing_or_hung_binary_is_environment_3(self):

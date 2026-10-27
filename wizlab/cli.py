@@ -89,7 +89,10 @@ _SWITCH = {"action": "store_true"}
 _S = {"--session": {}}
 
 
-_U = {**_S, "--domain": {"default": "wizlabs.cloudseclabs.io"}}
+_D = {"--domain": {"default": "wizlabs.cloudseclabs.io"}}
+
+
+_U = {**_S, **_D}
 
 
 # aws first so every pre-GCP lab keeps working unchanged. The default is also the trap it replaced:
@@ -156,9 +159,9 @@ FLAGS = {
     ("role", "inspect"): {**_CLOUD, "--account-id": {}, "--role-name": {}, "--trusts-service": {}},
     ("role", "ensure"): {**_CLOUD, "--external-id": {}, "--role-name": {}},
     ("user", "ensure"): {**_S, "--profile": {}},
-    ("user", "inspect"): {**_U, "--wiz": _SWITCH},
+    ("user", "inspect"): {**_S, "--domain": {}, "--wiz": _SWITCH},
     ("user", "delete"): _U,
-    ("user", "login-url"): {**_U},
+    ("user", "login-url"): _D,
     ("wiz", "tenant"): {},
     ("user", "reap"): {**_U, "--commit": _SWITCH, "--email": {}, "--last-min": _int(1440)},
 }

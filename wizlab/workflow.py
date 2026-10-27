@@ -199,9 +199,10 @@ def cmd_workflowrun_inspect(args):
 
 def _run_require(args):
     require = args.require
-    branch = args.branch if require == "branch" else None
-    if require == "branch" and not branch:
-        core.die(2, "--require branch needs --branch <branchName>")
+    if require != "branch":
+        core._unused(args, f"--require {require}", "--branch")
+        return require, None
+    branch = args.branch or core.die(2, "--require branch needs --branch <branchName>")
     return require, branch
 
 
