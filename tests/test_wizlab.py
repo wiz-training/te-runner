@@ -852,6 +852,28 @@ class GitHubContract(unittest.TestCase):
         no_app = {"INSTRUQT_SESSION_ID": "s1"}
         self.assertEqual(self._run(wz.cmd_slot_claim, ["--lab", "juice-shop-101"], gh, env=no_app), 3)
         self.assertEqual(gh.calls, [])
+        bad_pem = {"INSTRUQT_SESSION_ID": "s1",
+                   "WIZ_LABS_GH_APP": json.dumps({"app_id": "1", "install_id": "2",
+                                                  "key": base64.b64encode(b"not-a-pem").decode()})}
+        self.assertEqual(self._run(wz.cmd_slot_claim, ["--lab", "juice-shop-101"], gh, env=bad_pem), 3)
+        self.assertEqual(gh.calls, [])
+        with mock.patch.dict(wz.os.environ, bad_pem, clear=True), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(wz._reap_slots("lab-bapr82q9xmm5", True), (wz.Counter({wz.DEFERRED: 1}), 0))
+        err = io.StringIO()
+        http_403 = urllib.error.HTTPError("https://api.github.com/x", 403, "Forbidden", None,
+                                          io.BytesIO(b"<html>403 Forbidden</html>"))
+        with mock.patch.object(wz.urllib.request, "urlopen", side_effect=http_403):
+            code = exit_code(wz.cmd_slot_claim, ["--lab", "juice-shop-101"], env=self.ENV, err=err)
+        self.assertEqual(code, 3)
+        self.assertIn("GitHub 403", err.getvalue())
+        self.assertIn("<html>403 Forbidden</html>", err.getvalue())
+        http_403_reap = urllib.error.HTTPError("https://api.github.com/x", 403, "Forbidden", None,
+                                               io.BytesIO(b"<html>403 Forbidden</html>"))
+        wz._TOKEN.clear()
+        with mock.patch.dict(wz.os.environ, self.ENV, clear=True), \
+             mock.patch.object(wz.urllib.request, "urlopen", side_effect=http_403_reap), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(wz._reap_slots("lab-bapr82q9xmm5", True), (wz.Counter({wz.DEFERRED: 1}), 0))
 
     def test_bad_lab_or_repo_is_2_before_any_request(self):
         gh = FakeGitHub()

@@ -125,10 +125,12 @@ def cmd_pullrequest_inspect(args):
 
 # --- GitHub as the App ---
 def _app():
+    from cryptography.hazmat.primitives import serialization
     raw = os.getenv("WIZ_LABS_GH_APP") or core.die(3, "WIZ_LABS_GH_APP not in environment")
     try:
         app = json.loads(raw)
-        return app["app_id"], app["install_id"], base64.b64decode(app["key"])
+        key = serialization.load_pem_private_key(base64.b64decode(app["key"]), password=None)
+        return app["app_id"], app["install_id"], key
     except (ValueError, KeyError, TypeError) as e:
         core.die(3, f"WIZ_LABS_GH_APP is not {{app_id, install_id, key}} JSON: {e}")
 
@@ -137,14 +139,13 @@ def _b64url(b):
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
 
 
-def _jwt(app_id, pem):
+def _jwt(app_id, key):
     """RS256 App JWT, signed with cryptography: the image carries it for azure-cli and no pyjwt."""
-    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import padding
     now = int(time.time())
     head = _b64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
     body = _b64url(json.dumps({"iat": now - 60, "exp": now + 540, "iss": str(app_id)}).encode())
-    key = serialization.load_pem_private_key(pem, password=None)
     sig = key.sign(f"{head}.{body}".encode(), padding.PKCS1v15(), hashes.SHA256())
     return f"{head}.{body}.{_b64url(sig)}"
 
@@ -162,15 +163,19 @@ def _gh_call(method, path, body=None, token=None):
     except urllib.error.HTTPError as e:
         if e.code >= 500:
             core.die(3, f"GitHub {e.code} on {method} {path}")
-        return e.code, json.loads(e.read() or b"{}")
+        raw = e.read() or b"{}"
+        try:
+            return e.code, json.loads(raw)
+        except ValueError:
+            core.die(3, f"GitHub {e.code} on {method} {path}: {raw.decode(errors='replace')[:200]}")
     except OSError as e:
         core.die(3, f"GitHub transport failure on {method} {path}: {e}")
 
 
 def _token():
     if "t" not in _TOKEN:
-        app_id, install_id, pem = _app()
-        status, body = _gh_call("POST", f"/app/installations/{install_id}/access_tokens", {}, token=_jwt(app_id, pem))
+        app_id, install_id, key = _app()
+        status, body = _gh_call("POST", f"/app/installations/{install_id}/access_tokens", {}, token=_jwt(app_id, key))
         if status != 201:
             core.die(3, f"GitHub installation token: {status} {body.get('message', '')}")
         _TOKEN["t"] = body["token"]
