@@ -17,12 +17,20 @@ done and its Wiz user stays.
 """
 import json
 import os
+import pathlib
 import re
 import subprocess
 import sys
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime, timedelta
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+if (_REPO_ROOT / "wizlab").is_dir() and str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from wizlab import codelab as _codelab  # noqa: E402
+from wizlab import core as _core  # noqa: E402
 
 # Same shape as wizlab.core.PLAY_ID_RE (measured 2026-10-27: 512/512 play ids in 30 d).
 PLAY_ID_RE = re.compile(r"[a-z0-9]{12}")
@@ -116,7 +124,8 @@ WIZLAB_TIMEOUT_S = 300
 
 def _wizlab(tenant, *args):
     try:
-        r = subprocess.run(["wizlab", *args], env={**os.environ, "WIZ_TENANT": tenant},
+        env = {**os.environ, "WIZ_TENANT": tenant, "WIZLAB_SKIP_SLOT_SWEEP": "1"}
+        r = subprocess.run(["wizlab", *args], env=env,
                            capture_output=True, text=True, check=False, timeout=WIZLAB_TIMEOUT_S)
     except subprocess.TimeoutExpired as e:
         sys.stdout.write(e.stdout or "")
@@ -165,6 +174,25 @@ def _reap_session(tenant, sid, commit):
     return DONE if rc == 0 and deleted else FAILED
 
 
+def _reap_slot_claims(sids):
+    """Sweep code-lab pool claims once across all stopped sessions and expired claims instead of repeating
+    matching-refs and commit lookups inside every `wizlab user reap` subprocess."""
+    if not os.getenv("WIZ_LABS_GH_APP"):
+        print("slot claims: WIZ_LABS_GH_APP not set, not swept", file=sys.stderr)
+        return False
+    stems = {_core._lab_stem(sid) for sid in sids}
+    _codelab._TOKEN.clear()
+    try:
+        claims = _codelab.release_claims_for(stems, True)
+    except _core.WizlabError as e:
+        print(f"DEFERRED slot claims: {e}")
+        return True
+    removed = sum(1 for _, _, o in claims if o == "removed")
+    absent = sum(1 for _, _, o in claims if o == "absent")
+    print(f"# slot claims: {removed} removed, {absent} absent", file=sys.stderr)
+    return False
+
+
 def _retry_hints(failed):
     """One line per tenant: REAP_SESSIONS reaps under REAP_SESSIONS_TENANT, so a hint naming only the
     sids retries a TE session under TBCMP, finds nothing, reports done and leaves the TE record."""
@@ -205,11 +233,13 @@ def main():
             failed.setdefault(tenant, []).append(sid)
         elif outcome == DEFERRED:
             deferred.append(sid)
+    slots_deferred = _reap_slot_claims([sid for _, sid in sessions]) if commit else False
     total = len(sessions)
     nfailed = sum(len(v) for v in failed.values())
     completed = total - nfailed - len(deferred)
     print(f"# {completed}/{total} session(s) {'reaped' if commit else 'ready to reap (dry-run)'}"
-          f"{f', {len(deferred)} deferred to the next pass' if deferred else ''}", file=sys.stderr)
+          f"{f', {len(deferred)} deferred to the next pass' if deferred else ''}"
+          f"{', slot claims deferred to the next pass' if slots_deferred else ''}", file=sys.stderr)
     if failed:
         # wizlab exit 3 and 5 are residue no pass can clear (wizlab.reap._reap_exit), so "retry" alone is
         # wrong: the same pass fails nightly until the sid ages out, then the hint's sid is the way back.
