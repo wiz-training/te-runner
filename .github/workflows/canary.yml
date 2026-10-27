@@ -142,6 +142,12 @@ jobs:
           print(summary, end="")
           sys.exit(0 if outcome == "ok" else 1)
           PY
+      - name: stop on failure
+        if: failure()
+        env:
+          INSTRUQT_API: ${{ secrets.INSTRUQT_TOKEN }}
+        run: |
+          python3 labkit/scripts/wizops play stop --lab "$LAB" || true
       - name: report issue
         if: always()
         env:
@@ -149,7 +155,7 @@ jobs:
         run: |
           outcome=$(cat "$CANARY_STATE_DIR/outcome" 2>/dev/null || echo "")
           case "$outcome" in
-            degraded|no-verdict|no-sandbox) ;;
+            degraded|no-verdict|no-sandbox|error) ;;
             *) exit 0 ;;
           esac
           today=$(date -u +%Y-%m-%d)

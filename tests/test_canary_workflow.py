@@ -90,6 +90,7 @@ class CanaryWorkflowTests(unittest.TestCase):
                 "clean",
                 "boot",
                 "verdict",
+                "stop on failure",
                 "report issue",
             ],
         )
@@ -191,7 +192,9 @@ class CanaryWorkflowTests(unittest.TestCase):
         issue_script = _run_block(steps["report issue"])
         cases = (
             ("ok makes no gh calls", "ok", "", []),
-            ("error makes no gh calls", "error", "", []),
+            ("missing outcome makes no gh calls", "", "", []),
+            ("error creates issue when none open", "error", "",
+             ["label create", "issue list", "issue create"]),
             ("degraded creates issue when none open", "degraded", "",
              ["label create", "issue list", "issue create"]),
             ("no-verdict creates issue when none open", "no-verdict", "",
@@ -243,6 +246,42 @@ class CanaryWorkflowTests(unittest.TestCase):
             live = _live(p.read_text())
             for banned in ("ubuntu-latest", "checkout@v4", "setup-python@v5"):
                 self.assertNotIn(banned, live, f"{p.name} still contains {banned!r}")
+
+    def test_stop_on_failure_step_scopes_instruqt_api_and_stops_play(self):
+        text = CANARY_YML.read_text()
+        job_env = _live(text).split("    steps:")[0]
+        self.assertNotIn("INSTRUQT_API", job_env)
+        steps_list = _image_steps(text)
+        labels = [label for label, _ in steps_list]
+        self.assertGreater(labels.index("stop on failure"), labels.index("verdict"))
+        body = dict(steps_list)["stop on failure"]
+        self.assertRegex(body, r"(?m)^if:\s*failure\(\)\s*$")
+        self.assertIn("INSTRUQT_API: ${{ secrets.INSTRUQT_TOKEN }}", body)
+        stop_script = _run_block(body)
+        for wizops_rc in (0, 1):
+            with self.subTest(wizops_rc=wizops_rc), tempfile.TemporaryDirectory() as d:
+                tmp = pathlib.Path(d)
+                wizops = tmp / "labkit" / "scripts" / "wizops"
+                wizops.parent.mkdir(parents=True)
+                captured = tmp / "wizops.call"
+                wizops.write_text(
+                    "#!/usr/bin/env python3\n"
+                    "import os, pathlib, sys\n"
+                    "line = os.getenv('INSTRUQT_API', '') + ':' + ' '.join(sys.argv[1:])\n"
+                    f"pathlib.Path({str(captured)!r}).write_text(line)\n"
+                    f"sys.exit({wizops_rc})\n"
+                )
+                wizops.chmod(wizops.stat().st_mode | stat.S_IXUSR)
+                res = subprocess.run(
+                    ["sh", "-e", "-c", stop_script],
+                    cwd=tmp,
+                    env={**os.environ, "LAB": "te-dev-aws", "INSTRUQT_API": "tok"},
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(res.returncode, 0, res.stderr)
+                self.assertEqual(captured.read_text(), "tok:play stop --lab te-dev-aws")
 
 
 if __name__ == "__main__":
