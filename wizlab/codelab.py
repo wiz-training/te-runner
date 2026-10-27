@@ -379,8 +379,13 @@ def cmd_patch_open(args):
             print(f"{repo} Dockerfile has no USER root to patch")
             sys.exit(1)
         _, main = _gh("GET", f"/repos/{repo}/git/ref/heads/main")
-        _gh("POST", f"/repos/{repo}/git/refs", {"ref": f"refs/heads/{head}", "sha": main["object"]["sha"]},
-            tolerate=(422,))
+        status, _ = _gh("POST", f"/repos/{repo}/git/refs",
+                        {"ref": f"refs/heads/{head}", "sha": main["object"]["sha"]}, tolerate=(422,))
+        if status == 422:
+            # When refs/heads/patch/<stem> exists with no open PR, an interrupted run may already have
+            # advanced Dockerfile's blob sha off main's f["sha"]; reset the ref to main before PUT.
+            _gh("PATCH", f"/repos/{repo}/git/refs/heads/{head}",
+                {"sha": main["object"]["sha"], "force": True})
         _gh("PUT", f"/repos/{repo}/contents/Dockerfile", {
             "message": f"{stem}: run Juice Shop as node, not root", "branch": head, "sha": f["sha"],
             "content": base64.b64encode(text.replace("USER root", "USER node").encode()).decode()})
