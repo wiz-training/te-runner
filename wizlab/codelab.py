@@ -214,7 +214,7 @@ def _gh_call(method, path, body=None, token=None):
         core.die(3, f"GitHub transport failure on {method} {path}: {e}")
 
 
-def _token():
+def _gh_token():
     if "t" not in _TOKEN:
         app_id, install_id, key = _app()
         status, body = _gh_call("POST", f"/app/installations/{install_id}/access_tokens", {}, token=_jwt(app_id, key))
@@ -225,7 +225,7 @@ def _token():
 
 
 def _gh(method, path, body=None, tolerate=()):
-    status, out = _gh_call(method, path, body, token=_token())
+    status, out = _gh_call(method, path, body, token=_gh_token())
     if status >= 400 and status not in tolerate:
         core.die(3, f"GitHub {status} on {method} {path}: {str(out.get('message', ''))[:200]}")
     return status, out
@@ -251,7 +251,7 @@ def _claim_expired(commit):
     return (time.time() - datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()) > CLAIM_TTL_S
 
 
-def _claims(lab):
+def _slot_claims(lab):
     """{slot: (session stem, expired, sha)} from the claim refs."""
     status, refs = _gh("GET", f"/repos/{ORG}/{CONTROL_REPO}/git/matching-refs/{CLAIM_NS}/{lab}/", tolerate=(404,))
     out = {}
@@ -291,7 +291,7 @@ def cmd_slot_claim(args):
     _, repos = _gh("GET", f"/orgs/{ORG}/repos?per_page=100&type=public")
     prefix = f"te-code-{lab}-"
     slots = sorted(r["name"][len(prefix):] for r in repos if r["name"].startswith(prefix))
-    claims = _claims(lab)
+    claims = _slot_claims(lab)
     active = {s: who for s, (who, exp, _) in claims.items() if not exp}
     held = [s for s, who in active.items() if who == stem]
     if held:
@@ -323,7 +323,7 @@ def cmd_slot_release(args):
     """Drop every claim this session holds after reading the ref and confirming the commit message is our
     stem, closing its open patch PR and branch; nothing held is a no-op."""
     lab, stem = _lab(args), core._stem(args)
-    for slot, (who, _, _) in _claims(lab).items():
+    for slot, (who, _, _) in _slot_claims(lab).items():
         if who == stem:
             _drop_claim(lab, slot, stem)
             print(f"released slot {slot}")
