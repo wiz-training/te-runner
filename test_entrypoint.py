@@ -27,6 +27,47 @@ class BootTimestamp(unittest.TestCase):
             self.assertRegex(boot_at.read_text(), r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n$")
 
 
+class WizlabGrant(unittest.TestCase):
+    """A setup exec that omits module.tenant.output.env must fail at wizlab-grant (exit 3) instead of
+    arming /run/lab/learner-verbs with an unauthenticated snapshot that fails only when the learner runs
+    wizlab."""
+
+    ROWS = (
+        # args, env, expected exit code, expected learner-verbs content (None = file absent)
+        ((), {"WIZ_TBCMP_CLIENT_ID": "id"}, 2, None),
+        (("session verify",), {}, 3, None),
+        (("session verify",), {"WIZ_CLIENT_ID": "id"}, 0, "session verify\n"),
+        (("session verify", "connector inspect"), {"WIZ_TBCMP_CLIENT_ID": "id", "UNRELATED": "x"}, 0,
+         "session verify\nconnector inspect\n"),
+    )
+
+    def test_grant_requires_client_id_before_arming_verbs(self):
+        src = (ROOT / "bin" / "wizlab-grant").read_text()
+        self.assertIn("/run/lab", src)
+        clean = {k: v for k, v in os.environ.items() if not k.startswith("WIZ_")}
+        for args, extra_env, want_rc, want_verbs in self.ROWS:
+            with self.subTest(args=args, env=sorted(extra_env)), tempfile.TemporaryDirectory() as td:
+                tmp = pathlib.Path(td)
+                run_lab = tmp / "run" / "lab"
+                script = tmp / "wizlab-grant"
+                script.write_text(src.replace("/run/lab", str(run_lab)))
+                script.chmod(0o755)
+                result = subprocess.run(["/bin/bash", str(script), *args], env={**clean, **extra_env},
+                                        capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, want_rc, result.stderr)
+                verbs = run_lab / "learner-verbs"
+                if want_verbs is None:
+                    self.assertFalse(verbs.exists())
+                else:
+                    self.assertEqual(verbs.read_text(), want_verbs)
+                    wiz_env = run_lab / "wiz.env"
+                    self.assertEqual(stat.S_IMODE(wiz_env.stat().st_mode), 0o600)
+                    self.assertNotIn("UNRELATED=", wiz_env.read_text())
+                if want_rc == 3:
+                    self.assertIn("no WIZ_<TENANT>_CLIENT_ID", result.stderr)
+                    self.assertNotIn("will exit 3", result.stderr)
+
+
 class CredentialFile(unittest.TestCase):
     """A CSP secret reaches its CLI through a 0600 file the entrypoint removes even when the login fails,
     never through argv (readable from /proc by any local user). One row per CLI; the stub exits 1 on the
