@@ -127,9 +127,10 @@ def cmd_outpost_ensure(args):
     existing = _resolve_outpost(name)
     if existing:
         # A role change is a knowing delete-and-recreate, never a silent "nothing to do".
+        live_regions = existing.get("allowedRegions")
         core._drift(f"outpost {name} ({existing['id']})", [
             ("roleARN", (existing.get("config") or {}).get("roleARN"), role_arn),
-            ("allowedRegions", existing.get("allowedRegions"), [region] if args.region else None),
+            ("allowedRegions", live_regions, [region] if args.region and live_regions != [] else None),
         ])
         if existing["status"] == "ERROR":
             return _reprovision(existing)
@@ -137,7 +138,8 @@ def cmd_outpost_ensure(args):
         return
     # allowedRegions pins the scan cluster to the workload region (the EC2's). The capture used []
     # (unrestricted); [region] is the deterministic form — the validator confirms the cluster lands
-    # in <region>. awsConfig keys are the capture's exact shape (roleARN is caps).
+    # in <region>. awsConfig keys are the capture's exact shape (roleARN is caps). An existing Outpost
+    # with allowedRegions [] (the console default) is accepted as compatible with any --region.
     inp = {
         "name": name,
         "serviceType": "AWS",
