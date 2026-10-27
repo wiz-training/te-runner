@@ -114,9 +114,19 @@ def _claims(tok):
     try:
         pad = tok.split(".")[1]
         pad += "=" * (-len(pad) % 4)
-        return json.loads(base64.urlsafe_b64decode(pad))
-    except (IndexError, ValueError) as e:
+        obj = json.loads(base64.urlsafe_b64decode(pad))
+    except (AttributeError, IndexError, ValueError) as e:
         die(3, f"access token is not a JWT: {type(e).__name__}")
+    if not isinstance(obj, dict):
+        die(3, f"access token payload is not a JSON object: {type(obj).__name__}")
+    return obj
+
+
+def _err_body(e):
+    try:
+        return e.read().decode(errors="replace")[:500]
+    except OSError as err:
+        return f"<unreadable body: {type(err).__name__}: {err}>"
 
 
 def _post(url, data, headers, attempts=3):
@@ -131,9 +141,12 @@ def _post(url, data, headers, attempts=3):
         req = urllib.request.Request(url, data=payload, headers=headers)  # fresh per attempt
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
-                return json.loads(r.read())
+                obj = json.loads(r.read())
+            if not isinstance(obj, dict):
+                raise ValueError(f"expected JSON object, got {type(obj).__name__}")
+            return obj
         except urllib.error.HTTPError as e:
-            body = e.read().decode(errors="replace")[:500]
+            body = _err_body(e)
             if e.code < 500 and e.code != 429:
                 die(3, f"HTTP {e.code} from {url}: {body}")
             last = f"HTTP {e.code} from {url}: {body}"
@@ -186,7 +199,8 @@ def token_and_dc():
         die(3, f"no token returned: {res.get('message') or res}")
     claims = _claims(tok)
     dc = claims.get("dc") or die(3, "access token carries no dc claim; cannot address the API")
-    _TOKENS[tenant] = (tok, dc, claims.get("tid"), claims.get("exp", 0))
+    exp = claims.get("exp") or 0
+    _TOKENS[tenant] = (tok, dc, claims.get("tid"), exp if isinstance(exp, (int, float)) else 0)
     return _TOKENS[tenant][:3]
 
 
@@ -232,9 +246,13 @@ def _next_cursor(conn, seen):
     return cur, None
 
 
+def _err_text(e):
+    return str((e.get("message") if isinstance(e, dict) else e) or "?")
+
+
 def _gql_msg(errs):
     """The first GraphQL error's message: the one line a tally or an alert carries."""
-    return errs[0].get("message", "?")
+    return _err_text(errs[0])
 
 
 def _paged(send, query, variables, field):
@@ -279,7 +297,12 @@ def _graphql(tok, dc, query, variables=None):
     res = _post(api_url(dc), body,
                 {"Content-Type": "application/json", "Authorization": f"Bearer {tok}"},
                 attempts=_submissions(query))
-    return res.get("data") or {}, res.get("errors") or []
+    data, errors = res.get("data"), res.get("errors")
+    if data is not None and not isinstance(data, dict):
+        die(3, f"GraphQL data is not a JSON object: {type(data).__name__}")
+    if errors is not None and not isinstance(errors, list):
+        die(3, f"GraphQL errors is not a list: {type(errors).__name__}")
+    return data or {}, errors or []
 
 
 def _api_full(query, variables):
@@ -290,7 +313,7 @@ def _api_full(query, variables):
         data, errors = _graphql(tok, dc, query, variables)
         if not errors:
             return data, tid, []
-        msg = "; ".join(e.get("message", "?") for e in errors)
+        msg = "; ".join(_err_text(e) for e in errors)
         if any(data.get(k) is not None for k in data):
             return data, tid, errors
         # One rule for both layers: whatever may not be resubmitted over HTTP may not be replayed here
@@ -307,7 +330,7 @@ def api(query, variables):
     stderr; a lookup that must see a whole set goes through _all_nodes, which refuses it."""
     data, tid, errors = _api_full(query, variables)
     if errors:
-        msg = "; ".join(e.get("message", "?") for e in errors)
+        msg = "; ".join(_err_text(e) for e in errors)
         print(f"wizlab: {len(errors)} GraphQL error(s) beside data, ignored: {msg}", file=sys.stderr)
     return data, tid
 
@@ -439,6 +462,8 @@ def _cli(binary, *a):
                               timeout=_CLI_TIMEOUT_S)
     except FileNotFoundError:
         die(3, f"{binary!r} not found in PATH")  # env error (3), not the main() catch-all's 2
+    except OSError as e:
+        die(3, f"cannot execute {binary!r}: {e}")
     except subprocess.TimeoutExpired:
         die(3, f"{binary!r} produced no result within {_CLI_TIMEOUT_S}s")
 
@@ -466,7 +491,7 @@ def _gql(tok, dc, query, variables=None):
         data, errors = _graphql(tok, dc, query, variables)
         if not errors or any(data.get(k) is not None for k in data):
             return data, errors
-        msg = "; ".join(e.get("message", "?") for e in errors)
+        msg = "; ".join(_err_text(e) for e in errors)
         if not any(t in msg.lower() for t in _TRANSIENT_GQL) or i == attempts - 1:
             return data, errors
         time.sleep(2**i)

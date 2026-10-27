@@ -1169,7 +1169,12 @@ class CliHelper(unittest.TestCase):
     def test_a_missing_or_hung_binary_is_environment_3(self):
         # Never 2 (an uncaught exception reads as the learner's fault) and never past the platform's own
         # check timeout.
-        for fault in (FileNotFoundError(), wz.subprocess.TimeoutExpired("aws", wz._CLI_TIMEOUT_S)):
+        faults = (
+            FileNotFoundError(),
+            PermissionError("denied"),
+            wz.subprocess.TimeoutExpired("aws", wz._CLI_TIMEOUT_S),
+        )
+        for fault in faults:
             with self.subTest(fault=type(fault).__name__), \
                  mock.patch.object(wz.subprocess, "run", side_effect=fault), exits() as cm:
                 wz._cli("aws", "version")
@@ -1213,6 +1218,24 @@ class ExitCodeContract(unittest.TestCase):
             wz._post("https://x/", "d", {}, attempts=3)
         self.assertEqual(cm.code, 3)
         self.assertEqual(op.call_count, 1)  # 4xx is not transient — no retry
+
+    def test_post_guards_unreadable_error_body_and_non_dict_json_as_3(self):
+        for status, want_calls in ((400, 1), (503, 3)):
+            fp = mock.MagicMock()
+            fp.read.side_effect = OSError("connection reset")
+            err = urllib.error.HTTPError("u", status, "boom", None, fp)
+            op = mock.MagicMock(side_effect=err)
+            with self.subTest(status=status), \
+                 mock.patch.object(wz.urllib.request, "urlopen", op), mock.patch.object(wz.time, "sleep"), \
+                 exits() as cm:
+                wz._post("https://x/", "d", {}, attempts=3)
+            self.assertEqual((cm.code, op.call_count), (3, want_calls))
+        for raw in (b"[]", b'"str"', b"null", b"123"):
+            with self.subTest(raw=raw), \
+                 mock.patch.object(wz.urllib.request, "urlopen", self._urlopen_returning(raw)), \
+                 mock.patch.object(wz.time, "sleep"), exits() as cm:
+                wz._post("https://x/", "d", {}, attempts=1)
+            self.assertEqual(cm.code, 3)
 
     def test_main_bad_verb_is_invocation_error(self):
         with mock.patch.object(wz.sys, "argv", ["wizlab", "bogus", "verb"]), exits() as cm:
@@ -1430,8 +1453,9 @@ class ExitCodeContract(unittest.TestCase):
         self.assertGreaterEqual(len(wiz.calls), 1)
 
     def test_a_token_that_is_not_a_jwt_is_environment_3(self):
-        # IndexError/KeyError out of _claims used to reach main()'s catch-all as `internal error` 2.
-        for tok in ["opaque", "h.!!!.s", _jwt(tid="t")]:
+        # IndexError/KeyError/TypeError out of _claims used to reach main()'s catch-all as `internal error` 2.
+        non_dict_jwt = f"h.{base64.urlsafe_b64encode(b'[]').rstrip(b'=').decode()}.s"
+        for tok in ["opaque", "h.!!!.s", _jwt(tid="t"), non_dict_jwt, 123]:
             with self.subTest(tok=tok), \
                  mock.patch.object(_owner("_post"), "_post", return_value={"access_token": tok}), \
                  mock.patch.dict(wz.os.environ, FakeWiz.ENV, clear=True), exits() as cm:
@@ -1451,6 +1475,16 @@ class ExitCodeContract(unittest.TestCase):
             clock["t"] += 3600 - 30  # inside the minute before exp
             wz.token_and_dc()
         self.assertEqual(wiz.mints, 2)
+        wz._TOKENS.clear()
+
+    def test_null_token_exp_claim_coerces_to_zero_without_crashing_cache_check(self):
+        post = mock.MagicMock(return_value={"access_token": _jwt(dc="dc", tid="t", exp=None)})
+        with mock.patch.object(_owner("_post"), "_post", post), \
+             mock.patch.dict(wz.os.environ, FakeWiz.ENV, clear=True):
+            wz._TOKENS.clear()
+            self.assertEqual(wz.token_and_dc(), ("h.eyJkYyI6ICJkYyIsICJ0aWQiOiAidCIsICJleHAiOiBudWxsfQ.s", "dc", "t"))
+            self.assertEqual(wz.token_and_dc()[1:], ("dc", "t"))
+        self.assertEqual(post.call_count, 2)
         wz._TOKENS.clear()
 
 
@@ -1548,7 +1582,7 @@ class K8sConnectorGrading(unittest.TestCase):
 
     ARN = InspectContract.CLUSTER_ARN
     ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "x", "AWS_DEFAULT_REGION": "us-east-1",
-                            "AWS_ACCOUNT_ID": "111111111111"}
+                            "AWS_ACCOUNT_ID": "1" * 12}
     CLUSTER: typing.ClassVar = {"cluster": {"name": "lab-x", "arn": ARN, "endpoint": "https://eks.example",
                                             "certificateAuthority": {"data": "Q0E="}}}
 
@@ -2541,6 +2575,29 @@ class TransientGraphqlErrors(unittest.TestCase):
         with mock.patch.object(_owner("_post"), "_post", post_mut), mock.patch.object(wz.time, "sleep"):
             data, errs = wz._gql("t", "dc", 'mutation M { deleteReport(input: { id: "r1" }) { _stub } }')
         self.assertEqual((data, len(errs), post_mut.call_count), ({}, 1, 1))
+
+    def test_null_error_message_and_non_dict_graphql_envelope_exit_3(self):
+        null_err = {"errors": [{"message": None}], "data": None}
+        with mock.patch.object(_owner("token_and_dc"), "token_and_dc", return_value=("t", "dc", "tid")), \
+             mock.patch.object(_owner("_post"), "_post", self._post_returning(null_err)), exits() as cm:
+            wz.api("query Q { x }", {})
+        self.assertEqual(cm.code, 3)
+        partial_null = {"errors": [{"message": None}], "data": {"connectors": {"nodes": []}}}
+        err = io.StringIO()
+        with mock.patch.object(_owner("token_and_dc"), "token_and_dc", return_value=("t", "dc", "tid")), \
+             mock.patch.object(_owner("_post"), "_post", self._post_returning(partial_null)), \
+             contextlib.redirect_stderr(err), exits() as cm_paged:
+            wz._all_nodes("query Q($after: String) { connectors(after: $after) { nodes { id } } }", {}, "connectors")
+        self.assertEqual(cm_paged.code, 3)
+        with mock.patch.object(_owner("_post"), "_post", self._post_returning(null_err)):
+            data, errs = wz._gql("t", "dc", "query Q { x }")
+        self.assertEqual((data, wz._gql_msg(errs)), ({}, "?"))
+        for bad_env in ({"data": []}, {"errors": "bad"}):
+            with self.subTest(bad_env=bad_env), \
+                 mock.patch.object(_owner("token_and_dc"), "token_and_dc", return_value=("t", "dc", "tid")), \
+                 mock.patch.object(_owner("_post"), "_post", self._post_returning(bad_env)), exits() as cm_env:
+                wz.api("query Q { x }", {})
+            self.assertEqual(cm_env.code, 3)
 
 
 class MutationSubmissionBudget(unittest.TestCase):
