@@ -142,8 +142,8 @@ def _post(url, data, headers, attempts=3):
         if i < attempts - 1:
             time.sleep(2**i)  # 1s, 2s
     if attempts == 1:
-        die(3, f"{last}; not resubmitted — the server may have applied it, so reconcile by name "
-               f"(re-run the same ensure) rather than assuming nothing happened")
+        die(3, f"{last}; not resubmitted — the server may have applied it, so inspect or reconcile "
+               f"state by name rather than assuming nothing happened")
     die(3, f"after {attempts} attempts: {last}")
 
 

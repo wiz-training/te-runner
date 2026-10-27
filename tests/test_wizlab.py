@@ -998,6 +998,24 @@ class OktaContract(unittest.TestCase):
         self.assertEqual(okta.calls, [])
         self.assertEqual(wiz.sent("users")[0]["search"], "lab-s1@wizlabs.cloudseclabs.io")
 
+    def test_inspect_retries_transient_router_fault_while_ensure_submits_once(self):
+        ok_cm = mock.MagicMock()
+        ok_cm.__enter__.return_value.read.return_value = b'{"okta_user_id": "oid-1"}'
+        e1 = urllib.error.HTTPError("https://okta.wf/invoke", 503, "boom", None, io.BytesIO(b"busy"))
+        e2 = urllib.error.HTTPError("https://okta.wf/invoke", 503, "boom", None, io.BytesIO(b"busy"))
+        op_read = mock.MagicMock(side_effect=[e1, e2, ok_cm])
+        with mock.patch.object(wz.urllib.request, "urlopen", op_read), mock.patch.object(wz.time, "sleep"):
+            self.assertEqual(exit_code(wz.cmd_user_inspect, [], env=self.ENV), 0)
+        self.assertEqual(op_read.call_count, 3)
+
+        e_mut = urllib.error.HTTPError("https://okta.wf/invoke", 503, "boom", None, io.BytesIO(b"busy"))
+        op_mut, err = mock.MagicMock(side_effect=e_mut), io.StringIO()
+        with mock.patch.object(wz.urllib.request, "urlopen", op_mut), mock.patch.object(wz.time, "sleep"):
+            code = exit_code(wz.cmd_user_ensure, ["--profile", "wiz-global-reader"], env=self.ENV, err=err)
+        self.assertEqual((code, op_mut.call_count), (3, 1))
+        self.assertIn("not resubmitted", err.getvalue())
+        self.assertNotIn("re-run the same ensure", err.getvalue())
+
 
 class AuthorTools(unittest.TestCase):
     LAB_USER: typing.ClassVar = {"id": "okta-chronical_lab-s1@wizlabs.cloudseclabs.io",
@@ -1548,7 +1566,7 @@ class K8sConnectorGrading(unittest.TestCase):
 
     ARN = InspectContract.CLUSTER_ARN
     ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "x", "AWS_DEFAULT_REGION": "us-east-1",
-                            "AWS_ACCOUNT_ID": "111111111111"}
+                            "AWS_ACCOUNT_ID": "1" * 12}
     CLUSTER: typing.ClassVar = {"cluster": {"name": "lab-x", "arn": ARN, "endpoint": "https://eks.example",
                                             "certificateAuthority": {"data": "Q0E="}}}
 
