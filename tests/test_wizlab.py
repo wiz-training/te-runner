@@ -1514,10 +1514,29 @@ class ExitCodeContract(unittest.TestCase):
                 capture_output=True, text=True,
             )
             self.assertEqual(sc.returncode, 0, sc.stderr or sc.stdout)
-            touched = ("wizlab/cli.py", "tests/test_wizlab.py", "wizlab/SPEC.md", "wizlab/reap.py", "measurements.yaml")
+            touched = (
+                "wizlab/widget.py", "wizlab/__init__.py", "wizlab/cli.py",
+                "tests/test_wizlab.py", "wizlab/SPEC.md", "wizlab/reap.py", "measurements.yaml",
+            )
             for rel in touched:
                 self.assertIn(f"touched: {rel}", sc.stdout)
             self.assertIn("TODO ", sc.stdout)
+            self.assertTrue((pathlib.Path(tmp) / "wizlab" / "widget.py").is_file())
+            self.assertNotIn("def cmd_widget_inspect", (pathlib.Path(tmp) / "wizlab" / "cli.py").read_text())
+
+            # Two consecutive `ensure` scaffolds succeed and update _SWEEP_TYPES + noun modules cleanly.
+            for noun_i in ("widget", "gadget"):
+                sc_e = wz.subprocess.run(
+                    [sys.executable, str(scaffold_script), "--repo", tmp, "verb", noun_i, "ensure"],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(sc_e.returncode, 0, sc_e.stderr or sc_e.stdout)
+                sh_e = wz.subprocess.run(
+                    [sys.executable, str(shape_script), "--repo", tmp, noun_i, "ensure"],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(sh_e.returncode, 0, sh_e.stderr or sh_e.stdout)
+
             sh = wz.subprocess.run(
                 [sys.executable, str(shape_script), "--repo", tmp, "widget", "inspect"],
                 capture_output=True, text=True,
@@ -1526,6 +1545,7 @@ class ExitCodeContract(unittest.TestCase):
             suite = wz.subprocess.run(
                 [sys.executable, str(pathlib.Path(tmp) / "tests" / "test_wizlab.py"),
                  "InspectContract",
+                 "EnsureContract",
                  "ExitCodeContract.test_every_verb_declares_its_flags_and_every_flag_read_is_declared",
                  "ExitCodeContract.test_every_verb_fits_the_grammar_or_is_excepted",
                  "ExitCodeContract.test_every_verb_has_a_floor_row_and_a_noun_section",
@@ -1534,6 +1554,20 @@ class ExitCodeContract(unittest.TestCase):
                 cwd=tmp, capture_output=True, text=True,
             )
             self.assertEqual(suite.returncode, 0, suite.stderr or suite.stdout)
+
+            # A comment-only `# TODO ... wz.cmd_widget_rotate` stub must fail verb-shape.py.
+            sc_rot = wz.subprocess.run(
+                [sys.executable, str(scaffold_script), "--repo", tmp, "verb", "widget", "rotate",
+                 "--exception", "rotates widget secret"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(sc_rot.returncode, 0, sc_rot.stderr or sc_rot.stdout)
+            sh_rot = wz.subprocess.run(
+                [sys.executable, str(shape_script), "--repo", tmp, "widget", "rotate"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(sh_rot.returncode, 1)
+            self.assertIn("_".join(("cmd", "widget", "rotate")), sh_rot.stderr)
 
     def test_check_collapses_every_failure_to_1_and_names_the_real_code(self):
         err = io.StringIO()

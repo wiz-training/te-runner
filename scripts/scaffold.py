@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scaffold the shape of a new wizlab verb from `_template/verb/` into the five repo files.
+"""Scaffold the shape of a new wizlab verb from `_template/verb/` into its noun module and contract files.
 
 Usage:
   scaffold.py [--repo <dir>] verb <noun> <verb> [--exception "<why>"]
@@ -10,6 +10,7 @@ non-grammar verb without --exception · 3 missing repo or template files.
 """
 import contextlib
 import io
+import keyword
 import pathlib
 import re
 import shutil
@@ -68,7 +69,7 @@ def _dispatch_body(verb, ctx):
             f'    if not core._exact(nodes, args.name):\n'
             f'        doc = "mutation M($input: Create{cap}Input!) {{ "\n'
             f'        doc += "create{cap}(input: $input) {{ {noun_key} {{ id name }} }} }}"\n'
-            f'        core.api(doc, {{"input": {{"name": args.name}}}}, attempts=1)'
+            f'        core.api(doc, {{"input": {{"name": args.name}}}})'
         )
     if verb == "delete":
         return (
@@ -77,9 +78,72 @@ def _dispatch_body(verb, ctx):
             f'    nodes = core._all_nodes(qy, {{}}, "{plural}")\n'
             f'    hit = core._exact(nodes, args.name)\n'
             f'    if hit:\n'
-            f'        core.api(core._delete_doc("delete{cap}"), {{"id": hit["id"]}}, attempts=1)'
+            f'        core.api(core._delete_doc("delete{cap}"), {{"id": hit["id"]}})'
         )
     return '    core.die(2, "TODO")'
+
+
+def _add_rel_import(src, mod_name):
+    m = re.search(r"^from \. import \(\n(.*?)\n\)", src, re.MULTILINE | re.DOTALL)
+    if not m:
+        raise OSError("missing `from . import (...)` block")
+    names = {x.strip().rstrip(",") for x in m.group(1).splitlines() if x.strip()}
+    if mod_name in names:
+        return src, False
+    names.add(mod_name)
+    body = "\n".join(f"    {n}," for n in sorted(names))
+    return src[:m.start()] + f"from . import (\n{body}\n)" + src[m.end():], True
+
+
+def _add_to_modules_tuple(init_src, mod_name):
+    m = re.search(r"^MODULES\s*=\s*\(([^)]*)\)", init_src, re.MULTILINE | re.DOTALL)
+    if not m:
+        raise OSError("wizlab/__init__.py: missing `MODULES = (...)` anchor")
+    mods = [x.strip() for x in m.group(1).replace("\n", " ").split(",") if x.strip()]
+    if mod_name in mods:
+        return init_src, False
+    if "cli" in mods:
+        mods.insert(mods.index("cli"), mod_name)
+    else:
+        mods.append(mod_name)
+    lines, cur = [], "MODULES = ("
+    for idx, item in enumerate(mods):
+        piece = item + (")" if idx == len(mods) - 1 else ", ")
+        if len(cur) + len(piece) > 118 and cur != "MODULES = (":
+            lines.append(cur.rstrip())
+            cur = "           " + piece
+        else:
+            cur += piece
+    lines.append(cur)
+    return init_src[:m.start()] + "\n".join(lines) + init_src[m.end():], True
+
+
+def _ensure_stdlib_import(mod_src, pkg):
+    if re.search(rf"^import {re.escape(pkg)}\b", mod_src, re.MULTILINE):
+        return mod_src
+    m = re.search(r"(?:^import [^\n]+\n)+", mod_src, re.MULTILINE)
+    if m:
+        existing = [ln.strip() for ln in m.group(0).splitlines() if ln.strip()]
+        existing.append(f"import {pkg}")
+        block = "\n".join(sorted(set(existing))) + "\n"
+        return mod_src[:m.start()] + block + mod_src[m.end():]
+    m_from = re.search(r"^from ", mod_src, re.MULTILINE)
+    if m_from:
+        return mod_src[:m_from.start()] + f"import {pkg}\n\n" + mod_src[m_from.start():]
+    return f"import {pkg}\n" + mod_src
+
+
+def _resolve_noun_module(repo, cli_verbs_block, noun, fn_noun):
+    m = re.search(
+        r'\(\s*"' + re.escape(noun) + r'"\s*,\s*"[a-z0-9-]+"\s*\)\s*:\s*([a-z_][a-z0-9_]*)\.',
+        cli_verbs_block,
+    )
+    if m:
+        return m.group(1)
+    mod_name = noun if (repo / "wizlab" / f"{noun}.py").is_file() else fn_noun
+    if not mod_name.isidentifier() or keyword.iskeyword(mod_name):
+        raise ValueError(f"noun {noun!r} does not map to a valid module identifier ({mod_name!r})")
+    return mod_name
 
 
 def _flags_spec(verb):
@@ -102,12 +166,13 @@ def scaffold_verb(repo, noun, verb, exception=None):
             f"verb {verb!r} is outside SPEC.md §Grammar {GRAMMAR_KINDS}; pass --exception \"<why>\""
         )
 
+    init_file = repo / "wizlab" / "__init__.py"
     cli_file = repo / "wizlab" / "cli.py"
     test_file = repo / "tests" / "test_wizlab.py"
     spec_file = repo / "wizlab" / "SPEC.md"
     reap_file = repo / "wizlab" / "reap.py"
     meas_file = repo / "measurements.yaml"
-    for f in (cli_file, test_file, spec_file, reap_file, meas_file):
+    for f in (init_file, cli_file, test_file, spec_file, reap_file, meas_file):
         if not f.is_file():
             raise OSError(f"{f}: not found")
 
@@ -139,13 +204,33 @@ def scaffold_verb(repo, noun, verb, exception=None):
     spec_tmpl = (tmpl_dir / "spec.tmpl").read_text(encoding="utf-8")
     sweep_tmpl = (tmpl_dir / "sweep.tmpl").read_text(encoding="utf-8")
 
-    # 1. wizlab/cli.py: insert cmd stub above `VERBS = {`, row at end of VERBS, row at end of FLAGS
+    # 1. Noun module wizlab/<mod>.py (+ wizlab/__init__.py MODULES when new) and wizlab/cli.py VERBS/FLAGS
+    verbs_section = cli_text.split("\nFLAGS = {", 1)[0]
+    mod_name = _resolve_noun_module(repo, verbs_section, noun, fn_noun)
+    mod_file = repo / "wizlab" / f"{mod_name}.py"
     stub_code = _render(cmd_tmpl, ctx)
+    if mod_file.is_file():
+        mod_text = mod_file.read_text(encoding="utf-8")
+        if "sys." in stub_code:
+            mod_text = _ensure_stdlib_import(mod_text, "sys")
+        mod_text = mod_text.rstrip("\n") + f"\n\n\n{stub_code}\n"
+    else:
+        sys_imp = "import sys\n\n" if "sys." in stub_code else ""
+        mod_text = f'"""`{noun}` verbs."""\n{sys_imp}from . import core\n\n\n{stub_code}\n'
+    mod_file.write_text(mod_text, encoding="utf-8")
+
+    init_text = init_file.read_text(encoding="utf-8")
+    init_text, imp_added = _add_rel_import(init_text, mod_name)
+    init_text, mod_added = _add_to_modules_tuple(init_text, mod_name)
+    init_touched = imp_added or mod_added
+    if init_touched:
+        init_file.write_text(init_text, encoding="utf-8")
+
+    cli_text, _ = _add_rel_import(cli_text, mod_name)
     flags_row = _render(flags_tmpl, ctx)
-    verb_row = f'    ("{noun}", "{verb}"): cmd_{fn_noun}_{fn_verb},'
+    verb_row = f'    ("{noun}", "{verb}"): {mod_name}.cmd_{fn_noun}_{fn_verb},'
     if "\nVERBS = {\n" not in cli_text:
         raise OSError("wizlab/cli.py: missing `VERBS = {` anchor")
-    cli_text = cli_text.replace("\nVERBS = {\n", f"\n{stub_code}\n\n\nVERBS = {{\n", 1)
     verbs_head, verbs_sep, verbs_rest = cli_text.partition("\nVERBS = {\n")
     v_body, v_close, v_tail = verbs_rest.partition("\n}\n")
     cli_text = verbs_head + verbs_sep + v_body + "\n" + verb_row + v_close + v_tail
@@ -231,17 +316,16 @@ def scaffold_verb(repo, noun, verb, exception=None):
     reap_text = reap_file.read_text(encoding="utf-8")
     sweep_entry = _render(sweep_tmpl, ctx)
     if verb == "ensure":
-        if sweep_entry not in reap_text:
-            reap_anchor = '"ServiceAccount", "Outpost"]'
-            if reap_anchor not in reap_text:
-                raise OSError("wizlab/reap.py: missing _SWEEP_TYPES anchor")
-            reap_text = reap_text.replace(
-                reap_anchor,
-                f'"ServiceAccount", "Outpost", {sweep_entry}]  # TODO: verify _SWEEP_TYPES handler for {noun}',
-                1,
-            )
+        m_sweep = re.search(r"^(_SWEEP_TYPES\s*=\s*\[[^\]]*?)\]", reap_text, re.MULTILINE | re.DOTALL)
+        if not m_sweep:
+            raise OSError("wizlab/reap.py: missing _SWEEP_TYPES anchor")
+        if sweep_entry not in m_sweep.group(1):
+            prefix = m_sweep.group(1)
+            sep = " " if prefix.rstrip().endswith(",") else ",\n                "
+            reap_text = reap_text[:m_sweep.start()] + f"{prefix}{sep}{sweep_entry}]" + reap_text[m_sweep.end():]
+        reap_text = reap_text.rstrip("\n") + f"\n# TODO: verify _SWEEP_TYPES handler for {noun}\n"
     else:
-        reap_text += f"# TODO: verify reaper sweep coverage for {noun} {verb}\n"
+        reap_text = reap_text.rstrip("\n") + f"\n# TODO: verify reaper sweep coverage for {noun} {verb}\n"
     reap_file.write_text(reap_text, encoding="utf-8")
 
     # 5. measurements.yaml: plane TODO comment
@@ -249,13 +333,16 @@ def scaffold_verb(repo, noun, verb, exception=None):
     meas_text += f"\n# TODO: record live timing row for wizlab {noun} {verb}\n"
     meas_file.write_text(meas_text, encoding="utf-8")
 
-    touched = [
+    touched = [f"wizlab/{mod_name}.py"]
+    if init_touched:
+        touched.append("wizlab/__init__.py")
+    touched.extend([
         "wizlab/cli.py",
         "tests/test_wizlab.py",
         "wizlab/SPEC.md",
         "wizlab/reap.py",
         "measurements.yaml",
-    ]
+    ])
     print(f"scaffolded `wizlab {noun} {verb}` across {len(touched)} files:")
     for rel in touched:
         print(f"  touched: {rel}")
@@ -300,16 +387,28 @@ def self_test():
         except ValueError:
             pass
 
-        # 3. Scaffold inspect, ensure, delete, and an exception verb
-        for verb, exc in (("inspect", None), ("ensure", None), ("delete", None), ("rotate", "rotates widget key")):
+        # 3. Scaffold inspect, two consecutive ensures across nouns, delete, and an exception verb
+        cases = (
+            ("selftest", "inspect", None),
+            ("selftest", "ensure", None),
+            ("selftesttwo", "ensure", None),
+            ("selftest", "delete", None),
+            ("selftest", "rotate", "rotates widget key"),
+        )
+        for noun_i, verb, exc in cases:
             with contextlib.redirect_stdout(io.StringIO()) as buf:
-                rc = scaffold_verb(tmp, "selftest", verb, exception=exc)
-            if "touched: wizlab/cli.py" not in buf.getvalue() or "TODO " not in buf.getvalue():
-                print(f"self-test FAIL: missing touched/TODO output for widget {verb}", file=sys.stderr)
+                rc = scaffold_verb(tmp, noun_i, verb, exception=exc)
+            out = buf.getvalue()
+            if f"touched: wizlab/{noun_i}.py" not in out or "touched: wizlab/cli.py" not in out or "TODO " not in out:
+                print(f"self-test FAIL: missing touched/TODO output for {noun_i} {verb}", file=sys.stderr)
                 return 1
             if rc != 0:
-                print(f"self-test FAIL: scaffold widget {verb} returned {rc}", file=sys.stderr)
+                print(f"self-test FAIL: scaffold {noun_i} {verb} returned {rc}", file=sys.stderr)
                 return 1
+        cli_after = (pathlib.Path(tmp) / "wizlab" / "cli.py").read_text(encoding="utf-8")
+        if "def cmd_selftest_" in cli_after or "def cmd_selftesttwo_" in cli_after:
+            print("self-test FAIL: cmd_* stub leaked into wizlab/cli.py", file=sys.stderr)
+            return 1
 
     print("self-test: ok (duplicate refusal, grammar refusal, inspect/ensure/delete/exception scaffold)")
     return 0
