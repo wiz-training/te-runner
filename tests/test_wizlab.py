@@ -1783,6 +1783,20 @@ class Naming(unittest.TestCase):
         args = wz.parse(("user", "reap"), ["--session", "s1"])
         self.assertEqual(wz._lab_user_email(args), "lab-s1@wizlabs.cloudseclabs.io")
 
+    def test_empty_tenant_and_session_prefix_env_vars_fall_back_to_defaults(self):
+        env_empty = {"WIZ_TENANT": "", "WIZ_TBCMP_CLIENT_ID": "tbcmp-cid", "WIZ__CLIENT_ID": "broken",
+                     "WIZLAB_SESSION_PREFIX": ""}
+        with mock.patch.dict(wz.os.environ, env_empty, clear=True):
+            self.assertEqual(wz._tenant(), wz._DEFAULT_TENANT)
+            self.assertEqual(wz._tenant_env("CLIENT_ID"), "tbcmp-cid")
+            self.assertEqual(wz._session_prefix(), "lab")
+            self.assertEqual(wz._lab_stem("s1"), "lab-s1")
+            self.assertTrue(wz._foreign({"name": "lab-other-connector"}, "lab-s1"))
+            self.assertFalse(wz._foreign({"name": "lab-s1-connector"}, "lab-s1"))
+        with mock.patch.dict(wz.os.environ, {"WIZLAB_SESSION_PREFIX": "dev"}, clear=True):
+            self.assertEqual(wz._lab_stem("s1"), "dev-s1")
+            self.assertTrue(wz._foreign({"name": "dev-other-connector"}, "dev-s1"))
+
 
 class ConnectorAndReaperSafety(unittest.TestCase):
     def _api(self, find_nodes, bytype_nodes=None):
