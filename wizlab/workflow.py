@@ -179,8 +179,12 @@ def cmd_workflowrun_inspect(args):
     routing decision itself rather than the definition's shape. Two hops because
     AutomationWorkflowRunFilters has no name or search key — and the first hop takes EVERY workflow on the
     stem, because a learner who attempts twice leaves two and grading whichever the API returned first
-    grades an arbitrary attempt."""
+    grades an arbitrary attempt. Without --run-id, steps are pooled across the first 20 completed runs
+    (an earlier run can satisfy a later check, or >20 runs can push a fresh run out of the window); pass
+    --run-id <id> from `workflow-run ensure` to grade only that run."""
     require, branch = _run_require(args)
+    if args.run_id:
+        _inspect_run_by_id(args.run_id, require, branch)
     stem = _workflow_stem(args)
     nodes = _resolve_workflows(stem, exact=args.exact_name)
     if not nodes:
@@ -220,15 +224,30 @@ def _run_satisfies(require, branch, steps):
 _RUN_DEAD = ("FAILED", "CANCELED", "SKIPPED")
 
 
+def _run_by_id(run_id):
+    data, _ = core.api(WORKFLOW_RUNS_Q, {"f": {"id": {"equals": [run_id]}}})
+    nodes = (data.get("automationWorkflowRuns") or {}).get("nodes") or []
+    return next((n for n in nodes if n.get("id") == run_id), None)
+
+
+def _inspect_run_by_id(run_id, require, branch):
+    run = _run_by_id(run_id)
+    if not run or run.get("status") != "COMPLETED":
+        print(f"run {run_id} is {(run or {}).get('status') or 'absent'}, not COMPLETED")
+        sys.exit(1)
+    steps = run.get("steps") or []
+    print(f"run {run_id}: COMPLETED, edges taken: {[s.get('outboundEdge') for s in steps] or 'none'}")
+    sys.exit(0 if _run_satisfies(require, branch, steps) else 1)
+
+
 def _wait_for_run(run_id, timeout, interval):
     """Poll THIS run by id, never "a completed run of this workflow": the workflow's own earlier runs
     already satisfy the latter, so a second call would report success while its own run was in flight.
     Budget from measurements.yaml planes.workflow.test_run, which observes 46-82ms."""
     deadline = time.monotonic() + timeout
     while True:
-        data, _ = core.api(WORKFLOW_RUNS_Q, {"f": {"id": {"equals": [run_id]}}})
-        nodes = (data.get("automationWorkflowRuns") or {}).get("nodes") or []
-        status = nodes[0].get("status") if nodes else None
+        run = _run_by_id(run_id)
+        status = run.get("status") if run else None
         if status == "COMPLETED":
             return status
         if status in _RUN_DEAD:
@@ -238,25 +257,26 @@ def _wait_for_run(run_id, timeout, interval):
         time.sleep(interval)
 
 
-def _initial_step(args, node):
+def _initial_step(step_name, node):
     """customData.initialSteps is non-optional and step ids are minted per create, so a lab names the
     step and it resolves here."""
-    step_name = args.initial_step or core.die(2, "needs --initial-step <step name>")
     step = next((s for s in (node.get("steps") or []) if s.get("name") == step_name), None)
     if not step:
         core.die(2, f"workflow {node['name']} has no step named {step_name!r}; "
                f"has {[s.get('name') for s in (node.get('steps') or [])]}")
-    return step_name, step
+    return step
 
 
 def cmd_workflowrun_ensure(args):
     """Fire a test run of the session's workflow with the synthetic trigger payload in --data
-    <file.json>, then wait for that run to reach COMPLETED."""
-    node = _resolve_workflow(_workflow_stem(args), exact=args.exact_name)
-    if not node:
-        core.die(3, f"no workflow named {_workflow_stem(args)}*; nothing to test-run")
-    step_name, step = _initial_step(args, node)
+    <file.json>, then wait for that run to reach COMPLETED and emit RUN_ID."""
+    stem = _workflow_stem(args)
+    step_name = args.initial_step or core.die(2, "needs --initial-step <step name>")
     payload = core._read_json(args.data, "--data")
+    node = _resolve_workflow(stem, exact=args.exact_name)
+    if not node:
+        core.die(3, f"no workflow named {stem}*; nothing to test-run")
+    step = _initial_step(step_name, node)
     data, _ = core.api(RUN_WORKFLOW_TEST, {"input": {
         "workflowId": node["id"], "triggerType": args.trigger_type,
         "customData": {"initialSteps": [step["id"]], "data": payload}}})
@@ -264,3 +284,4 @@ def cmd_workflowrun_ensure(args):
     print(f"test run {run['id']} fired on {node['name']} entering at {step_name!r}")
     _wait_for_run(run["id"], args.timeout, args.interval)
     print(f"test run {run['id']} reached COMPLETED")
+    core._emit(f"RUN_ID={run['id']}\n")

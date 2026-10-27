@@ -332,12 +332,17 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   `AutomationWorkflowRunFilters` carries no name or search key, and the first hop takes **every** workflow
   on the stem: a learner who attempts twice leaves two, so grading whichever the API returned first grades
   an arbitrary attempt. `TEST` runs only unless `--run-type` widens it, since an `AUTOMATIC` run from a
-  real event would grade a learner on someone else's Threat.
+  real event would grade a learner on someone else's Threat. Without `--run-id`, steps are pooled across
+  the first 20 completed runs (an earlier run can satisfy a later check, or >20 runs can push a fresh run
+  out of the window); `--run-id <id>` fetches only that run via the existing `id` filter and grades its
+  steps alone.
   `workflow-run ensure --data <file.json> --initial-step <step name>` fires a test run with a synthetic
   trigger payload and waits on **that run's id**, never "a completed run of this workflow" — the
   workflow's earlier runs already satisfy the latter, so a second call reports success while its own run
   is still in flight. `customData.initialSteps` is non-optional and step ids are minted per create, so
-  the step is named and resolved at call time.
+  the step is named and resolved at call time. On completion, emits `RUN_ID=<id>` to stdout +
+  `$EXEC_OUTPUT` so a check that fires a run can pass `--run-id "$RUN_ID"` to `workflow-run inspect`;
+  `--initial-step` and `--data` are validated (exit 2) before resolving the workflow.
 
   No `delete` verb: `AutomationWorkflow` is already a `_SWEEP_TYPES` member, so the generic prefix sweep
   reaches it and a second path would be two places holding one fact. Never `TRIGGER_BLUE_AGENT` in a lab

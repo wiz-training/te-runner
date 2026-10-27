@@ -145,7 +145,7 @@ FLAGS = {
     ("workflow", "ensure"): {**_S, "--definition": {}, "--dry-run": _SWITCH, "--name": {}, "--project-id": {}},
     ("workflow-run", "inspect"): {**_S, "--branch": {}, "--exact-name": _SWITCH, "--name": {},
                                   "--require": _one_of("completed", "branch", "error-path"),
-                                  "--run-type": {"default": "TEST"}},
+                                  "--run-id": {}, "--run-type": {"default": "TEST"}},
     ("workflow-run", "ensure"): {**_S, "--data": {}, "--exact-name": _SWITCH, "--initial-step": {},
                                  "--interval": {"type": float, "default": 2.0}, "--name": {}, "--timeout": _int(60),
                                  "--trigger-type": {"default": "EVENT"}},

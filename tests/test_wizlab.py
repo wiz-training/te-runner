@@ -363,8 +363,7 @@ class EnsureContract(unittest.TestCase):
                                 "allowedRegions": ["us-east-1"], "config": {"roleARN": "a"}}
     NOT_WIZ: typing.ClassVar = {("role", "ensure"): "CSP CLIs",
                                 ("k8sconnector", "ensure"): "aws + kubectl mint the token, K8sConnectorGrading",
-                                ("user", "ensure"): "Okta, OktaContract",
-                                ("workflow-run", "ensure"): "fires a test run, converges nothing"}
+                                ("user", "ensure"): "Okta, OktaContract"}
 
     @classmethod
     def setUpClass(cls):
@@ -425,6 +424,17 @@ class EnsureContract(unittest.TestCase):
                             "updateAutomationWorkflow": {"workflow": wf}},
                 "creates": ["createAutomationWorkflow"], "present_mutates": ["updateAutomationWorkflow"],
                 "invalid": [["--name", "lab-x"]]},
+            ("workflow-run", "ensure"): {
+                "argv": ["--name", wf["name"], "--initial-step", "Route", "--data", self.definition.name],
+                "absent": {"automationWorkflows": _conn(wf),
+                           "runAutomationWorkflowTest": {"workflowRun": InspectContract.RUN},
+                           "automationWorkflowRuns": _conn(InspectContract.RUN)},
+                "present": {"automationWorkflows": _conn(wf),
+                            "runAutomationWorkflowTest": {"workflowRun": InspectContract.RUN},
+                            "automationWorkflowRuns": _conn(InspectContract.RUN)},
+                "creates": ["runAutomationWorkflowTest"], "present_mutates": ["runAutomationWorkflowTest"],
+                "invalid": [["--name", "lab-x"], ["--name", "lab-x", "--initial-step", "Route"],
+                            ["--name", "lab-x", "--data", self.definition.name]]},
             ("outpost", "ensure"): {
                 "argv": ["--name", "lab-x", "--role-arn", "a"],
                 "absent": {"outposts": _conn(), "createOutpost": {"outpost": self.OUTPOST}},
@@ -483,7 +493,7 @@ class EnsureContract(unittest.TestCase):
             for argv in row.get("invalid", []):
                 with self.subTest(verb=verb, argv=argv):
                     code, wiz = self._run(verb, argv, row["absent"])
-                    self.assertEqual((code, _mutations(wiz)), (2, []))
+                    self.assertEqual((code, wiz.calls), (2, []))
 
 
 class DeleteContract(unittest.TestCase):
@@ -2820,8 +2830,42 @@ class WorkflowGrading(unittest.TestCase):
                        self._wiz(self.LIVE)), 2)
 
     def test_run_ensure_rejects_unknown_initial_step(self):
-        argv = ["--name", "lab-x", "--initial-step", "Nope", "--data", "/nope.json"]
+        argv = ["--name", "lab-x", "--initial-step", "Nope", "--data", self._definition_file()]
         self.assertEqual(self._exit(wz.cmd_workflowrun_ensure, argv, self._wiz(self.LIVE)), 2)
+
+    def test_run_ensure_validates_flags_before_any_request_and_emits_run_id(self):
+        data_file = self._definition_file()
+        for argv in (["--name", "lab-x", "--initial-step", "Route"],
+                     ["--name", "lab-x", "--data", data_file],
+                     ["--name", "lab-x", "--initial-step", "Route", "--data", "/nope.json"]):
+            wiz = self._wiz([])
+            self.assertEqual(self._exit(wz.cmd_workflowrun_ensure, argv, wiz), 2)
+            self.assertEqual(wiz.calls, [])
+        wiz = self._wiz(self.LIVE, [self._run("Malicious")],
+                        runAutomationWorkflowTest={"workflowRun": {"id": "r1", "status": "IN_PROGRESS"}})
+        out = io.StringIO()
+        with tempfile.NamedTemporaryFile("w+", delete=False) as exec_out:
+            exec_path = exec_out.name
+        self.addCleanup(os.unlink, exec_path)
+        argv = ["--name", "lab-x", "--initial-step", "Route", "--data", data_file]
+        code = exit_code(wz.cmd_workflowrun_ensure, argv, wiz=wiz, out=out, env={"EXEC_OUTPUT": exec_path})
+        self.assertEqual(code, 0)
+        self.assertIn("RUN_ID=r1\n", out.getvalue())
+        self.assertEqual(pathlib.Path(exec_path).read_text(), "RUN_ID=r1\n")
+
+    def test_run_inspect_by_run_id_grades_only_the_named_run(self):
+        older = {**self._run("false", "CONDITION"), "id": "r-old"}
+        fresh = {**self._run("true", "CONDITION"), "id": "r-new"}
+        wiz = self._wiz(self.LIVE, [older, fresh])
+        fail_argv = ["--run-id", "r-new", "--require", "branch", "--branch", "false"]
+        self.assertEqual(self._exit(wz.cmd_workflowrun_inspect, fail_argv, wiz), 1)
+        self.assertEqual(wiz.sent("automationWorkflowRuns"), [{"f": {"id": {"equals": ["r-new"]}}}])
+        self.assertEqual(wiz.sent("automationWorkflows"), [])
+        pass_argv = ["--run-id", "r-new", "--require", "branch", "--branch", "true"]
+        self.assertEqual(self._exit(wz.cmd_workflowrun_inspect, pass_argv, self._wiz(self.LIVE, [older, fresh])), 0)
+        self.assertEqual(
+            self._exit(wz.cmd_workflowrun_inspect, ["--run-id", "r-missing", "--require", "completed"],
+                       self._wiz(self.LIVE, [older])), 1)
 
     def _definition_file(self):
         d = tempfile.mkdtemp()
