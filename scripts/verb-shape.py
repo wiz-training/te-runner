@@ -25,7 +25,18 @@ import pathlib
 import re
 import sys
 import tempfile
+import tokenize
 from unittest import mock
+
+
+def _strip_comments(src):
+    try:
+        return " ".join(
+            tok.string for tok in tokenize.generate_tokens(io.StringIO(src).readline)
+            if tok.type != tokenize.COMMENT
+        )
+    except tokenize.TokenError:
+        return re.sub(r"#.*", "", src)
 
 
 def _load_repo(repo):
@@ -99,6 +110,7 @@ def _load_repo(repo):
         "wz": wz,
         "tw": tw,
         "test_text": test_text,
+        "test_code": _strip_comments(test_text),
         "kinds": kinds,
         "exceptions": exceptions,
         "header_nouns": header_nouns,
@@ -170,7 +182,10 @@ def check_verb(ctx, noun, verb):
             misses.append(f"{noun} {verb}: tests/test_wizlab.py: missing DeleteContract.ROWS entry")
     else:
         fn_name = wz.VERBS[nv].__name__
-        if fn_name not in ctx["test_text"]:
+        test_code = ctx.get("test_code")
+        if test_code is None:
+            test_code = _strip_comments(ctx["test_text"])
+        if fn_name not in test_code:
             misses.append(f"{noun} {verb}: tests/test_wizlab.py: handler `{fn_name}` is not referenced in tests")
 
     if verb == "ensure":
@@ -246,13 +261,20 @@ def self_test():
         with contextlib.redirect_stdout(io.StringIO()):
             scaffold.scaffold_verb(tmp, "selftest", "inspect")
             scaffold.scaffold_verb(tmp, "selftest", "ensure")
+            scaffold.scaffold_verb(tmp, "selftesttwo", "ensure")
             scaffold.scaffold_verb(tmp, "selftest", "delete")
+            scaffold.scaffold_verb(tmp, "selftest", "rotate", exception="rotates key")
         ctx = _load_repo(tmp)
-        for v in ("inspect", "ensure", "delete"):
-            misses, code = check_verb(ctx, "selftest", v)
+        pairs = (("selftest", "inspect"), ("selftest", "ensure"), ("selftesttwo", "ensure"), ("selftest", "delete"))
+        for n_i, v_i in pairs:
+            misses, code = check_verb(ctx, n_i, v_i)
             if misses or code not in (0, 1, 2, 3):
-                print(f"self-test FAIL: widget {v}: misses={misses} code={code}", file=sys.stderr)
+                print(f"self-test FAIL: {n_i} {v_i}: misses={misses} code={code}", file=sys.stderr)
                 return 1
+        rot_misses, _ = check_verb(ctx, "selftest", "rotate")
+        if not any("cmd_selftest_rotate" in m for m in rot_misses):
+            print(f"self-test FAIL: comment-only handler reference passed verb-shape: {rot_misses}", file=sys.stderr)
+            return 1
         misses, _ = check_verb(ctx, "nosuch", "verb")
         if not misses:
             print("self-test FAIL: expected miss for nosuch verb", file=sys.stderr)
