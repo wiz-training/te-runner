@@ -632,11 +632,22 @@ class FakeGitHub:
                 return 422, {"message": "Reference already exists"}
             self.branches[name] = body["sha"]
             return 201, {}
+        if path.startswith(self.SLOT_PREFIX) and "/git/refs/heads/" in path and method == "PATCH":
+            name = path.split("/git/refs/heads/", 1)[-1]
+            if name not in self.branches or not body.get("force", False):
+                return 422, {"message": "Update is not a fast forward"}
+            self.branches[name] = body["sha"]
+            return 200, {"ref": f"refs/heads/{name}", "object": {"sha": body["sha"]}}
         if path.startswith(self.SLOT_PREFIX) and "/git/refs/heads/" in path and method == "DELETE":
             name = path.split("/git/refs/heads/", 1)[-1]
             return (204, {}) if self.branches.pop(name, None) is not None else (422, {})
         if path.startswith(f"{self.REPO}/contents/Dockerfile") and method == "PUT":
+            branch = body.get("branch", "main")
+            want_sha = "fsha" if self.branches.get(branch) == self.branches.get("main", "mainsha") else "patched-fsha"
+            if body.get("sha") != want_sha:
+                return 409, {"message": "Dockerfile does not match"}
             self.puts.append(body)
+            self.branches[branch] = f"putsha-{len(self.puts)}"
             return 200, {}
         if path.startswith(f"{self.REPO}/pulls") and method == "POST":
             self.prs.append({"number": 7, "state": "open", "head": {"ref": body["head"]}})
@@ -878,6 +889,35 @@ class GitHubContract(unittest.TestCase):
         self.assertEqual(put["branch"], f"patch/{self.STEM}")
         self.assertEqual(self._run(wz.cmd_patch_open, ["--repo", repo], gh, out=out), 0)
         self.assertEqual(len(gh.prs), 1, "a second run finds the PR, never opens another")
+
+    def test_patch_open_resets_existing_branch_when_retried_after_dockerfile_put(self):
+        gh = FakeGitHub()
+        repo = gh.REPO.split("/repos/", 1)[1]
+
+        def fail_on_pr_post(method, path, body=None, token=None):
+            if method == "POST" and path == f"{gh.REPO}/pulls":
+                raise wz.WizlabError(3, "GitHub 502 on POST pulls")
+            return gh(method, path, body, token)
+
+        self.assertEqual(self._run(wz.cmd_patch_open, ["--repo", repo], gh, _gh_call=fail_on_pr_post), 3)
+        self.assertEqual(gh.prs, [])
+        self.assertNotEqual(gh.branches[f"patch/{self.STEM}"], "mainsha")
+
+        out = io.StringIO()
+        self.assertEqual(self._run(wz.cmd_patch_open, ["--repo", repo], gh, out=out), 0)
+        self.assertIn("PR_NUMBER=7\n", out.getvalue())
+        self.assertIn(("PATCH", f"{gh.REPO}/git/refs/heads/patch/{self.STEM}"), gh.calls)
+        self.assertEqual(len(gh.prs), 1)
+        patch_idx = gh.calls.index(("PATCH", f"{gh.REPO}/git/refs/heads/patch/{self.STEM}"))
+        self.assertEqual(gh.bodies[patch_idx], {"sha": "mainsha", "force": True})
+
+        calls_before = len(gh.calls)
+        out2 = io.StringIO()
+        self.assertEqual(self._run(wz.cmd_patch_open, ["--repo", repo], gh, out=out2), 0)
+        self.assertIn("PR_NUMBER=7\n", out2.getvalue())
+        writes = [m for m, p in gh.calls[calls_before:]
+                  if m in ("POST", "PUT", "PATCH") and "access_tokens" not in p]
+        self.assertEqual(writes, [])
 
     def test_patch_open_with_nothing_to_patch_is_1(self):
         gh = FakeGitHub(dockerfile="FROM x\nUSER node\n")
