@@ -48,6 +48,38 @@ def _run_block(step_body):
     return m.group(1) if m else ""
 
 
+def _dockerfile_tar_extractions(text):
+    uncommented = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+    joined = re.sub(r"\\\n\s*", " ", uncommented)
+    out = []
+    for line in joined.splitlines():
+        if not re.match(r"^\s*RUN\s+", line):
+            continue
+        for seg in re.split(r"&&|\|\||;|\|", re.sub(r"^\s*RUN\s+", "", line)):
+            tokens = seg.strip().split()
+            if tokens and tokens[0] == "tar" and any(
+                t == "--extract" or (t.startswith("-") and not t.startswith("--") and "x" in t) or (i == 1 and "x" in t)
+                for i, t in enumerate(tokens[1:], start=1)
+            ):
+                out.append(seg.strip())
+    return out
+
+
+class DockerfileTests(unittest.TestCase):
+    """GNU tar as root defaults to --same-owner: go-containerregistry v0.20.6 packs crane as 1001:118
+    (tailscale 1.102.3 is 0:0), and any archive member packed by UID 1000 would extract into
+    /usr/local/bin owned by learner (UID 1000)."""
+
+    def test_every_tar_extraction_passes_no_same_owner(self):
+        cmds = _dockerfile_tar_extractions((ROOT / "Dockerfile").read_text())
+        self.assertGreaterEqual(len(cmds), 2)
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                self.assertIn("--no-same-owner", cmd.split())
+        sample = "RUN curl -sSfL u -o /tmp/a.tgz && tar -xzf /tmp/a.tgz -C /usr/local/bin && tar xzf /tmp/b.tgz\n"
+        self.assertEqual(len(_dockerfile_tar_extractions(sample)), 2)
+
+
 class BuildWorkflowTests(unittest.TestCase):
     def test_reap_yml_pins_the_floating_tag(self):
         live = _live(REAP_YML.read_text())

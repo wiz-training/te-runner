@@ -59,7 +59,7 @@ RUN pip install --no-cache-dir azure-cli==2.91.0
 RUN ARCH=$(dpkg --print-architecture) && TSVER=1.102.3 && \
     curl -sSfL "https://pkgs.tailscale.com/stable/tailscale_${TSVER}_${ARCH}.tgz" -o /tmp/ts.tgz && \
     echo "$(curl -sSfL "https://pkgs.tailscale.com/stable/tailscale_${TSVER}_${ARCH}.tgz.sha256")  /tmp/ts.tgz" | sha256sum -c - && \
-    tar -xzf /tmp/ts.tgz -C /tmp && \
+    tar --no-same-owner -xzf /tmp/ts.tgz -C /tmp && \
     mv "/tmp/tailscale_${TSVER}_${ARCH}/tailscale" "/tmp/tailscale_${TSVER}_${ARCH}/tailscaled" /usr/local/bin/ && \
     rm -rf /tmp/ts.tgz "/tmp/tailscale_${TSVER}_${ARCH}"
 
@@ -82,7 +82,7 @@ RUN ARCH=$(dpkg --print-architecture) && KVER=v1.31.11 && CRANE=v0.20.6 && \
     curl -sSfL "https://github.com/google/go-containerregistry/releases/download/${CRANE}/go-containerregistry_Linux_${CARCH}.tar.gz" -o /tmp/crane.tgz && \
     curl -sSfL "https://github.com/google/go-containerregistry/releases/download/${CRANE}/checksums.txt" \
       | grep " go-containerregistry_Linux_${CARCH}.tar.gz$" | sed 's#  .*#  /tmp/crane.tgz#' | sha256sum -c - && \
-    tar -xzf /tmp/crane.tgz -C /usr/local/bin crane && rm /tmp/crane.tgz
+    tar --no-same-owner -xzf /tmp/crane.tgz -C /usr/local/bin crane && rm /tmp/crane.tgz
 
 # The image's own identity, passed by CI from the git tag and sha it built. Without it a running
 # grader cannot say what it is: a play pins the HCL at import, so a repo's tag string is evidence of
