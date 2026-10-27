@@ -534,17 +534,20 @@ class DeleteContract(unittest.TestCase):
 
 class FakeGitHub:
     """GitHub REST behind _gh_call for the code-lab verbs: the App's installation token, the pool's claim
-    refs in te-code-labs, and one slot repo's Dockerfile, branches and pull requests. `claims` is
-    {slot: session stem}; `fail` makes every call a transport failure (3). `calls` holds (method, path)."""
+    refs in te-code-labs, and slot repos' Dockerfile, branches and pull requests. `claims` is
+    {slot: session stem}; `claim_ages` is {slot: seconds_old} (default 0); `fail` makes every call a
+    transport failure (3). `calls` holds (method, path)."""
     LAB = "juice-shop-101"
     CONTROL = "/repos/wiz-training/te-code-labs"
+    SLOT_PREFIX = "/repos/wiz-training/te-code-"
     REPO = "/repos/wiz-training/te-code-juice-shop-101-02"
 
-    def __init__(self, slots=("01", "02"), claims=None, dockerfile="FROM x\nUSER root\nENV LAB_SLOT=02\n",
-                 prs=(), fail=False):
-        self.slots, self.claims, self.dockerfile = list(slots), dict(claims or {}), dockerfile
-        self.prs, self.fail = list(prs), fail
-        self.calls, self.branches, self.puts, self.commits = [], {"main": "mainsha"}, [], {}
+    def __init__(self, slots=("01", "02"), claims=None, claim_ages=None,
+                 dockerfile="FROM x\nUSER root\nENV LAB_SLOT=02\n", prs=(), branches=None, fail=False):
+        self.slots, self.claims, self.claim_ages = list(slots), dict(claims or {}), dict(claim_ages or {})
+        self.dockerfile, self.prs, self.fail = dockerfile, [dict(p) for p in prs], fail
+        self.calls, self.puts, self.commits = [], [], {}
+        self.branches = dict(branches) if branches is not None else {"main": "mainsha"}
 
     def _ref_lab_slot(self, key):
         return key.split("/", 1) if "/" in key else (self.LAB, key)
@@ -564,7 +567,12 @@ class FakeGitHub:
             return 200, [{"ref": f"refs/claims/{self.LAB}/slot-{s}", "object": {"sha": f"sha-{s}"}}
                          for s in sorted(self.claims) if "/" not in s]
         if path.startswith(f"{self.CONTROL}/git/commits/sha-"):
-            return 200, {"message": self.claims[path.rsplit("sha-", 1)[-1]]}
+            key = path.rsplit("sha-", 1)[-1]
+            dt = wz.datetime.datetime.fromtimestamp(
+                wz.time.time() - self.claim_ages.get(key, 0), wz.datetime.timezone.utc
+            )
+            ts = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            return 200, {"message": self.claims[key], "author": {"date": ts}, "committer": {"date": ts}}
         if path == f"{self.CONTROL}/git/commits" and method == "POST":
             self.commits["pending"] = body["message"]
             return 201, {"sha": "newsha"}
@@ -573,6 +581,7 @@ class FakeGitHub:
             if slot in self.claims:
                 return 422, {"message": "Reference already exists"}
             self.claims[slot] = self.commits["pending"]
+            self.claim_ages.pop(slot, None)
             return 201, {}
         if path.startswith(f"{self.CONTROL}/git/refs/claims/") and method == "DELETE":
             lab, slot_ref = path.split("/git/refs/claims/", 1)[1].split("/", 1)
@@ -589,15 +598,25 @@ class FakeGitHub:
                 return 422, {"message": "Reference already exists"}
             self.branches[name] = body["sha"]
             return 201, {}
+        if path.startswith(self.SLOT_PREFIX) and "/git/refs/heads/" in path and method == "DELETE":
+            name = path.split("/git/refs/heads/", 1)[-1]
+            return (204, {}) if self.branches.pop(name, None) is not None else (422, {})
         if path.startswith(f"{self.REPO}/contents/Dockerfile") and method == "PUT":
             self.puts.append(body)
             return 200, {}
         if path.startswith(f"{self.REPO}/pulls") and method == "POST":
-            self.prs.append({"number": 7, "head": {"ref": body["head"]}})
+            self.prs.append({"number": 7, "state": "open", "head": {"ref": body["head"]}})
             return 201, {"number": 7}
-        if path.startswith(f"{self.REPO}/pulls") and method == "GET":
+        if path.startswith(self.SLOT_PREFIX) and "/pulls" in path and method == "GET":
             head = path.split("head=", 1)[-1].split("&")[0].split(":", 1)[-1]
-            return 200, [p for p in self.prs if p["head"]["ref"] == head]
+            return 200, [p for p in self.prs if p.get("state", "open") == "open" and p["head"]["ref"] == head]
+        if path.startswith(self.SLOT_PREFIX) and "/pulls/" in path and method == "PATCH":
+            num = int(path.rsplit("/pulls/", 1)[-1])
+            for p in self.prs:
+                if p["number"] == num:
+                    p["state"] = body["state"]
+                    return 200, p
+            return 404, {"message": "Not Found"}
         raise AssertionError(f"unrouted {method} {path}")
 
 
@@ -699,16 +718,39 @@ class GitHubContract(unittest.TestCase):
         self.assertEqual(again, posts, "a held claim is not re-posted")
 
     def test_claim_with_no_free_slot_is_1(self):
-        gh = FakeGitHub(claims={"01": "lab-a", "02": "lab-b"})
+        gh = FakeGitHub(claims={"01": "lab-a", "02": "lab-b"},
+                        claim_ages={"01": wz.CLAIM_TTL_S - 60, "02": 10})
         self.assertEqual(self._run(wz.cmd_slot_claim, ["--lab", "juice-shop-101"], gh), 1)
+        self.assertEqual(gh.claims, {"01": "lab-a", "02": "lab-b"})
 
-    def test_release_drops_only_this_sessions_claims_and_is_a_no_op_when_none(self):
-        gh = FakeGitHub(claims={"01": "lab-other", "02": self.STEM})
+    def test_claim_evicts_a_claim_older_than_claim_ttl(self):
+        gh, out = FakeGitHub(
+            claims={"01": "lab-old", "02": "lab-fresh"},
+            claim_ages={"01": wz.CLAIM_TTL_S + 60, "02": 60},
+            prs=[{"number": 7, "state": "open", "head": {"ref": "patch/lab-old"}}],
+            branches={"main": "mainsha", "patch/lab-old": "oldsha"},
+        ), io.StringIO()
+        self.assertEqual(self._run(wz.cmd_slot_claim, ["--lab", "juice-shop-101"], gh, out=out), 0)
+        self.assertEqual(gh.claims, {"01": self.STEM, "02": "lab-fresh"})
+        self.assertIn("SLOT=01\n", out.getvalue())
+        self.assertEqual(gh.prs[0]["state"], "closed")
+        self.assertNotIn("patch/lab-old", gh.branches)
+
+    def test_release_drops_only_this_sessions_claims_and_closes_its_patch_pr_and_branch(self):
+        gh = FakeGitHub(
+            claims={"01": "lab-other", "02": self.STEM},
+            prs=[{"number": 6, "state": "open", "head": {"ref": "patch/lab-other"}},
+                 {"number": 7, "state": "open", "head": {"ref": f"patch/{self.STEM}"}}],
+            branches={"main": "mainsha", "patch/lab-other": "osha", f"patch/{self.STEM}": "ssha"},
+        )
         self.assertEqual(self._run(wz.cmd_slot_release, ["--lab", "juice-shop-101"], gh), 0)
         self.assertEqual(gh.claims, {"01": "lab-other"})
+        self.assertEqual(gh.prs[0]["state"], "open")
+        self.assertEqual(gh.prs[1]["state"], "closed")
+        self.assertEqual(gh.branches, {"main": "mainsha", "patch/lab-other": "osha"})
         gh2 = FakeGitHub(claims={"01": "lab-other"})
         self.assertEqual(self._run(wz.cmd_slot_release, ["--lab", "juice-shop-101"], gh2), 0)
-        self.assertFalse([c for c in gh2.calls if c[0] == "DELETE"])
+        self.assertFalse([c for c in gh2.calls if c[0] in ("DELETE", "PATCH")])
 
     def test_patch_open_rewrites_user_root_on_its_own_branch_and_opens_one_pr(self):
         gh, out = FakeGitHub(), io.StringIO()
@@ -1775,19 +1817,44 @@ class ConnectorAndReaperSafety(unittest.TestCase):
                       err.getvalue())
 
     def test_slot_claims_are_reaped(self):
-        claims = {"01": "lab-s1", "02": "lab-other", "other-lab/01": "lab-s1", "other-lab/02": "lab-other"}
-        gh_dry, out_dry, err_dry = FakeGitHub(claims=dict(claims)), io.StringIO(), io.StringIO()
+        claims = {
+            "01": "lab-s1",
+            "02": "lab-other",
+            "03": "lab-expired",
+            "other-lab/01": "lab-s1",
+            "other-lab/02": "lab-other",
+        }
+        ages = {"02": 60, "03": wz.CLAIM_TTL_S + 60, "other-lab/02": 60}
+        prs = [
+            {"number": 7, "state": "open", "head": {"ref": "patch/lab-s1"}},
+            {"number": 8, "state": "open", "head": {"ref": "patch/lab-expired"}},
+            {"number": 9, "state": "open", "head": {"ref": "patch/lab-other"}},
+        ]
+        branches = {
+            "main": "mainsha",
+            "patch/lab-s1": "s1sha",
+            "patch/lab-expired": "expsha",
+            "patch/lab-other": "othsha",
+        }
+        gh_dry, out_dry, err_dry = (
+            FakeGitHub(claims=dict(claims), claim_ages=dict(ages), prs=prs, branches=branches),
+            io.StringIO(), io.StringIO(),
+        )
         code = exit_code(wz.cmd_reap, ["--session", "s1"], wiz=FakeWiz(), env=GitHubContract.GH_ENV,
                          out=out_dry, err=err_dry, _gh_call=gh_dry,
                          _reap_enumerate=([], None), _reap_sweep_type=wz.Counter())
         self.assertEqual(code, 0)
-        self.assertFalse([c for c in gh_dry.calls if c[0] == "DELETE"], "dry-run must not delete refs")
+        self.assertFalse([c for c in gh_dry.calls if c[0] in ("DELETE", "PATCH")], "dry-run must not mutate")
         self.assertIn("DRY-RUN would release slot juice-shop-101/01", out_dry.getvalue())
+        self.assertIn("DRY-RUN would release slot juice-shop-101/03", out_dry.getvalue())
         self.assertIn("DRY-RUN would release slot other-lab/01", out_dry.getvalue())
         self.assertNotIn("02", out_dry.getvalue())
-        self.assertIn("2 slot(s)", err_dry.getvalue())
+        self.assertIn("3 slot(s)", err_dry.getvalue())
 
-        gh, out, err = FakeGitHub(claims=dict(claims)), io.StringIO(), io.StringIO()
+        gh, out, err = (
+            FakeGitHub(claims=dict(claims), claim_ages=dict(ages), prs=prs, branches=branches),
+            io.StringIO(), io.StringIO(),
+        )
         code = exit_code(wz.cmd_reap, ["--session", "s1", "--commit"], wiz=FakeWiz(), env=GitHubContract.GH_ENV,
                          out=out, err=err, _gh_call=gh,
                          _reap_enumerate=([], None), _reap_sweep_type=wz.Counter())
@@ -1795,12 +1862,19 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         deletes = [p for m, p in gh.calls if m == "DELETE"]
         self.assertEqual(deletes, [
             f"{gh.CONTROL}/git/refs/claims/juice-shop-101/slot-01",
+            "/repos/wiz-training/te-code-juice-shop-101-01/git/refs/heads/patch/lab-s1",
+            f"{gh.CONTROL}/git/refs/claims/juice-shop-101/slot-03",
+            "/repos/wiz-training/te-code-juice-shop-101-03/git/refs/heads/patch/lab-expired",
             f"{gh.CONTROL}/git/refs/claims/other-lab/slot-01",
+            "/repos/wiz-training/te-code-other-lab-01/git/refs/heads/patch/lab-s1",
         ])
         self.assertEqual(gh.claims, {"02": "lab-other", "other-lab/02": "lab-other"})
+        self.assertEqual([p["state"] for p in gh.prs], ["closed", "closed", "open"])
+        self.assertEqual(gh.branches, {"main": "mainsha", "patch/lab-other": "othsha"})
         self.assertIn("released slot juice-shop-101/01", out.getvalue())
+        self.assertIn("released slot juice-shop-101/03", out.getvalue())
         self.assertIn("released slot other-lab/01", out.getvalue())
-        self.assertIn("2 slot(s)", err.getvalue())
+        self.assertIn("3 slot(s)", err.getvalue())
 
         # A claim raced away between the ref list and DELETE answers 422 and counts as absent, not removed.
         gh_raced, out_r, err_r = FakeGitHub(claims={"01": "lab-s1"}), io.StringIO(), io.StringIO()
