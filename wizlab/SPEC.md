@@ -412,7 +412,8 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   wins. `published` = ≥1 scan exists; `pass` = latest `status.verdict == PASSED_BY_POLICY`
   (`FAILED_BY_POLICY` exits 1 at once). Grades the TENANT verdict, not the CLI exit code, because
   `WARN_BY_POLICY` exits 0 — only a blocking policy distinguishes a finding from a pass. Polls every
-  `--interval` to `--timeout` (default 180s) since publish latency is unmeasured.
+  `--interval` to `--timeout` (default 180s) since publish latency is unmeasured. `WARN_BY_POLICY` and
+  terminal non-running states (`FAILURE`, `SKIPPED`) also exit 1 on the first poll.
 
 ## What may be added
 A change qualifies only if ALL hold:

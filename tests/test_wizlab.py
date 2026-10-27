@@ -3383,9 +3383,16 @@ class CodeScanGrading(unittest.TestCase):
             return exit_code(wz.cmd_codescan_inspect, argv, wiz=wiz, env=self.ENV)
 
     def test_pass_grades_the_verdict(self):
-        for verdict, want in [("PASSED_BY_POLICY", 0), ("FAILED_BY_POLICY", 1)]:
-            with self.subTest(verdict=verdict):
-                self.assertEqual(self._exit(["--require", "pass"], self._wiz([self._node(verdict=verdict)])), want)
+        for node, want in [(self._node(verdict="PASSED_BY_POLICY"), 0),
+                           (self._node(verdict="FAILED_BY_POLICY"), 1),
+                           (self._node(verdict="WARN_BY_POLICY"), 1),
+                           (self._node(state="FAILURE"), 1),
+                           (self._node(state="SKIPPED"), 1)]:
+            with self.subTest(node=node), mock.patch.object(wz.time, "sleep") as slept:
+                wiz = self._wiz([node])
+                self.assertEqual(exit_code(wz.cmd_codescan_inspect, ["--require", "pass"], wiz=wiz, env=self.ENV), want)
+                slept.assert_not_called()
+                self.assertEqual(len(wiz.calls), 1)
 
     def test_pass_polls_a_running_scan_to_its_verdict(self):
         seq = [self._node(state="IN_PROGRESS"), self._node(verdict="PASSED_BY_POLICY")]

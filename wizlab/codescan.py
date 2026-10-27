@@ -30,7 +30,8 @@ def _cicd_latest(tag_key, tag_value):
 def cmd_codescan_inspect(args):
     """Assert a Wiz CLI scan for this session. --require published (>=1 scan tagged session=<stem>) or
     pass (latest scan verdict PASSED_BY_POLICY). Polls every --interval up to --timeout (default 180s)
-    because publish latency is unmeasured; a definitive FAILED_BY_POLICY exits 1 without waiting."""
+    because publish latency is unmeasured; a definitive FAILED_BY_POLICY exits 1 without waiting.
+    WARN_BY_POLICY and terminal non-running states (FAILURE, SKIPPED) likewise exit 1 on the first poll."""
     require = args.require
     tag_key = args.tag_key
     tag_value = core._named(args, flag="tag_value")
@@ -48,8 +49,8 @@ def cmd_codescan_inspect(args):
             if verdict == "PASSED_BY_POLICY":
                 print(f"code-scan: {node['id']} PASSED_BY_POLICY")
                 return
-            if verdict == "FAILED_BY_POLICY":
-                print(f"code-scan: {node['id']} FAILED_BY_POLICY")
+            if verdict in ("FAILED_BY_POLICY", "WARN_BY_POLICY") or state in ("FAILURE", "SKIPPED"):
+                print(f"code-scan: {node['id']} {verdict or state}")
                 sys.exit(1)
             # verdict not yet set (scan still running) — keep polling
         if time.monotonic() >= deadline:
