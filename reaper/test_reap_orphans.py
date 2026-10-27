@@ -87,6 +87,59 @@ class ReapOrdering(unittest.TestCase):
         i = reap_args.index("--last-min")
         self.assertEqual(reap_args[i:i + 2], ["--last-min", "4320"])
 
+    def test_slot_claims_are_listed_and_inspected_at_most_once_per_commit_run(self):
+        """Across multi-tenant and dual-tagged sessions, reap_orphans sweeps GitHub slot claims once
+        in-process (and passes WIZLAB_SKIP_SLOT_SWEEP=1 to per-session wizlab subprocesses), including
+        expired claims when zero sessions stopped."""
+        sys_path = str(pathlib.Path(__file__).resolve().parent.parent / "tests")
+        if sys_path not in rp.sys.path:
+            rp.sys.path.insert(0, sys_path)
+        import test_wizlab as tw
+
+        gh = tw.FakeGitHub(
+            claims={"01": "lab-ghtvgsxcgphw", "02": "lab-k8m01846391n", "03": "lab-live", "04": "lab-old"},
+            claim_ages={"03": 30, "04": tw.wz.CLAIM_TTL_S + 60},
+        )
+        ok_proc = rp.subprocess.CompletedProcess(["wizlab"], 0, stdout="", stderr="")
+        with mock.patch.object(rp, "TENANTS", {"TBCMP": "tid:tbcmp", "TE": "tid:te"}), \
+             mock.patch.object(rp, "stopped_sessions",
+                               side_effect=[["ghtvgsxcgphw", "bapr82q9xmm5"], ["ghtvgsxcgphw", "k8m01846391n"]]), \
+             mock.patch.object(rp.subprocess, "run", return_value=ok_proc) as proc, \
+             mock.patch.object(rp._codelab, "_gh_call", gh), \
+             mock.patch.dict(rp.os.environ, dict(tw.GitHubContract.GH_ENV), clear=True), \
+             mock.patch.object(rp.sys, "argv", ["reap_orphans.py", "--commit"]), \
+             mock.patch.object(rp.sys, "stdout", io.TextIOWrapper(io.BytesIO())), \
+             mock.patch.object(rp.sys, "stderr", io.StringIO()) as err:
+            rp.main()
+
+        reap_calls = [c for c in proc.call_args_list if c.args[0][1:3] == ["user", "reap"]]
+        self.assertEqual(len(reap_calls), 4)
+        for c in reap_calls:
+            self.assertEqual(c.kwargs["env"].get("WIZLAB_SKIP_SLOT_SWEEP"), "1")
+        matching_gets = [p for m, p in gh.calls if m == "GET" and "/git/matching-refs/" in p]
+        commit_gets = [p for m, p in gh.calls if m == "GET" and "/git/commits/" in p]
+        self.assertEqual(len(matching_gets), 1)
+        self.assertEqual(len(commit_gets), 4)
+        self.assertEqual(gh.claims, {"03": "lab-live"})
+        self.assertIn("# slot claims: 3 removed, 0 absent", err.getvalue())
+
+        # Zero stopped sessions in window still sweeps expired claims once.
+        gh_zero = tw.FakeGitHub(claims={"01": "lab-old", "02": "lab-live"},
+                                claim_ages={"01": tw.wz.CLAIM_TTL_S + 60, "02": 30})
+        with mock.patch.object(rp, "TENANTS", {"TE": "tid:te"}), \
+             mock.patch.object(rp, "stopped_sessions", return_value=[]), \
+             mock.patch.object(rp.subprocess, "run", return_value=ok_proc) as proc_zero, \
+             mock.patch.object(rp._codelab, "_gh_call", gh_zero), \
+             mock.patch.dict(rp.os.environ, dict(tw.GitHubContract.GH_ENV), clear=True), \
+             mock.patch.object(rp.sys, "argv", ["reap_orphans.py", "--commit"]), \
+             mock.patch.object(rp.sys, "stdout", io.TextIOWrapper(io.BytesIO())), \
+             mock.patch.object(rp.sys, "stderr", io.StringIO()) as err_zero:
+            rp.main()
+        proc_zero.assert_not_called()
+        self.assertEqual(len([p for m, p in gh_zero.calls if m == "GET" and "/git/matching-refs/" in p]), 1)
+        self.assertEqual(gh_zero.claims, {"02": "lab-live"})
+        self.assertIn("# slot claims: 1 removed, 0 absent", err_zero.getvalue())
+
     def test_operator_residue_deletes_the_user_and_keeps_the_run_red(self):
         """An Outpost left PARTIALLY_UNINSTALLED by a lab's own cleanup (te-aws-outpost-trust-201,
         every play) made `wizlab user reap` exit 3, so the session's Wiz user was retained as "the only

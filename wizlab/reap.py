@@ -344,6 +344,8 @@ def _reap_slots(stem, commit):
     """Sweep code-lab pool claims for `stem`. Returns (Counter of outcomes, released_slot_count).
     Without WIZ_LABS_GH_APP (a non-code lab's own reap.sh), logs once and returns empty; a GitHub
     transport fault is DEFERRED (exit 4) so the next daily pass retries without failing the Wiz reap."""
+    if os.getenv("WIZLAB_SKIP_SLOT_SWEEP") == "1":
+        return Counter(), 0
     if not os.getenv("WIZ_LABS_GH_APP"):
         print("slot claims: WIZ_LABS_GH_APP not set, not swept", file=sys.stderr)
         return Counter(), 0

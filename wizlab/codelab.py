@@ -330,11 +330,12 @@ def cmd_slot_release(args):
 
 
 def release_claims_for(stem, commit):
-    """Release every pool claim across all labs whose commit message is `stem` or whose commit is older
-    than CLAIM_TTL_S, closing its open patch PR and deleting `refs/heads/patch/<holder>` (if the ref sha
-    changed between read and DELETE, the small window affects only a claim that was already expired).
-    Returns [(lab, slot, outcome)] with outcome 'removed' or 'absent' (`reap.REMOVED`/`reap.ABSENT`,
-    passed as strings so the outcome constants stay defined in `reap` alone)."""
+    """Release every pool claim across all labs whose commit message matches `stem` (a stem string or an
+    iterable of stems) or whose commit is older than CLAIM_TTL_S, closing its open patch PR and deleting
+    `refs/heads/patch/<holder>` (if the ref sha changed between read and DELETE, the small window affects
+    only a claim that was already expired). Returns [(lab, slot, outcome)] with outcome 'removed' or
+    'absent' (`reap.REMOVED`/`reap.ABSENT`, passed as strings so the outcome constants stay in `reap`)."""
+    stems = {stem} if isinstance(stem, str) else set(stem)
     status, refs = _gh("GET", f"/repos/{ORG}/{CONTROL_REPO}/git/matching-refs/{CLAIM_NS}/", tolerate=(404,))
     out = []
     for ref in refs if status == 200 else []:
@@ -344,7 +345,7 @@ def release_claims_for(stem, commit):
         lab, slot = m.groups()
         _, commit_obj = _gh("GET", f"/repos/{ORG}/{CONTROL_REPO}/git/commits/{ref['object']['sha']}")
         holder = commit_obj["message"].strip()
-        if holder != stem and not _claim_expired(commit_obj):
+        if holder not in stems and not _claim_expired(commit_obj):
             continue
         if not commit:
             print(f"DRY-RUN would release slot {lab}/{slot}")

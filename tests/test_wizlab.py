@@ -2369,6 +2369,38 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         self.assertIn(f"# {swept} removed (0 audit-only), 0 absent, 1 deferred, 0 unknown, 0 operator, 0 failed, "
                       "0 slot(s)", err.getvalue())
 
+    def test_slot_sweep_supports_multi_stem_batch_and_skip_env_override(self):
+        claims = {
+            "01": "lab-bapr82q9xmm5",
+            "02": "lab-ghtvgsxcgphw",
+            "03": "lab-live",
+            "04": "lab-expired",
+        }
+        ages = {"03": 60, "04": wz.CLAIM_TTL_S + 60}
+        gh = FakeGitHub(claims=dict(claims), claim_ages=dict(ages))
+        wz._TOKEN.clear()
+        with mock.patch.dict(wz.os.environ, GitHubContract.GH_ENV, clear=True), \
+             mock.patch.object(_owner("_gh_call"), "_gh_call", gh), \
+             contextlib.redirect_stdout(io.StringIO()):
+            res = wz.codelab.release_claims_for({"lab-bapr82q9xmm5", "lab-ghtvgsxcgphw"}, True)
+        self.assertEqual(res, [
+            ("juice-shop-101", "01", "removed"),
+            ("juice-shop-101", "02", "removed"),
+            ("juice-shop-101", "04", "removed"),
+        ])
+        self.assertEqual(gh.claims, {"03": "lab-live"})
+        matching_gets = [p for m, p in gh.calls if m == "GET" and "/git/matching-refs/" in p]
+        self.assertEqual(len(matching_gets), 1)
+
+        # WIZLAB_SKIP_SLOT_SWEEP=1 skips GitHub calls in subprocesses when reap_orphans sweeps once.
+        gh_skip, err_skip = FakeGitHub(claims={"01": "lab-bapr82q9xmm5"}), io.StringIO()
+        skip_env = {**GitHubContract.GH_ENV, "WIZLAB_SKIP_SLOT_SWEEP": "1"}
+        code = exit_code(wz.cmd_reap, ["--session", "bapr82q9xmm5", "--commit"], wiz=FakeWiz(),
+                         env=skip_env, err=err_skip, _gh_call=gh_skip,
+                         _reap_enumerate=([], None), _reap_sweep_type=wz.Counter())
+        self.assertEqual(code, 0)
+        self.assertEqual(gh_skip.calls, [])
+
     def _outpost_reap(self, status, delete_err=None, status_err=None):
         """Drives the real _reap_outpost. Returns (outcome, detail, mutations issued)."""
         sent = []
