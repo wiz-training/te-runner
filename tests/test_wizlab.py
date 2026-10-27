@@ -1911,7 +1911,7 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         with mock.patch.object(_owner("_reap_handler"), "_reap_handler", return_value=self.HANDLER), \
              mock.patch.object(_owner("_reap_find"), "_reap_find", side_effect=found), \
              mock.patch.object(_owner("_gql"), "_gql", return_value=({}, [{"message": "denied"}])):
-            outcome, review = wz._reap_one("tok", "dc", "CreateReport", "lab-s1-report", True)
+            outcome, review = wz._reap_one("tok", "dc", "CreateReport", "lab-s1-report", True, "lab-s1")
         self.assertEqual(outcome, wz.FAILED)
         self.assertIn("denied", review)
 
@@ -1932,21 +1932,41 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         self.assertNotIn(hostile, query)
         self.assertEqual(variables, {"id": hostile})
 
-    def test_committed_reap_counts_removals_the_sweep_could_not_have_named(self):
-        actions = [("CreateReport", "lab-bapr82q9xmm5-r"), ("CreateReport", "Q3 report"), ("CreateReport", "old")]
-        outcomes = [(wz.REMOVED, None), (wz.REMOVED, None), (wz.ABSENT, None)]
-        err = io.StringIO()
+    def test_committed_reap_leaves_non_stem_audit_matches_in_place(self):
+        actions = [
+            ("CreateReport", "lab-bapr82q9xmm5-r"),
+            ("CreateReport", "Q3 report"),
+            ("CreateReport", "lab-bapr82q9xmm5x-r"),
+            ("CreateReport", "old"),
+        ]
+        found = [
+            ("rep-own-123456", 1, None),
+            ("rep-q3-987654", 1, None),
+            ("rep-sib-abcdef", 1, None),
+            (None, 0, None),
+        ]
+        deleted = []
+        out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(_owner("token_and_dc"), "token_and_dc", return_value=("tok", "dc", "tid")), \
              mock.patch.object(_owner("_reap_enumerate"), "_reap_enumerate", return_value=(actions, None)), \
-             mock.patch.object(_owner("_reap_one"), "_reap_one", side_effect=outcomes), \
+             mock.patch.object(_owner("_reap_handler"), "_reap_handler", return_value=self.HANDLER), \
+             mock.patch.object(_owner("_reap_find"), "_reap_find", side_effect=found), \
+             mock.patch.object(_owner("_reap_delete"), "_reap_delete",
+                               side_effect=lambda _t, _d, _h, rid, nm: (deleted.append((rid, nm)),
+                                                                        (wz.REMOVED, None))[1]), \
              mock.patch.object(_owner("_reap_sweep_type"), "_reap_sweep_type",
                                return_value=wz.Counter({wz.REMOVED: 1})), \
-             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
              exits() as cm:
             call(wz.cmd_reap, ["--session", "bapr82q9xmm5", "--commit"])
         self.assertEqual(cm.code, 0)
+        self.assertEqual(deleted, [("rep-own-123456", "lab-bapr82q9xmm5-r")])
+        self.assertIn("REVIEW audit-only Report 'Q3 report' (rep-q3-9): not stem-owned, left in place",
+                      out.getvalue())
+        self.assertIn("REVIEW audit-only Report 'lab-bapr82q9xmm5x-r' (rep-sib-): not stem-owned, left in place",
+                      out.getvalue())
         swept = len(wz._SWEEP_TYPES)
-        self.assertIn(f"# {2 + swept} removed (1 audit-only), 1 absent, 0 deferred, 0 unknown, 0 operator, 0 failed",
+        self.assertIn(f"# {1 + swept} removed (2 audit-only), 1 absent, 0 deferred, 2 unknown, 0 operator, 0 failed",
                       err.getvalue())
 
     def test_slot_claims_are_reaped(self):

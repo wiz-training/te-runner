@@ -48,6 +48,7 @@ once; a GitHub transport fault is `deferred`), and every audit-attributed create
 name, is removed or absent; other residue is `unknown`.
 Blocking on `unknown` would fail every reap and retain every user, since handler coverage is partial by
 construction. Operator decision, 2026-09-05.
+Audit-attributed creates whose name is not stem-owned (`lab-<sid>` or `lab-<sid>[-@]*`) are reported as `unknown` (`REVIEW audit-only …: not stem-owned, left in place`, counted under `audit-only`) and not deleted (measured 2026-10-27: audit `actionParameters` = `{input, selection}`; no created id; 128 session reaps across `reap.yml` runs `40322957385`, `40186901829`, `40086319544` had 0 `audit-only` deletes, 110× `# 0 removed (0 audit-only)` and 18× `# 1 removed (0 audit-only)`).
 
 ### What `ensure` promises
 Exit 0 means the object matches every flag the call named, and what changed is printed. Where the
