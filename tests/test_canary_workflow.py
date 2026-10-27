@@ -115,6 +115,70 @@ class CanaryWorkflowTests(unittest.TestCase):
         self.assertEqual(bad.returncode, 1)
         self.assertIn("LABKIT_READ_TOKEN", bad.stdout + bad.stderr)
 
+    def test_verdict_warns_and_notes_when_canary_runner_lags_newest_tag(self):
+        steps = dict(_image_steps(CANARY_YML.read_text()))
+        self.assertIn("checkout te-runner", steps)
+        verdict_script = _run_block(steps["verdict"])
+        ls_tags = (
+            "7d1e9d4f583f866140cb574e2d0fcb986b49edd4\trefs/tags/v0.1.85\n"
+            "aa16c400f1709cdd8196dde93eb299c31700ae91\trefs/tags/v0.1.88\n"
+            "b8d2ae7dc0a05eb2e2964e95c7ec11aa7ef539ad\trefs/tags/v0.1.9\n"
+        )
+        ok_current = self.SAMPLE_OK.replace("CANARY_RUNNER=v0.1.82", "CANARY_RUNNER=v0.1.88")
+        cases = (
+            ("lags newest tag", self.SAMPLE_OK, 0, ls_tags, True, "ok", 0),
+            ("matches newest tag", ok_current, 0, ls_tags, False, "ok", 0),
+            ("no CANARY_RUNNER line", self.SAMPLE_NO_VERDICT, 0, ls_tags, False, "no-verdict", 1),
+            ("git ls-remote fails", self.SAMPLE_OK, 128, "", False, "ok", 0),
+        )
+        for name, boot_out, git_rc, git_out, want_lag, want_outcome, want_exit in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as d:
+                tmp = pathlib.Path(d)
+                state = tmp / "state"
+                state.mkdir()
+                summary = tmp / "step_summary.md"
+                (state / "boot.rc").write_text("0\n")
+                (state / "boot.attempts").write_text("1\n")
+                (state / "boot.out").write_text(boot_out)
+                (state / "boot.err").write_text("")
+                git_bin = tmp / "bin" / "git"
+                git_bin.parent.mkdir()
+                git_args = tmp / "git.args"
+                git_stdout = tmp / "git.out"
+                git_stdout.write_text(git_out)
+                git_bin.write_text(
+                    "#!/bin/sh\n"
+                    f"printf '%s\\n' \"$*\" >> {str(git_args)!r}\n"
+                    f"cat {str(git_stdout)!r}\n"
+                    f"exit {git_rc}\n"
+                )
+                git_bin.chmod(git_bin.stat().st_mode | stat.S_IXUSR)
+                res = subprocess.run(
+                    ["sh", "-e", "-c", verdict_script],
+                    cwd=tmp,
+                    env={
+                        **os.environ,
+                        "PATH": f"{git_bin.parent}:{os.environ['PATH']}",
+                        "LAB": "te-dev-aws",
+                        "CANARY_STATE_DIR": str(state),
+                        "GITHUB_STEP_SUMMARY": str(summary),
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(res.returncode, want_exit, res.stdout + res.stderr)
+                self.assertEqual((state / "outcome").read_text(), want_outcome)
+                if want_lag:
+                    self.assertIn("ls-remote --tags --refs origin refs/tags/v*", git_args.read_text())
+                    self.assertRegex(res.stdout, r"(?m)^::warning::.*v0\.1\.82.*v0\.1\.88")
+                    self.assertIn("v0.1.82", summary.read_text())
+                    self.assertIn("v0.1.88", summary.read_text())
+                    self.assertNotIn("v0.1.9", summary.read_text())
+                else:
+                    self.assertNotIn("::warning::", res.stdout)
+                    self.assertNotIn("newest `te-runner` tag", summary.read_text())
+
     def test_boot_retries_once_only_on_lab_failed_to_start(self):
         steps = dict(_image_steps(CANARY_YML.read_text()))
         boot_script = _run_block(steps["boot"])
@@ -173,6 +237,7 @@ class CanaryWorkflowTests(unittest.TestCase):
                 (state / "boot.err").write_text(err2 or err1)
                 res = subprocess.run(
                     ["sh", "-e", "-c", verdict_script],
+                    cwd=d,
                     env={
                         **os.environ,
                         "LAB": "te-dev-aws",
