@@ -22,6 +22,8 @@ GH_API = "https://api.github.com"
 ORG = "wiz-training"
 CONTROL_REPO = "te-code-labs"
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+# Must exceed every code lab's `timelimit` (te-code-juice-shop-101 is `1h` in `main.hcl`), or a live
+# learner's slot claim and `patch/<stem>` PR get evicted mid-session.
 CLAIM_TTL_S = 7200
 DEFAULT_RULE = "Docker Correlation"
 _LAB_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
