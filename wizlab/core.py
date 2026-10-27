@@ -459,5 +459,15 @@ def _lab_user_email(args):
 
 
 def _gql(tok, dc, query, variables=None):
-    # The reaper's view of the transport: errors come back so one unresolvable type alerts, not aborts.
-    return _graphql(tok, dc, query, variables)
+    # The reaper's view of the transport: errors come back so one unresolvable type alerts, not aborts;
+    # a transient fault on a read is retried the same way _api_full retries it, without stacking.
+    attempts = _submissions(query)
+    for i in range(attempts):
+        data, errors = _graphql(tok, dc, query, variables)
+        if not errors or any(data.get(k) is not None for k in data):
+            return data, errors
+        msg = "; ".join(e.get("message", "?") for e in errors)
+        if not any(t in msg.lower() for t in _TRANSIENT_GQL) or i == attempts - 1:
+            return data, errors
+        time.sleep(2**i)
+    return {}, []  # pragma: no cover
