@@ -196,6 +196,56 @@ class ReapOrdering(unittest.TestCase):
                       err.getvalue())
         self.assertIn("# 1/3 session(s) reaped", err.getvalue())
 
+    def test_dry_run_reports_backlog_without_invoking_wizlab(self):
+        buf = io.BytesIO()
+        out = io.TextIOWrapper(buf, encoding="utf-8")
+        with mock.patch.object(rp, "TENANTS", {"TBCMP": "tid:tbcmp", "TE": "tid:te"}), \
+             mock.patch.object(rp, "stopped_sessions", side_effect=[["ghtvgsxcgphw"], ["k8m01846391n"]]), \
+             mock.patch.object(rp, "_wizlab", wraps=rp._wizlab) as wizlab, \
+             mock.patch.object(rp.subprocess, "run") as proc, \
+             mock.patch.dict(rp.os.environ, {}, clear=True), \
+             mock.patch.object(rp.sys, "argv", ["reap_orphans.py"]), \
+             mock.patch.object(rp.sys, "stdout", out), \
+             mock.patch.object(rp.sys, "stderr", io.StringIO()) as err:
+            rp.main()
+            self.assertEqual(rp._reap_session("TE", "ghtvgsxcgphw", False), rp.DONE)
+        out.flush()
+        stdout = buf.getvalue().decode()
+        wizlab.assert_not_called()
+        proc.assert_not_called()
+        self.assertIn("DRY-RUN TBCMP: reap lab-ghtvgsxcgphw* + delete lab-ghtvgsxcgphw@", stdout)
+        self.assertIn("DRY-RUN TE: reap lab-k8m01846391n* + delete lab-k8m01846391n@", stdout)
+        self.assertIn("# 2/2 session(s) ready to reap (dry-run)", err.getvalue())
+
+    def test_manual_reap_sessions_routes_to_reap_sessions_tenant(self):
+        rows = [
+            ({}, {"REAP_SESSIONS_TENANT": "TE"}, "TE", 0),
+            ({"TBCMP": "tid:tbcmp", "TE": "tid:te"}, {"REAP_SESSIONS_TENANT": "TE"}, "TE", 2),
+            ({"ALT": "tid:alt", "TE": "tid:te"}, {}, "ALT", 2),
+            ({}, {"REAP_SESSIONS_TENANT": ""}, "TBCMP", 0),
+            ({"TBCMP": "tid:tbcmp"}, {"REAP_SESSIONS_TENANT": "SANDBOX"}, "SANDBOX", 1),
+        ]
+        ok_proc = rp.subprocess.CompletedProcess(["wizlab"], 0, stdout="", stderr="")
+        for tenants, extra_env, want_tenant, want_stopped in rows:
+            with self.subTest(tenants=list(tenants), extra_env=extra_env):
+                buf = io.BytesIO()
+                out = io.TextIOWrapper(buf, encoding="utf-8")
+                with mock.patch.object(rp, "TENANTS", tenants), \
+                     mock.patch.object(rp, "stopped_sessions", return_value=[]) as stopped, \
+                     mock.patch.object(rp.subprocess, "run", return_value=ok_proc) as proc, \
+                     mock.patch.dict(rp.os.environ, {"REAP_SESSIONS": "ghtvgsxcgphw", **extra_env}, clear=True), \
+                     mock.patch.object(rp.sys, "argv", ["reap_orphans.py", "--commit"]), \
+                     mock.patch.object(rp.sys, "stdout", out), \
+                     mock.patch.object(rp.sys, "stderr", io.StringIO()) as err:
+                    rp.main()
+                out.flush()
+                self.assertEqual(stopped.call_count, want_stopped)
+                self.assertEqual([c.args[0][1:3] for c in proc.call_args_list], [["user", "reap"], ["user", "delete"]])
+                self.assertEqual([c.kwargs["env"]["WIZ_TENANT"] for c in proc.call_args_list],
+                                 [want_tenant, want_tenant])
+                self.assertIn(f"# manual: 1 session(s) under {want_tenant}", buf.getvalue().decode())
+                self.assertIn("# 1/1 session(s) reaped", err.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
