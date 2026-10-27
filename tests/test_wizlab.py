@@ -1509,7 +1509,8 @@ class K8sConnectorGrading(unittest.TestCase):
     token path (update-kubeconfig, then kubectl create token) is the fourth CLI; a failure there is 3."""
 
     ARN = InspectContract.CLUSTER_ARN
-    ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "x"}
+    ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "x", "AWS_DEFAULT_REGION": "us-east-1",
+                            "AWS_ACCOUNT_ID": "111111111111"}
     CLUSTER: typing.ClassVar = {"cluster": {"name": "lab-x", "arn": ARN, "endpoint": "https://eks.example",
                                             "certificateAuthority": {"data": "Q0E="}}}
 
@@ -1563,6 +1564,23 @@ class K8sConnectorGrading(unittest.TestCase):
                               {"connectors": _conn(), "createConnector": {"connector": InspectContract.K8S}},
                               cli=self._cli(token=no_token))
         self.assertEqual((code, _mutations(wiz)), (3, []))
+        # delete on a vanished cluster synthesizes the ARN from AWS_DEFAULT_REGION / AWS_ACCOUNT_ID.
+        code, wiz = self._run(("k8sconnector", "delete"), ["--cluster", "lab-x"],
+                              {"connectors": _conn(InspectContract.K8S)}, cli=self._cli(describe=gone))
+        self.assertEqual((code, _mutations(wiz), wiz.sent("connectors")[0]["ids"]),
+                         (0, ["deleteConnector"], [self.ARN]))
+        code, wiz = self._run(("k8sconnector", "delete"), ["--cluster", "lab-x"],
+                              {"connectors": _conn()}, cli=self._cli(describe=gone))
+        self.assertEqual((code, _mutations(wiz), wiz.sent("connectors")[0]["ids"]), (0, [], [self.ARN]))
+
+    def test_ensure_and_inspect_prefer_a_connected_connector_over_a_stale_first_node(self):
+        stale = dict(InspectContract.K8S, id="k-stale", enabled=False, status="DISABLED")
+        live = dict(InspectContract.K8S, id="k-live", enabled=True, status="CONNECTED")
+        both = {"connectors": _conn(stale, live)}
+        code, _ = self._run(("k8sconnector", "inspect"), ["--cluster-arn", self.ARN, "--require", "connected"], both)
+        self.assertEqual(code, 0)
+        code, wiz = self._run(("k8sconnector", "ensure"), ["--cluster-arn", self.ARN], both)
+        self.assertEqual((code, _mutations(wiz)), (0, []))
 
     def test_require_reads_status(self):
         for status, require, want in (("CONNECTED", "connected", 0), ("INITIAL_SCANNING", "connected", 1),
@@ -1944,6 +1962,29 @@ class ConnectorAndReaperSafety(unittest.TestCase):
             tally = wz._reap_sweep_type("tok", "dc", "Report", "lab-bapr", True)
         self.assertEqual(deleted, owned)
         self.assertEqual(tally, wz.Counter({wz.REMOVED: len(owned)}))
+
+    def test_connector_sweep_selects_outpost_and_deletes_connector_bound_to_session_outpost(self):
+        queries, deleted = [], []
+
+        def gql(_tok, _dc, query, variables=None):
+            queries.append(query)
+            if "ReapList" in query:
+                if '"lab-bapr"' in query:
+                    return {"connectors": {"nodes": [
+                        {"id": "c-own", "name": "lab-bapr-connector", "outpost": None},
+                        {"id": "c-bound", "name": "console-aws", "outpost": {"name": "lab-bapr"}},
+                        {"id": "c-other", "name": "console-other", "outpost": {"name": "lab-other"}},
+                    ]}}, []
+                return {"connectors": {"nodes": []}}, []
+            if "deleteConnector" in query:
+                deleted.append(variables["id"])
+            return {}, []
+
+        with mock.patch.object(_owner("_gql"), "_gql", side_effect=gql), contextlib.redirect_stdout(io.StringIO()):
+            tally = wz._reap_sweep_type("tok", "dc", "Connector", "lab-bapr", True)
+        self.assertTrue(any("outpost { name }" in q for q in queries))
+        self.assertEqual(deleted, ["c-own", "c-bound"])
+        self.assertEqual(tally, wz.Counter({wz.REMOVED: 2}))
 
     def test_which_outcomes_keep_the_user_and_the_retry(self):
         # DEFERRED and FAILED both earn one more daily pass, and they exit differently because only one

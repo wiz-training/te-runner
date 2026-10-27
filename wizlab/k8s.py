@@ -1,4 +1,5 @@
 """Kubernetes connectors the lab owns, and the container-plane check that grades enumeration."""
+import os
 import sys
 
 from . import connector, core
@@ -44,15 +45,20 @@ def _describe_cluster(name):
     return (core._csp_json(r, f"aws eks describe-cluster {name}") or {}).get("cluster") or None
 
 
-def _cluster_arn(args):
+def _cluster_arn(args, synthesize=False):
     """The connector's external id. `--cluster-arn` is authoritative; `--cluster` (default: the session
-    stem) resolves through describe-cluster, and a cluster that does not exist is exit 1 — the fixture
-    is absent, which is learner-visible state, not an environment fault."""
+    stem) resolves through describe-cluster. When `synthesize` is True (`delete`), a gone cluster falls
+    back to the ARN built from AWS_DEFAULT_REGION and AWS_ACCOUNT_ID (te-aws-scan-mode-dependency-201
+    sandbox.hcl:33-34); otherwise a missing cluster is exit 1 — the fixture is absent, which is
+    learner-visible state, not an environment fault."""
     if args.cluster_arn:
         return args.cluster_arn, None
     name = core._named(args, flag="cluster")
     cluster = _describe_cluster(name)
     if cluster is None:
+        region, account = os.getenv("AWS_DEFAULT_REGION"), os.getenv("AWS_ACCOUNT_ID")
+        if synthesize and region and account:
+            return f"arn:aws:eks:{region}:{account}:cluster/{name}", None
         print(f"no EKS cluster named {name}")
         sys.exit(1)
     return cluster["arn"], cluster
@@ -107,7 +113,7 @@ def cmd_k8sconnector_ensure(args):
     nodes = _find(arn)
     if not nodes:
         return _create(args, arn, cluster)
-    n = nodes[0]
+    n = core._prefer(nodes, "CONNECTED")
     if bool(n.get("enabled")) == want:
         print(f"k8s connector {n['name']} ({n['id']}) already enabled={n['enabled']} status={n['status']}")
         return
@@ -130,13 +136,13 @@ def cmd_k8sconnector_inspect(args):
     if not nodes:
         print(f"no Kubernetes connector for {arn}")
         sys.exit(1)
-    n = nodes[0]
+    n = core._prefer(nodes, "CONNECTED")
     print(f"k8s connector {n['name']} ({n['id']}): enabled={n.get('enabled')} status={n.get('status')}")
     sys.exit(0 if _REQUIRE[args.require](n) else 1)
 
 
 def cmd_k8sconnector_delete(args):
-    arn, _ = _cluster_arn(args)
+    arn, _ = _cluster_arn(args, synthesize=True)
     nodes = _find(arn)
     if not nodes:
         print(f"no Kubernetes connector for {arn}; nothing to delete")
