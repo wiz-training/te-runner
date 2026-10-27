@@ -17,11 +17,15 @@ done and its Wiz user stays.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime, timedelta
+
+# Same shape as wizlab.core.PLAY_ID_RE (measured 2026-10-27: 512/512 play ids in 30 d).
+PLAY_ID_RE = re.compile(r"[a-z0-9]{12}")
 
 TEAM = os.getenv("INSTRUQT_TEAM", "wiz")
 # Rolling window, so a session is seen by several consecutive runs. That is safe only because an
@@ -177,6 +181,9 @@ def main():
     # any one-off. `REAP_SESSIONS="sid1,sid2"`; reaped under REAP_SESSIONS_TENANT (default: the first
     # REAP_TENANTS key).
     manual = [s.strip() for s in os.getenv("REAP_SESSIONS", "").split(",") if s.strip()]
+    for sid in manual:
+        if not PLAY_ID_RE.fullmatch(sid):
+            _die(f"operator error: REAP_SESSIONS entry {sid} is not a play id")
     mtenant = os.getenv("REAP_SESSIONS_TENANT") or next(iter(TENANTS), "TBCMP")
     if manual:
         print(f"# manual: {len(manual)} session(s) under {mtenant}")

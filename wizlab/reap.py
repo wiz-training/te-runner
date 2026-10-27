@@ -268,7 +268,7 @@ def _reap_sweep_type(tok, dc, x, stem, commit):
     tally = Counter()
     for n in nodes:
         nm = n.get("name") or ""
-        if not nm.startswith(stem):
+        if not core._owned(nm, stem):
             continue
         if not commit:
             print(f"DRY-RUN would sweep {x} {nm!r} ({n['id'][:8]})")
@@ -292,10 +292,12 @@ def cmd_reap(args):
     user and come back; exit 5 is residue for an operator that the user is no handle to; _reap_exit
     says which, and whether anyone need look."""
     sid = core._session_id(args)
+    commit = args.commit
+    if commit and not core.PLAY_ID_RE.fullmatch(sid):
+        core.die(2, f"--session {sid} is not an Instruqt play id (12 chars [a-z0-9]); refusing to sweep with --commit")
     email = args.email or core._lab_user_email(args)
     stem = core._lab_stem(sid)
     minutes = args.last_min
-    commit = args.commit
     tok, dc, _ = core.token_and_dc()
     tally = Counter()
     actions, enumeration_alert = _reap_enumerate(tok, dc, email, minutes)
@@ -312,7 +314,7 @@ def cmd_reap(args):
         if review:
             print(review)
         tally[outcome] += 1
-        if outcome == REMOVED and not (name or "").startswith(stem):
+        if outcome == REMOVED and not core._owned(name or "", stem):
             audit_only += 1
     for x in _SWEEP_TYPES:
         tally += _reap_sweep_type(tok, dc, x, stem, commit)

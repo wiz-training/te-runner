@@ -1575,6 +1575,29 @@ class ConnectorAndReaperSafety(unittest.TestCase):
                                    wiz=wiz_del, env=env), 0)
         self.assertEqual(wiz_del.sent("deleteConnector"), [{"id": "old"}])
 
+    def test_foreign_connector_matches_stem_on_delimiter(self):
+        """`lab-1` must not treat `lab-10-connector` or Outpost `lab-10` as its own, and `lab-10` must
+        treat `lab-1-connector` as foreign."""
+        acct = "111111111111"
+        conn_1 = {**InspectContract.CONNECTOR, "id": "c1", "name": "lab-1-connector",
+                  "outpost": {"id": "o1", "name": "lab-1"}}
+        conn_1_suffixed_outpost = {**conn_1, "outpost": {"id": "o1s", "name": "lab-1-outpost"}}
+        conn_10 = {**InspectContract.CONNECTOR, "id": "c10", "name": "lab-10-connector",
+                   "outpost": {"id": "o10", "name": "lab-10"}}
+        conn_1_on_outpost_10 = {**conn_1, "outpost": {"id": "o10", "name": "lab-10"}}
+        self.assertFalse(wz._foreign(conn_1, "lab-1"))
+        self.assertTrue(wz._stem_owned(conn_1, "lab-1"))
+        self.assertFalse(wz._foreign(conn_1_suffixed_outpost, "lab-1"))
+        self.assertTrue(wz._foreign(conn_10, "lab-1"))
+        self.assertFalse(wz._stem_owned(conn_10, "lab-1"))
+        self.assertTrue(wz._foreign(conn_1_on_outpost_10, "lab-1"))
+        self.assertTrue(wz._foreign(conn_1, "lab-10"))
+        self.assertFalse(wz._foreign(conn_10, "lab-10"))
+        self.assertTrue(wz._stem_owned(conn_10, "lab-10"))
+        self.assertEqual(exit_code(wz.cmd_connector_inspect, ["--account-id", acct],
+                                   wiz=FakeWiz(connectors=_conn(conn_10)),
+                                   env={"INSTRUQT_SESSION_ID": "1"}), 1)
+
     HANDLER: typing.ClassVar = {"list": "reports", "filter": "search", "delete": "deleteReport",
                                 "soft": False, "deleter": None}
 
@@ -1733,14 +1756,14 @@ class ConnectorAndReaperSafety(unittest.TestCase):
     def _reap(self, outcome_or_actions, sweep=None):
         """cmd_reap over one audit outcome, with the sweep stubbed out. Returns the exit code."""
         one = (outcome_or_actions, "review") if isinstance(outcome_or_actions, str) else None
-        actions = [("CreateWidget", "lab-s1-w")] if one else []
+        actions = [("CreateWidget", "lab-bapr82q9xmm5-w")] if one else []
         with mock.patch.object(_owner("token_and_dc"), "token_and_dc", return_value=("tok", "dc", "tid")), \
              mock.patch.object(_owner("_reap_enumerate"), "_reap_enumerate", return_value=(actions, None)), \
              mock.patch.object(_owner("_reap_one"), "_reap_one", return_value=one), \
              mock.patch.object(_owner("_reap_sweep_type"), "_reap_sweep_type", return_value=sweep or wz.Counter()), \
              contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
              exits() as cm:
-            call(wz.cmd_reap, ["--session", "s1", "--commit"])
+            call(wz.cmd_reap, ["--session", "bapr82q9xmm5", "--commit"])
         return cm.code
 
     def test_committed_reap_exits_3_when_enumeration_is_incomplete(self):
@@ -1749,8 +1772,53 @@ class ConnectorAndReaperSafety(unittest.TestCase):
              mock.patch.object(_owner("_reap_sweep_type"), "_reap_sweep_type", return_value=wz.Counter()), \
              contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
              exits() as cm:
-            call(wz.cmd_reap, ["--session", "s1", "--commit"])
+            call(wz.cmd_reap, ["--session", "bapr82q9xmm5", "--commit"])
         self.assertEqual(cm.code, 3)
+
+    def test_reap_commit_requires_play_id_while_dry_run_accepts_any_session(self):
+        for bad in ("bapr", "bapr82q9xmm5x", "BAPR82Q9XMM5", "bapr-2q9xmm5"):
+            err = io.StringIO()
+            with mock.patch.object(_owner("token_and_dc"), "token_and_dc") as tok:
+                code = exit_code(wz.cmd_reap, ["--session", bad, "--commit"], err=err)
+            self.assertEqual(code, 2, bad)
+            self.assertIn(f"--session {bad} is not an Instruqt play id (12 chars [a-z0-9]); "
+                          "refusing to sweep with --commit", err.getvalue())
+            tok.assert_not_called()
+        code = exit_code(wz.cmd_reap, ["--session", "bapr"], wiz=FakeWiz(),
+                         _reap_enumerate=([], None), _reap_sweep_type=wz.Counter())
+        self.assertEqual(code, 0)
+
+    def test_reap_sweep_matches_stem_on_a_delimiter(self):
+        owned = [
+            "lab-bapr",
+            "lab-bapr-connector",
+            "lab-bapr-k8s",
+            "lab-bapr-sensor",
+            "lab-bapr-api",
+            "lab-bapr-cli",
+            "lab-bapr-cli-deployment-26dc83b5-503a-4725-a087-0764b1ef671d",
+            "lab-bapr-mcp",
+            "lab-bapr-mcp_26dc83b5-503a-4725-a087-0764b1ef671d",
+            "lab-bapr-night-watch",
+            "lab-bapr-WizCustomRole",
+            "lab-bapr@wizlabs.cloudseclabs.io",
+        ]
+        siblings = [
+            "lab-bapr82q9xmm5",
+            "lab-bapr82q9xmm5-k8s",
+            "lab-bapr82q9xmm5-connector",
+            "lab-bapr_other",
+        ]
+        nodes = [{"id": f"id-{i}", "name": nm} for i, nm in enumerate(owned + siblings)]
+        deleted = []
+        with mock.patch.object(_owner("_reap_handler"), "_reap_handler", return_value=self.HANDLER), \
+             mock.patch.object(_owner("_reap_list"), "_reap_list", return_value=(nodes, None)), \
+             mock.patch.object(_owner("_reap_delete"), "_reap_delete",
+                               side_effect=lambda _t, _d, _h, _id, nm: (deleted.append(nm), (wz.REMOVED, None))[1]), \
+             contextlib.redirect_stdout(io.StringIO()):
+            tally = wz._reap_sweep_type("tok", "dc", "Report", "lab-bapr", True)
+        self.assertEqual(deleted, owned)
+        self.assertEqual(tally, wz.Counter({wz.REMOVED: len(owned)}))
 
     def test_which_outcomes_keep_the_user_and_the_retry(self):
         # DEFERRED and FAILED both earn one more daily pass, and they exit differently because only one
@@ -1800,7 +1868,7 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         self.assertEqual(variables, {"id": hostile})
 
     def test_committed_reap_counts_removals_the_sweep_could_not_have_named(self):
-        actions = [("CreateReport", "lab-s1-r"), ("CreateReport", "Q3 report"), ("CreateReport", "old")]
+        actions = [("CreateReport", "lab-bapr82q9xmm5-r"), ("CreateReport", "Q3 report"), ("CreateReport", "old")]
         outcomes = [(wz.REMOVED, None), (wz.REMOVED, None), (wz.ABSENT, None)]
         err = io.StringIO()
         with mock.patch.object(_owner("token_and_dc"), "token_and_dc", return_value=("tok", "dc", "tid")), \
@@ -1810,7 +1878,7 @@ class ConnectorAndReaperSafety(unittest.TestCase):
                                return_value=wz.Counter({wz.REMOVED: 1})), \
              contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err), \
              exits() as cm:
-            call(wz.cmd_reap, ["--session", "s1", "--commit"])
+            call(wz.cmd_reap, ["--session", "bapr82q9xmm5", "--commit"])
         self.assertEqual(cm.code, 0)
         swept = len(wz._SWEEP_TYPES)
         self.assertIn(f"# {2 + swept} removed (1 audit-only), 1 absent, 0 deferred, 0 unknown, 0 operator, 0 failed",
@@ -1818,21 +1886,21 @@ class ConnectorAndReaperSafety(unittest.TestCase):
 
     def test_slot_claims_are_reaped(self):
         claims = {
-            "01": "lab-s1",
+            "01": "lab-bapr82q9xmm5",
             "02": "lab-other",
             "03": "lab-expired",
-            "other-lab/01": "lab-s1",
+            "other-lab/01": "lab-bapr82q9xmm5",
             "other-lab/02": "lab-other",
         }
         ages = {"02": 60, "03": wz.CLAIM_TTL_S + 60, "other-lab/02": 60}
         prs = [
-            {"number": 7, "state": "open", "head": {"ref": "patch/lab-s1"}},
+            {"number": 7, "state": "open", "head": {"ref": "patch/lab-bapr82q9xmm5"}},
             {"number": 8, "state": "open", "head": {"ref": "patch/lab-expired"}},
             {"number": 9, "state": "open", "head": {"ref": "patch/lab-other"}},
         ]
         branches = {
             "main": "mainsha",
-            "patch/lab-s1": "s1sha",
+            "patch/lab-bapr82q9xmm5": "s1sha",
             "patch/lab-expired": "expsha",
             "patch/lab-other": "othsha",
         }
@@ -1840,7 +1908,7 @@ class ConnectorAndReaperSafety(unittest.TestCase):
             FakeGitHub(claims=dict(claims), claim_ages=dict(ages), prs=prs, branches=branches),
             io.StringIO(), io.StringIO(),
         )
-        code = exit_code(wz.cmd_reap, ["--session", "s1"], wiz=FakeWiz(), env=GitHubContract.GH_ENV,
+        code = exit_code(wz.cmd_reap, ["--session", "bapr82q9xmm5"], wiz=FakeWiz(), env=GitHubContract.GH_ENV,
                          out=out_dry, err=err_dry, _gh_call=gh_dry,
                          _reap_enumerate=([], None), _reap_sweep_type=wz.Counter())
         self.assertEqual(code, 0)
@@ -1855,18 +1923,18 @@ class ConnectorAndReaperSafety(unittest.TestCase):
             FakeGitHub(claims=dict(claims), claim_ages=dict(ages), prs=prs, branches=branches),
             io.StringIO(), io.StringIO(),
         )
-        code = exit_code(wz.cmd_reap, ["--session", "s1", "--commit"], wiz=FakeWiz(), env=GitHubContract.GH_ENV,
-                         out=out, err=err, _gh_call=gh,
+        code = exit_code(wz.cmd_reap, ["--session", "bapr82q9xmm5", "--commit"], wiz=FakeWiz(),
+                         env=GitHubContract.GH_ENV, out=out, err=err, _gh_call=gh,
                          _reap_enumerate=([], None), _reap_sweep_type=wz.Counter())
         self.assertEqual(code, 0)
         deletes = [p for m, p in gh.calls if m == "DELETE"]
         self.assertEqual(deletes, [
             f"{gh.CONTROL}/git/refs/claims/juice-shop-101/slot-01",
-            "/repos/wiz-training/te-code-juice-shop-101-01/git/refs/heads/patch/lab-s1",
+            "/repos/wiz-training/te-code-juice-shop-101-01/git/refs/heads/patch/lab-bapr82q9xmm5",
             f"{gh.CONTROL}/git/refs/claims/juice-shop-101/slot-03",
             "/repos/wiz-training/te-code-juice-shop-101-03/git/refs/heads/patch/lab-expired",
             f"{gh.CONTROL}/git/refs/claims/other-lab/slot-01",
-            "/repos/wiz-training/te-code-other-lab-01/git/refs/heads/patch/lab-s1",
+            "/repos/wiz-training/te-code-other-lab-01/git/refs/heads/patch/lab-bapr82q9xmm5",
         ])
         self.assertEqual(gh.claims, {"02": "lab-other", "other-lab/02": "lab-other"})
         self.assertEqual([p["state"] for p in gh.prs], ["closed", "closed", "open"])
@@ -1877,15 +1945,15 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         self.assertIn("3 slot(s)", err.getvalue())
 
         # A claim raced away between the ref list and DELETE answers 422 and counts as absent, not removed.
-        gh_raced, out_r, err_r = FakeGitHub(claims={"01": "lab-s1"}), io.StringIO(), io.StringIO()
+        gh_raced, out_r, err_r = FakeGitHub(claims={"01": "lab-bapr82q9xmm5"}), io.StringIO(), io.StringIO()
 
         def raced(method, path, body=None, token=None):
             if method == "DELETE":
                 gh_raced.claims.clear()
             return gh_raced(method, path, body, token)
 
-        code = exit_code(wz.cmd_reap, ["--session", "s1", "--commit"], wiz=FakeWiz(), env=GitHubContract.GH_ENV,
-                         out=out_r, err=err_r, _gh_call=raced,
+        code = exit_code(wz.cmd_reap, ["--session", "bapr82q9xmm5", "--commit"], wiz=FakeWiz(),
+                         env=GitHubContract.GH_ENV, out=out_r, err=err_r, _gh_call=raced,
                          _reap_enumerate=([], None), _reap_sweep_type=wz.Counter())
         self.assertEqual(code, 0)
         self.assertIn("absent slot juice-shop-101/01", out_r.getvalue())
@@ -1893,8 +1961,8 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         self.assertIn("0 slot(s)", err_r.getvalue())
 
     def test_slot_sweep_without_app_secret_is_a_note_not_a_failure(self):
-        gh, err = FakeGitHub(claims={"01": "lab-s1"}), io.StringIO()
-        code = exit_code(wz.cmd_reap, ["--session", "s1", "--commit"], wiz=FakeWiz(), env={}, err=err,
+        gh, err = FakeGitHub(claims={"01": "lab-bapr82q9xmm5"}), io.StringIO()
+        code = exit_code(wz.cmd_reap, ["--session", "bapr82q9xmm5", "--commit"], wiz=FakeWiz(), env={}, err=err,
                          _gh_call=gh, _reap_enumerate=([], None),
                          _reap_sweep_type=wz.Counter({wz.REMOVED: 1}))
         self.assertEqual(code, 0)
@@ -1906,11 +1974,11 @@ class ConnectorAndReaperSafety(unittest.TestCase):
 
     def test_slot_sweep_transport_failure_defers(self):
         gh, out, err = FakeGitHub(fail=True), io.StringIO(), io.StringIO()
-        code = exit_code(wz.cmd_reap, ["--session", "s1", "--commit"], wiz=FakeWiz(), env=GitHubContract.GH_ENV,
-                         out=out, err=err, _gh_call=gh, _reap_enumerate=([], None),
+        code = exit_code(wz.cmd_reap, ["--session", "bapr82q9xmm5", "--commit"], wiz=FakeWiz(),
+                         env=GitHubContract.GH_ENV, out=out, err=err, _gh_call=gh, _reap_enumerate=([], None),
                          _reap_sweep_type=wz.Counter({wz.REMOVED: 1}))
         self.assertEqual(code, 4)
-        self.assertIn("lab-s1", out.getvalue())
+        self.assertIn("lab-bapr82q9xmm5", out.getvalue())
         swept = len(wz._SWEEP_TYPES)
         self.assertIn(f"# {swept} removed (0 audit-only), 0 absent, 1 deferred, 0 unknown, 0 operator, 0 failed, "
                       "0 slot(s)", err.getvalue())
