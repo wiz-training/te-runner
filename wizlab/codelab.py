@@ -279,6 +279,26 @@ def _drop_claim(lab, slot, stem):
     return status
 
 
+def _slot_numbers(lab):
+    prefix = f"te-code-{lab}-"
+    repos = []
+    for page in range(1, core._PAGE_CAP + 1):
+        _, batch = _gh("GET", f"/orgs/{ORG}/repos?type=public&per_page=100&page={page}")
+        repos.extend(batch)
+        if len(batch) < 100:
+            break
+    else:
+        core.die(3, f"GitHub org {ORG} public repos exceeded {core._PAGE_CAP} pages")
+    slots = []
+    for r in repos:
+        name = r.get("name") or ""
+        if name.startswith(prefix):
+            suffix = name[len(prefix):]
+            if re.fullmatch(r"\d+", suffix, re.ASCII):
+                slots.append(suffix)
+    return sorted(slots)
+
+
 def _emit_slot(lab, slot):
     core._emit(f"SLOT={slot}\nREPO={_slot_repo(lab, slot)}\n")
 
@@ -288,14 +308,13 @@ def cmd_slot_claim(args):
     holds is reprinted, never re-claimed; a claim older than CLAIM_TTL_S is evicted via a non-force
     fast-forward PATCH (422 = contended); no free slot is 1."""
     lab, stem = _lab(args), core._stem(args)
-    _, repos = _gh("GET", f"/orgs/{ORG}/repos?per_page=100&type=public")
-    prefix = f"te-code-{lab}-"
-    slots = sorted(r["name"][len(prefix):] for r in repos if r["name"].startswith(prefix))
+    slots = _slot_numbers(lab)
     claims = _slot_claims(lab)
     active = {s: who for s, (who, exp, _) in claims.items() if not exp}
     held = [s for s, who in active.items() if who == stem]
     if held:
         return _emit_slot(lab, held[0])
+    fresh_sha = None
     for slot in slots:
         if slot in active:
             continue
@@ -309,10 +328,12 @@ def cmd_slot_claim(args):
                 _close_patch(lab, slot, old_who)
                 return _emit_slot(lab, slot)
             continue
-        _, commit = _gh("POST", f"/repos/{ORG}/{CONTROL_REPO}/git/commits",
-                        {"message": stem, "tree": EMPTY_TREE, "parents": []})
+        if fresh_sha is None:
+            _, commit = _gh("POST", f"/repos/{ORG}/{CONTROL_REPO}/git/commits",
+                            {"message": stem, "tree": EMPTY_TREE, "parents": []})
+            fresh_sha = commit["sha"]
         status, _ = _gh("POST", f"/repos/{ORG}/{CONTROL_REPO}/git/refs",
-                        {"ref": f"refs/{CLAIM_NS}/{lab}/slot-{slot}", "sha": commit["sha"]}, tolerate=(422,))
+                        {"ref": f"refs/{CLAIM_NS}/{lab}/slot-{slot}", "sha": fresh_sha}, tolerate=(422,))
         if status == 201:
             return _emit_slot(lab, slot)
     print(f"no free slot for {lab}: {len(slots)} slot(s), {len(active)} claimed")
