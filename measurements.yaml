@@ -1311,6 +1311,8 @@ outpost_lifecycle:
     # id -- not a validation error -- and fails again while UNINSTALLING. The only order that works is
     # uninstall -> poll to UNINSTALLED -> delete. `wizlab outpost delete` does this (--timeout 600
     # default, exits 0 on a stuck record because the EKS infra dies with the lease).
+    # 2026-10-27: on PARTIALLY_UNINSTALLED (_OUTPOST_STUCK), `wizlab outpost delete` sends deleteOutpost
+    # once (console deletes succeeded on ghtvgsxcgphw, k8m01846391n) and exits 0 if accepted, 1 only on refusal.
     daily_reaper_covers_outposts: false
     # The out-of-band audit-log reaper derives delete<Type> generically, so it hits that same internal
     # error and ALERTS instead of reaping. A leftover Outpost is a human alert, not a silent leak.
