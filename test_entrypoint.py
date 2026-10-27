@@ -126,11 +126,15 @@ class LearnerCloudAuth(unittest.TestCase):
           "chown -R learner:learner /home/learner/.azure"]),
     )
 
-    def _boot(self, extra_env, create_dirs):
+    def _boot(self, extra_env, create_dirs, home_is_learner=False):
         with tempfile.TemporaryDirectory() as td:
             tmp = pathlib.Path(td)
-            home = tmp / "root"
+            home = tmp / ("learner" if home_is_learner else "root")
             home.mkdir()
+            script = ROOT / "entrypoint.sh"
+            if home_is_learner:
+                script = tmp / "entrypoint.sh"
+                script.write_text((ROOT / "entrypoint.sh").read_text().replace("/home/learner", str(home)))
             capture = tmp / "capture"
             capture.touch()
             gcloud_body = "mkdir -p \"$HOME/.config/gcloud\"\nexit 0\n" if create_dirs else "exit 1\n"
@@ -145,17 +149,24 @@ class LearnerCloudAuth(unittest.TestCase):
                 stub.chmod(0o755)
             clean = {k: v for k, v in os.environ.items()
                      if not k.startswith(("GOOGLE_", "ARM_", "TS_", "TE_DEV_"))}
-            env = {**clean, "HOME": str(home), "PATH": f"{tmp}:{os.environ['PATH']}",
-                   "CAPTURE": str(capture), **extra_env}
-            result = subprocess.run(["/bin/sh", str(ROOT / "entrypoint.sh"), "true"], env=env,
+            env = {**clean, "HOME": str(home), "RUN_LAB_DIR": str(tmp / "run"),
+                   "PATH": f"{tmp}:{os.environ['PATH']}", "CAPTURE": str(capture), **extra_env}
+            result = subprocess.run(["/bin/sh", str(script), "true"], env=env,
                                     capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
+            if home_is_learner and create_dirs:
+                self.assertTrue((home / ".config" / "gcloud").is_dir())
+                self.assertTrue((home / ".azure").is_dir())
             return [ln.replace(str(home), "<home>") for ln in capture.read_text().splitlines()]
 
     def test_login_blocks_mirror_and_chown_config_for_learner(self):
         for extra_env, create_dirs, want in self.ROWS:
             with self.subTest(keys=sorted(extra_env), create_dirs=create_dirs):
                 self.assertEqual(self._boot(extra_env, create_dirs), want)
+
+    def test_skips_self_copy_when_home_is_learner(self):
+        both_env = self.ROWS[-1][0]
+        self.assertEqual(self._boot(both_env, True, home_is_learner=True), [])
 
 
 if __name__ == "__main__":
