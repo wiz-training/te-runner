@@ -239,7 +239,8 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   registered**, **CONNECTED does not imply it scanned anything** (4 of 7 live ones had scanned nothing),
   and a direct delete fails.
   All measured — grade and reap off `measurements.yaml outpost_lifecycle.aws`, never off the status
-  name's plain meaning.
+  name's plain meaning. On `ensure`, an existing Outpost with `allowedRegions: []` (the console
+  default, unrestricted) is compatible with any `--region`; a non-empty list that differs exits 3.
 - `connector ensure|inspect|delete` — a Cloud Connector. `ensure` converges only on AWS: it creates
   the connector if absent, else corrects a drifted `authParams.customerRoleARN` (the repair path).
   `--reauth` patches `authParams` even when nothing drifted: the patch is synchronous and drops the

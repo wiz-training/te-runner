@@ -2997,13 +2997,13 @@ class OutpostGrading(unittest.TestCase):
     reorders the reap would silently leave an Outpost record behind, which no lab check would
     catch."""
 
-    def _wiz(self, status, after=None, scans=None, clusters=()):
+    def _wiz(self, status, after=None, scans=None, clusters=(), regions=("us-east-1",)):
         """after: statuses `outpost(id)` returns on successive polls, for the uninstall wait.
         scans: one (successful, failed) pair per daily bucket the scan-metrics trend reports.
         clusters: the Outpost's region scan clusters — the unit invokeOutpostClusterUpdate takes."""
         seq = list(after or [])
         nodes = [] if status is None else [{"id": "o1", "name": "lab-x", "status": status,
-                                             "allowedRegions": ["us-east-1"], "config": {"roleARN": "a"},
+                                             "allowedRegions": list(regions), "config": {"roleARN": "a"},
                                              "clusters": list(clusters)}]
         pts = [{"timestamp": f"d{i}", "aggregatedMetrics": {"totalScansCount": s + f, "successfulScansCount": s,
                                                             "failedScansCount": f}}
@@ -3069,12 +3069,16 @@ class OutpostGrading(unittest.TestCase):
 
     def test_ensure_never_recreates_and_refuses_a_role_or_region_change(self):
         # A role change is a knowing delete-and-recreate: 3 naming the difference, no mutation.
-        for argv, want in [(["--name", "lab-x", "--role-arn", "a"], 0),
-                           (["--name", "lab-x", "--role-arn", "a", "--region", "us-east-1"], 0),
-                           (["--name", "lab-x", "--role-arn", "other"], 3),
-                           (["--name", "lab-x", "--role-arn", "a", "--region", "eu-west-1"], 3)]:
-            with self.subTest(argv=argv):
-                wiz = self._wiz("CONNECTED")
+        # Console-default allowedRegions [] (unrestricted) is compatible with any requested --region.
+        for argv, regions, want in [
+            (["--name", "lab-x", "--role-arn", "a"], ["us-east-1"], 0),
+            (["--name", "lab-x", "--role-arn", "a", "--region", "us-east-1"], ["us-east-1"], 0),
+            (["--name", "lab-x", "--role-arn", "a", "--region", "eu-west-1"], [], 0),
+            (["--name", "lab-x", "--role-arn", "other"], ["us-east-1"], 3),
+            (["--name", "lab-x", "--role-arn", "a", "--region", "eu-west-1"], ["us-east-1"], 3),
+        ]:
+            with self.subTest(argv=argv, regions=regions):
+                wiz = self._wiz("CONNECTED", regions=regions)
                 self.assertEqual(self._exit(wz.cmd_outpost_ensure, argv, wiz), want)
                 self.assertEqual(self._mutations(wiz), [])
 
