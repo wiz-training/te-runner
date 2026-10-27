@@ -79,6 +79,8 @@ class FakeWiz:
     per request and `docs` the raw documents, so a test can assert what left the process."""
     ENV: typing.ClassVar = {"WIZ_CLIENT_ID": "cid", "WIZ_CLIENT_SECRET": "sec"}
     _FIELD = re.compile(r"^\s*(?:query|mutation)\b[^{]*\{\s*(\w+)|^\s*\{\s*(\w+)")
+    _STR_OR_COMMENT = re.compile(r'"""(?:\\.|(?!""")[\s\S])*"""|"(?:\\.|[^"\\])*"|#[^\n]*')
+    _VAR_DECL = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)\s*:")
 
     class error:
         """A GraphQL error; `beside` is the partial payload Wiz sends with it when a page truncates."""
@@ -88,12 +90,35 @@ class FakeWiz:
     def __init__(self, tid="tid", **fields):
         self.tid, self.fields, self.calls, self.docs, self.mints = tid, fields, [], [], 0
 
+    @classmethod
+    def _check_doc(cls, query, variables):
+        cleaned = cls._STR_OR_COMMENT.sub(" ", query)
+        stack, pairs, has_brace = [], {"}": "{", ")": "("}, False
+        for ch in cleaned:
+            if ch in ("{", "("):
+                has_brace = has_brace or ch == "{"
+                stack.append(ch)
+            elif ch in pairs:
+                if not stack or stack.pop() != pairs[ch]:
+                    raise AssertionError(f"unbalanced {ch!r} in GraphQL document: {query!r}")
+        if stack or not has_brace:
+            raise AssertionError(f"unclosed {stack!r} in GraphQL document: {query!r}")
+        declared = set(cls._VAR_DECL.findall(cleaned.split("{", 1)[0]))
+        undeclared = set(variables) - declared
+        if undeclared:
+            raise AssertionError(f"undeclared GraphQL variable(s) {sorted(undeclared)} in {query!r}")
+        return cleaned
+
     def __call__(self, url, data, headers, attempts=3):
         if url == wz.auth_url() or url.endswith("/protocol/openid-connect/token"):
             self.mints += 1
             return {"access_token": _jwt(dc="dc", tid=self.tid, exp=int(wz.time.time()) + 3600)}
-        m = self._FIELD.match(data["query"])
-        field, variables = m.group(1) or m.group(2), data.get("variables") or {}
+        variables = data.get("variables") or {}
+        cleaned = self._check_doc(data["query"], variables)
+        m = self._FIELD.match(cleaned)
+        if not m:
+            raise AssertionError(f"unrecognised GraphQL operation: {data['query']!r}")
+        field = m.group(1) or m.group(2)
         self.calls.append((field, variables))
         self.docs.append(data["query"])
         answer = self.fields.get(field, {})
@@ -1321,6 +1346,22 @@ class ExitCodeContract(unittest.TestCase):
         self.assertEqual(code, 3)
         self.assertIn("denied", err.getvalue())
         self.assertEqual([f for f, _ in wiz.calls], ["deployments"])
+
+    def test_fake_wiz_rejects_unbalanced_delimiters_and_undeclared_variables(self):
+        wiz = FakeWiz(connectors={"totalCount": 0})
+        url = wz.api_url("dc")
+        for bad_doc, bad_vars in (
+            ("query Q { connectors { id }", {}),
+            ("query Q { connectors { id } }}", {}),
+            ("query Q($x: String { connectors { id } }", {"x": "1"}),
+            ("query Q { connectors(first: 10 { id } }", {}),
+            ("query Q($a: String) { connectors { id } }", {"a": "1", "b": "2"}),
+            ("{ connectors { id } }", {"after": "c1"}),
+        ):
+            with self.subTest(doc=bad_doc, vars=bad_vars), self.assertRaises(AssertionError):
+                wiz(url, {"query": bad_doc, "variables": bad_vars}, {})
+        ok_doc = 'query Q($after: String) { # ignore ( {\n connectors(filterBy: { search: "a{b(c" }) { totalCount } }'
+        self.assertEqual(wiz(url, {"query": ok_doc, "variables": {}}, {}), {"data": {"connectors": {"totalCount": 0}}})
 
     def test_main_reports_a_wizlab_error_once_with_its_code(self):
         err = io.StringIO()
