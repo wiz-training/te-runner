@@ -140,6 +140,27 @@ class ReapOrdering(unittest.TestCase):
         self.assertEqual(gh_zero.claims, {"02": "lab-live"})
         self.assertIn("# slot claims: 1 removed, 0 absent", err_zero.getvalue())
 
+        # A dry run lists the same backlog through reads only and leaves every claim in place.
+        gh_dry = tw.FakeGitHub(claims={"01": "lab-ghtvgsxcgphw", "02": "lab-live"},
+                               claim_ages={"02": 30})
+        with mock.patch.object(rp, "TENANTS", {"TE": "tid:te"}), \
+             mock.patch.object(rp, "stopped_sessions", return_value=["ghtvgsxcgphw"]), \
+             mock.patch.object(rp.subprocess, "run", return_value=ok_proc) as proc_dry, \
+             mock.patch.object(rp._codelab, "_gh_call", gh_dry), \
+             mock.patch.dict(rp.os.environ, dict(tw.GitHubContract.GH_ENV), clear=True), \
+             mock.patch.object(rp.sys, "argv", ["reap_orphans.py"]), \
+             mock.patch.object(rp.sys, "stdout", io.TextIOWrapper(io.BytesIO())) as out_dry, \
+             mock.patch.object(rp.sys, "stderr", io.StringIO()) as err_dry:
+            rp.main()
+            out_dry.seek(0)
+            dry_out = out_dry.read()
+        proc_dry.assert_not_called()
+        writes = [(m, p) for m, p in gh_dry.calls if m != "GET" and not p.endswith("/access_tokens")]
+        self.assertEqual(writes, [])
+        self.assertEqual(gh_dry.claims, {"01": "lab-ghtvgsxcgphw", "02": "lab-live"})
+        self.assertIn("DRY-RUN would release slot", dry_out)
+        self.assertIn("# slot claims: 1 to release (dry-run), 0 absent", err_dry.getvalue())
+
     def test_operator_residue_deletes_the_user_and_keeps_the_run_red(self):
         """An Outpost left PARTIALLY_UNINSTALLED by a lab's own cleanup (te-aws-outpost-trust-201,
         every play) made `wizlab user reap` exit 3, so the session's Wiz user was retained as "the only
