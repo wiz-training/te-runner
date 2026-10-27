@@ -99,7 +99,7 @@ class ReapOrdering(unittest.TestCase):
             return rp.subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
         with mock.patch.object(rp, "TENANTS", {}), \
              mock.patch.object(rp.subprocess, "run", side_effect=run) as proc, \
-             mock.patch.dict(rp.os.environ, {"REAP_SESSIONS": "s1"}, clear=True), \
+             mock.patch.dict(rp.os.environ, {"REAP_SESSIONS": "ghtvgsxcgphw"}, clear=True), \
              mock.patch.object(rp.sys, "argv", ["reap_orphans.py", "--commit"]), \
              mock.patch.object(rp.sys, "stdout", io.TextIOWrapper(io.BytesIO())), \
              mock.patch.object(rp.sys, "stderr", io.StringIO()) as err, \
@@ -107,8 +107,26 @@ class ReapOrdering(unittest.TestCase):
             rp.main()
         self.assertEqual(cm.exception.code, 1)
         self.assertEqual([c.args[0][1:3] for c in proc.call_args_list], [["user", "reap"], ["user", "delete"]])
-        self.assertIn("reap_orphans: lab-s1@ deleted; residue needs an operator", err.getvalue())
-        self.assertIn('REAP_SESSIONS_TENANT=TBCMP REAP_SESSIONS="s1"', err.getvalue())
+        self.assertIn("reap_orphans: lab-ghtvgsxcgphw@ deleted; residue needs an operator", err.getvalue())
+        self.assertIn('REAP_SESSIONS_TENANT=TBCMP REAP_SESSIONS="ghtvgsxcgphw"', err.getvalue())
+
+    def test_manual_reap_sessions_rejects_non_play_id_before_calling_anything(self):
+        for spec, bad in [("bapr", "bapr"), ("ghtvgsxcgphw,bapr", "bapr"), ("UPPERCASE123", "UPPERCASE123")]:
+            with self.subTest(spec=spec), \
+                 mock.patch.object(rp, "TENANTS", {"TBCMP": "tid:tbcmp"}), \
+                 mock.patch.object(rp, "stopped_sessions") as stopped, \
+                 mock.patch.object(rp, "_reap_session") as reap, \
+                 mock.patch.object(rp.subprocess, "run") as proc, \
+                 mock.patch.dict(rp.os.environ, {"REAP_SESSIONS": spec}, clear=True), \
+                 mock.patch.object(rp.sys, "argv", ["reap_orphans.py", "--commit"]), \
+                 mock.patch.object(rp.sys, "stderr", io.StringIO()) as err, \
+                 self.assertRaises(SystemExit) as cm:
+                rp.main()
+            self.assertEqual(cm.exception.code, 1)
+            self.assertIn(f"operator error: REAP_SESSIONS entry {bad} is not a play id", err.getvalue())
+            stopped.assert_not_called()
+            reap.assert_not_called()
+            proc.assert_not_called()
 
     def test_a_hung_wizlab_costs_one_session_not_the_run(self):
         # Unhandled, TimeoutExpired left main() by traceback: every later session and tenant was skipped
@@ -128,7 +146,7 @@ class ReapOrdering(unittest.TestCase):
             with self.subTest(outcome=outcome), \
                  mock.patch.object(rp, "TENANTS", {}), \
                  mock.patch.object(rp, "_reap_session", return_value=outcome), \
-                 mock.patch.dict(rp.os.environ, {"REAP_SESSIONS": "s1,s2"}, clear=True), \
+                 mock.patch.dict(rp.os.environ, {"REAP_SESSIONS": "ghtvgsxcgphw,k8m01846391n"}, clear=True), \
                  mock.patch.object(rp.sys, "argv", ["reap_orphans.py", "--commit"]), \
                  mock.patch.object(rp.sys, "stderr", io.StringIO()) as err:
                 code = None
@@ -137,8 +155,8 @@ class ReapOrdering(unittest.TestCase):
                 except SystemExit as e:
                     code = e.code
                 self.assertEqual(code, want)
-                self.assertEqual('REAP_SESSIONS_TENANT=TBCMP REAP_SESSIONS="s1,s2"' in err.getvalue(),
-                                 want is not None)
+                hint = 'REAP_SESSIONS_TENANT=TBCMP REAP_SESSIONS="ghtvgsxcgphw,k8m01846391n"'
+                self.assertEqual(hint in err.getvalue(), want is not None)
 
     def test_a_body_that_is_not_a_graphql_answer_costs_one_tenant_not_the_run(self):
         """Instruqt answered a login page (HTML, 200) once; json.loads left _instruqt by traceback and

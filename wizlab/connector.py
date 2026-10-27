@@ -81,14 +81,14 @@ def _foreign(node, stem):
     prefix = f"{os.getenv('WIZLAB_SESSION_PREFIX', 'lab')}-"
     name = node.get("name") or ""
     oname = (node.get("outpost") or {}).get("name") or ""
-    return (name.startswith(prefix) and not name.startswith(stem)) or (
-        oname.startswith(prefix) and oname != stem
+    return (name.startswith(prefix) and not core._owned(name, stem)) or (
+        oname.startswith(prefix) and not core._owned(oname, stem)
     )
 
 
-def _owned(node, stem):
+def _stem_owned(node, stem):
     """True when `node` is named on `stem` and not bound to another session's Outpost."""
-    return bool(stem and (node.get("name") or "").startswith(stem) and not _foreign(node, stem))
+    return bool(stem and core._owned(node.get("name") or "", stem) and not _foreign(node, stem))
 
 
 def _merge_parents(existing, nodes, cloud, account_id=None):
@@ -119,7 +119,7 @@ def find_connector(account_id, cloud="aws", stem=None):
        trusted to be complete exits 3 (core._all_nodes) rather than concluding."""
     data, _ = core.api(FIND, {"ids": [account_id]})
     parents = _merge_parents([], ((data.get("connectors") or {}).get("nodes")) or [], cloud)
-    if stem and not any(_owned(n, stem) for n in parents):
+    if stem and not any(_stem_owned(n, stem) for n in parents):
         data, _ = core.api(SEARCH, {"s": stem})
         parents = _merge_parents(parents, ((data.get("connectors") or {}).get("nodes")) or [], cloud, account_id)
     if not [n for n in parents if not _foreign(n, stem)]:
@@ -129,7 +129,8 @@ def find_connector(account_id, cloud="aws", stem=None):
     # an active connector outweighs a stale ERROR one.
     return sorted(
         parents,
-        key=lambda n: (not _owned(n, stem), _foreign(n, stem), not (n.get("enabled") and n.get("status") != "ERROR")),
+        key=lambda n: (not _stem_owned(n, stem), _foreign(n, stem),
+                       not (n.get("enabled") and n.get("status") != "ERROR")),
     )
 
 

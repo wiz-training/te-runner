@@ -367,6 +367,11 @@ def _scopes(args, default):
     return wanted
 
 
+# measured 2026-10-27: 512/512 play ids in 30 d (labPlayReports) match ^[a-z0-9]{12}$.
+PLAY_ID_RE = re.compile(r"[a-z0-9]{12}")
+_STEM_DELIMS = ("-", "@")
+
+
 def _sid(args):
     # The lab session id: unique per play, injected as INSTRUQT_SESSION_ID, and the id labPlayReports
     # returns — so the out-of-band reaper joins a stopped session straight to its objects by name.
@@ -395,6 +400,11 @@ def _lab_stem(session_id):
     # actor-independent, per-session reap key the prefix sweep matches and labPlayReports keys on
     # directly. Override the leading token with WIZLAB_SESSION_PREFIX.
     return f"{os.getenv('WIZLAB_SESSION_PREFIX', 'lab')}-{session_id}"
+
+
+def _owned(name, stem):
+    """True when `name` is `stem` or starts with `stem` plus a stem delimiter (`-` or `@`)."""
+    return bool(name and stem) and (name == stem or any(name.startswith(stem + d) for d in _STEM_DELIMS))
 
 
 def _drift(label, pairs):
