@@ -545,8 +545,9 @@ class FakeGitHub:
     def __init__(self, slots=("01", "02"), claims=None, claim_ages=None,
                  dockerfile="FROM x\nUSER root\nENV LAB_SLOT=02\n", prs=(), branches=None, fail=False):
         self.slots, self.claims, self.claim_ages = list(slots), dict(claims or {}), dict(claim_ages or {})
+        self.claim_shas = {k: f"sha-{k}" for k in self.claims}
         self.dockerfile, self.prs, self.fail = dockerfile, [dict(p) for p in prs], fail
-        self.calls, self.puts, self.commits = [], [], {}
+        self.calls, self.bodies, self.puts, self.commits = [], [], [], {}
         self.branches = dict(branches) if branches is not None else {"main": "mainsha"}
 
     def _ref_lab_slot(self, key):
@@ -554,39 +555,60 @@ class FakeGitHub:
 
     def __call__(self, method, path, body=None, token=None):
         self.calls.append((method, path))
+        self.bodies.append(body)
         if self.fail:
             raise wz.WizlabError(3, "GitHub transport failure: boom")
         if path.startswith("/app/installations/") and method == "POST":
             return 201, {"token": "ghs_test"}
         if path.startswith("/orgs/wiz-training/repos"):
             return 200, [{"name": f"te-code-{self.LAB}-{s}"} for s in self.slots]
-        if path == f"{self.CONTROL}/git/matching-refs/claims/":
-            return 200, [{"ref": f"refs/claims/{self._ref_lab_slot(k)[0]}/slot-{self._ref_lab_slot(k)[1]}",
-                          "object": {"sha": f"sha-{k}"}} for k in sorted(self.claims)]
-        if path.startswith(f"{self.CONTROL}/git/matching-refs/claims/{self.LAB}/"):
-            return 200, [{"ref": f"refs/claims/{self.LAB}/slot-{s}", "object": {"sha": f"sha-{s}"}}
+        if path == f"{self.CONTROL}/git/matching-refs/{wz.CLAIM_NS}/":
+            return 200, [{"ref": f"refs/{wz.CLAIM_NS}/{self._ref_lab_slot(k)[0]}/slot-{self._ref_lab_slot(k)[1]}",
+                          "object": {"sha": self.claim_shas.get(k, f"sha-{k}")}} for k in sorted(self.claims)]
+        if path.startswith(f"{self.CONTROL}/git/matching-refs/{wz.CLAIM_NS}/{self.LAB}/"):
+            return 200, [{"ref": f"refs/{wz.CLAIM_NS}/{self.LAB}/slot-{s}",
+                          "object": {"sha": self.claim_shas.get(s, f"sha-{s}")}}
                          for s in sorted(self.claims) if "/" not in s]
-        if path.startswith(f"{self.CONTROL}/git/commits/sha-"):
-            key = path.rsplit("sha-", 1)[-1]
+        if path.startswith(f"{self.CONTROL}/git/commits/") and method == "GET":
+            sha = path.rsplit("/git/commits/", 1)[-1]
+            key = next((k for k, v in self.claim_shas.items() if v == sha), sha.removeprefix("sha-"))
             dt = wz.datetime.datetime.fromtimestamp(
                 wz.time.time() - self.claim_ages.get(key, 0), wz.datetime.timezone.utc
             )
             ts = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
             return 200, {"message": self.claims[key], "author": {"date": ts}, "committer": {"date": ts}}
         if path == f"{self.CONTROL}/git/commits" and method == "POST":
+            sha = f"newsha-{len(self.commits) + 1}"
             self.commits["pending"] = body["message"]
-            return 201, {"sha": "newsha"}
+            self.commits[sha] = {"message": body["message"], "parents": list(body.get("parents") or [])}
+            return 201, {"sha": sha}
         if path == f"{self.CONTROL}/git/refs" and method == "POST":
+            if not body["ref"].startswith(f"refs/{wz.CLAIM_NS}/"):
+                raise AssertionError(f"unexpected claim ref {body['ref']!r}")
             slot = body["ref"].rsplit("slot-", 1)[-1]
             if slot in self.claims:
                 return 422, {"message": "Reference already exists"}
             self.claims[slot] = self.commits["pending"]
+            self.claim_shas[slot] = body["sha"]
             self.claim_ages.pop(slot, None)
             return 201, {}
-        if path.startswith(f"{self.CONTROL}/git/refs/claims/") and method == "DELETE":
-            lab, slot_ref = path.split("/git/refs/claims/", 1)[1].split("/", 1)
+        if path.startswith(f"{self.CONTROL}/git/refs/{wz.CLAIM_NS}/") and method == "PATCH":
+            lab, slot_ref = path.split(f"/git/refs/{wz.CLAIM_NS}/", 1)[1].split("/", 1)
             slot = slot_ref.rsplit("slot-", 1)[-1]
             key = slot if (lab == self.LAB and slot in self.claims) else f"{lab}/{slot}"
+            cur_sha = self.claim_shas.get(key, f"sha-{key}")
+            commit = self.commits.get(body["sha"]) or {}
+            if key not in self.claims or body.get("force", False) or cur_sha not in commit.get("parents", ()):
+                return 422, {"message": "Update is not a fast forward"}
+            self.claims[key] = commit["message"]
+            self.claim_shas[key] = body["sha"]
+            self.claim_ages.pop(key, None)
+            return 200, {"ref": f"refs/{wz.CLAIM_NS}/{lab}/slot-{slot}", "object": {"sha": body["sha"]}}
+        if path.startswith(f"{self.CONTROL}/git/refs/{wz.CLAIM_NS}/") and method == "DELETE":
+            lab, slot_ref = path.split(f"/git/refs/{wz.CLAIM_NS}/", 1)[1].split("/", 1)
+            slot = slot_ref.rsplit("slot-", 1)[-1]
+            key = slot if (lab == self.LAB and slot in self.claims) else f"{lab}/{slot}"
+            self.claim_shas.pop(key, None)
             return (204, {}) if self.claims.pop(key, None) is not None else (422, {})
         if path.startswith(f"{self.REPO}/contents/Dockerfile") and method == "GET":
             return 200, {"content": base64.b64encode(self.dockerfile.encode()).decode(), "sha": "fsha"}
@@ -703,8 +725,11 @@ class GitHubContract(unittest.TestCase):
     ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "s1", **GH_ENV}
     STEM = "lab-s1"
 
-    def _run(self, fn, argv, gh, out=None, env=None):
-        return exit_code(fn, argv, env=self.ENV if env is None else env, out=out, _gh_call=gh)
+    def _run(self, fn, argv, gh, out=None, env=None, _gh_call=None):
+        rc = exit_code(fn, argv, env=self.ENV if env is None else env, out=out, _gh_call=_gh_call or gh)
+        transcript = "\n".join(f"{m} {p} {json.dumps(b)}" for (m, p), b in zip(gh.calls, gh.bodies, strict=True))
+        self.assertIsNone(re.search(r"refs/claims/|matching-refs/claims/", transcript))
+        return rc
 
     def test_claim_takes_the_first_free_slot_and_is_idempotent_per_session(self):
         gh, out = FakeGitHub(claims={"01": "lab-other"}), io.StringIO()
@@ -733,8 +758,48 @@ class GitHubContract(unittest.TestCase):
         self.assertEqual(self._run(wz.cmd_slot_claim, ["--lab", "juice-shop-101"], gh, out=out), 0)
         self.assertEqual(gh.claims, {"01": self.STEM, "02": "lab-fresh"})
         self.assertIn("SLOT=01\n", out.getvalue())
+        self.assertIn(("PATCH", f"{gh.CONTROL}/git/refs/{wz.CLAIM_NS}/juice-shop-101/slot-01"), gh.calls)
+        self.assertFalse([p for m, p in gh.calls if m == "DELETE" and p.startswith(gh.CONTROL)])
         self.assertEqual(gh.prs[0]["state"], "closed")
         self.assertNotIn("patch/lab-old", gh.branches)
+
+        # (a) Contended eviction returns 422 (non-fast-forward): no DELETE is issued, and the claimer
+        # moves on to the next free slot, or exits 1 when none remain.
+        gh_next, out_next = FakeGitHub(
+            claims={"01": "lab-old"},
+            claim_ages={"01": wz.CLAIM_TTL_S + 60},
+            prs=[{"number": 7, "state": "open", "head": {"ref": "patch/lab-old"}}],
+            branches={"main": "mainsha", "patch/lab-old": "oldsha"},
+        ), io.StringIO()
+
+        def raced_next(method, path, body=None, token=None):
+            if method == "PATCH" and path.endswith("/slot-01"):
+                gh_next.claim_shas["01"] = "sha-winner"
+                gh_next.claims["01"] = "lab-winner"
+            return gh_next(method, path, body, token)
+
+        self.assertEqual(
+            self._run(wz.cmd_slot_claim, ["--lab", "juice-shop-101"], gh_next, out=out_next, _gh_call=raced_next), 0
+        )
+        self.assertIn("SLOT=02\n", out_next.getvalue())
+        self.assertEqual(gh_next.claims, {"01": "lab-winner", "02": self.STEM})
+        self.assertFalse([m for m, _ in gh_next.calls if m == "DELETE"])
+        self.assertEqual(gh_next.prs[0]["state"], "open")
+
+        gh_full = FakeGitHub(
+            claims={"01": "lab-old", "02": "lab-fresh"},
+            claim_ages={"01": wz.CLAIM_TTL_S + 60, "02": 60},
+        )
+
+        def raced_full(method, path, body=None, token=None):
+            if method == "PATCH" and path.endswith("/slot-01"):
+                gh_full.claim_shas["01"] = "sha-winner"
+                gh_full.claims["01"] = "lab-winner"
+            return gh_full(method, path, body, token)
+
+        self.assertEqual(self._run(wz.cmd_slot_claim, ["--lab", "juice-shop-101"], gh_full, _gh_call=raced_full), 1)
+        self.assertEqual(gh_full.claims, {"01": "lab-winner", "02": "lab-fresh"})
+        self.assertFalse([m for m, _ in gh_full.calls if m == "DELETE"])
 
     def test_release_drops_only_this_sessions_claims_and_closes_its_patch_pr_and_branch(self):
         gh = FakeGitHub(
@@ -1929,13 +1994,14 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         self.assertEqual(code, 0)
         deletes = [p for m, p in gh.calls if m == "DELETE"]
         self.assertEqual(deletes, [
-            f"{gh.CONTROL}/git/refs/claims/juice-shop-101/slot-01",
+            f"{gh.CONTROL}/git/refs/{wz.CLAIM_NS}/juice-shop-101/slot-01",
             "/repos/wiz-training/te-code-juice-shop-101-01/git/refs/heads/patch/lab-bapr82q9xmm5",
-            f"{gh.CONTROL}/git/refs/claims/juice-shop-101/slot-03",
+            f"{gh.CONTROL}/git/refs/{wz.CLAIM_NS}/juice-shop-101/slot-03",
             "/repos/wiz-training/te-code-juice-shop-101-03/git/refs/heads/patch/lab-expired",
-            f"{gh.CONTROL}/git/refs/claims/other-lab/slot-01",
+            f"{gh.CONTROL}/git/refs/{wz.CLAIM_NS}/other-lab/slot-01",
             "/repos/wiz-training/te-code-other-lab-01/git/refs/heads/patch/lab-bapr82q9xmm5",
         ])
+        self.assertFalse([p for _, p in gh.calls if re.search(r"refs/claims/|matching-refs/claims/", p)])
         self.assertEqual(gh.claims, {"02": "lab-other", "other-lab/02": "lab-other"})
         self.assertEqual([p["state"] for p in gh.prs], ["closed", "closed", "open"])
         self.assertEqual(gh.branches, {"main": "mainsha", "patch/lab-other": "othsha"})
