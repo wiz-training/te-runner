@@ -120,6 +120,7 @@ def _reap_integration_or_uniform(tok, dc, h, rid, name):
 
 
 _REAP_OVERRIDES = {
+    "Connector": {"select": "id name outpost { name }"},
     "ServiceAccount": {"list": "serviceAccounts", "filter": "name", "soft": True,
                        "deleter": _reap_service_account},
     "Outpost": {"deleter": _reap_outpost},
@@ -146,7 +147,8 @@ def _plural(x):
 def _reap_handler(x):
     o = _REAP_OVERRIDES.get(x, {})
     return {"list": o.get("list", _plural(x)), "filter": o.get("filter", "search"),
-            "delete": "delete" + x, "soft": o.get("soft", False), "deleter": o.get("deleter")}
+            "delete": "delete" + x, "soft": o.get("soft", False), "deleter": o.get("deleter"),
+            "select": o.get("select", "id name")}
 
 
 def _input_name(d):
@@ -189,9 +191,10 @@ def _reap_list(tok, dc, h, name):
     The filter value is a literal: each type declares its filter as String or [String], and a literal
     coerces into either where a typed variable would not."""
     extra = ", deleted: false" if h["soft"] else ""
+    select = h.get("select", "id name")
     qy = ("query ReapList($after: String) { " + h["list"] + "(first: 100, after: $after, filterBy: { "
           + h["filter"] + ": " + json.dumps(name) + extra
-          + " }) { nodes { id name } pageInfo { hasNextPage endCursor } } }")
+          + " }) { nodes { " + select + " } pageInfo { hasNextPage endCursor } } }")
     return core._paged(functools.partial(core._gql, tok, dc), qy, {}, h["list"])
 
 
@@ -272,7 +275,8 @@ def _reap_sweep_type(tok, dc, x, stem, commit):
     tally = Counter()
     for n in nodes:
         nm = n.get("name") or ""
-        if not core._owned(nm, stem):
+        oname = (n.get("outpost") or {}).get("name") or ""
+        if not (core._owned(nm, stem) or oname == stem):
             continue
         if not commit:
             print(f"DRY-RUN would sweep {x} {nm!r} ({n['id'][:8]})")
