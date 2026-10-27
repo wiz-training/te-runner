@@ -1548,7 +1548,7 @@ class K8sConnectorGrading(unittest.TestCase):
 
     ARN = InspectContract.CLUSTER_ARN
     ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "x", "AWS_DEFAULT_REGION": "us-east-1",
-                            "AWS_ACCOUNT_ID": "111111111111"}
+                            "AWS_ACCOUNT_ID": "1" * 12}
     CLUSTER: typing.ClassVar = {"cluster": {"name": "lab-x", "arn": ARN, "endpoint": "https://eks.example",
                                             "certificateAuthority": {"data": "Q0E="}}}
 
@@ -1676,6 +1676,20 @@ class Naming(unittest.TestCase):
     def test_user_email_keyed_on_session(self):
         args = wz.parse(("user", "reap"), ["--session", "s1"])
         self.assertEqual(wz._lab_user_email(args), "lab-s1@wizlabs.cloudseclabs.io")
+
+    def test_empty_tenant_and_session_prefix_env_vars_fall_back_to_defaults(self):
+        env_empty = {"WIZ_TENANT": "", "WIZ_TBCMP_CLIENT_ID": "tbcmp-cid", "WIZ__CLIENT_ID": "broken",
+                     "WIZLAB_SESSION_PREFIX": ""}
+        with mock.patch.dict(wz.os.environ, env_empty, clear=True):
+            self.assertEqual(wz._tenant(), wz._DEFAULT_TENANT)
+            self.assertEqual(wz._tenant_env("CLIENT_ID"), "tbcmp-cid")
+            self.assertEqual(wz._session_prefix(), "lab")
+            self.assertEqual(wz._lab_stem("s1"), "lab-s1")
+            self.assertTrue(wz._foreign({"name": "lab-other-connector"}, "lab-s1"))
+            self.assertFalse(wz._foreign({"name": "lab-s1-connector"}, "lab-s1"))
+        with mock.patch.dict(wz.os.environ, {"WIZLAB_SESSION_PREFIX": "dev"}, clear=True):
+            self.assertEqual(wz._lab_stem("s1"), "dev-s1")
+            self.assertTrue(wz._foreign({"name": "dev-other-connector"}, "dev-s1"))
 
 
 class ConnectorAndReaperSafety(unittest.TestCase):

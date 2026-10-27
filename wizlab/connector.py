@@ -78,7 +78,7 @@ def _foreign(node, stem):
     connector (learner-named in the console) is never foreign."""
     if not stem:
         return False
-    prefix = f"{os.getenv('WIZLAB_SESSION_PREFIX', 'lab')}-"
+    prefix = f"{core._session_prefix()}-"
     name = node.get("name") or ""
     oname = (node.get("outpost") or {}).get("name") or ""
     return (name.startswith(prefix) and not core._owned(name, stem)) or (

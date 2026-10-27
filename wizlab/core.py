@@ -151,7 +151,7 @@ _DEFAULT_TENANT = "TBCMP"
 
 
 def _tenant():
-    return os.getenv("WIZ_TENANT", _DEFAULT_TENANT)
+    return os.getenv("WIZ_TENANT") or _DEFAULT_TENANT
 
 
 def _tenant_env(name):
@@ -396,11 +396,15 @@ def _stem(args):
     return _lab_stem(_session_id(args))
 
 
+def _session_prefix():
+    return os.getenv("WIZLAB_SESSION_PREFIX") or "lab"
+
+
 def _lab_stem(session_id):
     # Everything a lab creates (or tells the learner to create) is named lab-<session_id>: an
     # actor-independent, per-session reap key the prefix sweep matches and labPlayReports keys on
     # directly. Override the leading token with WIZLAB_SESSION_PREFIX.
-    return f"{os.getenv('WIZLAB_SESSION_PREFIX', 'lab')}-{session_id}"
+    return f"{_session_prefix()}-{session_id}"
 
 
 def _owned(name, stem):
