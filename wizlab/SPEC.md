@@ -387,10 +387,16 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   hard-coded; `--rule-id`/`--severity`/`--count-threshold` override), `default:false` so only a
   `wizcli --policies <name>` scan is gated. `inspect --require exists` verifies setup; `delete`
   removes it. A SHARED, PERSISTENT fixture — the reaper never touches it (not session-scoped).
-- `correlation inspect --repo <org/name> [--rule 'Docker Correlation'] --require edge` — the code-to-cloud
+- `correlation inspect --repo <org/name> [--rule 'Docker Correlation'] [--since <RFC3339>|--since-boot] --require edge` — the code-to-cloud
   edge: a `graphEntityCorrelations(filterBy:{toType:{equals:[CONTAINER_IMAGE]}})` node under `--rule` whose
   `from.properties.externalId` starts `github.com##<org/name>##`, read on the image side so a sibling
-  slot's edge never grades this repo; `ignored` nodes do not count. 0 ≥1 edge · 1 none.
+  slot's edge never grades this repo; `ignored` nodes do not count. 0 ≥1 edge · 1 none. With `--since` (or
+  `--since-boot`, which reads `/run/lab/boot_at` written by `entrypoint.sh` at container start; missing file is
+  3, both flags together is 2), an edge counts only when `updatedAt >= since` (`GraphEntityCorrelationFilters`
+  has no time filter, and on a reused slot repo Wiz updates the existing edge in place when the image is
+  rebuilt while `createdAt` stays fixed — measured 2026-10-27 on TE: slot-01 `createdAt 2026-10-16T22:21:24Z`,
+  `updatedAt 2026-10-26T21:53:26Z` after a solve play, and neither slot-01 nor slot-02 `updatedAt` moved during
+  no-solve play `mwgvp4n6aj5j`).
 - `pullrequest inspect --repo <org/name> [--number N] --require scanned|passed` — the Patch PR's scan (no
   `--number`: the open PR on head `patch/<stem>`, read from GitHub, never opened): a
   `cloudEvents` row (`kind CI_CD_SCAN`, `cicdScan.trigger PULL_REQUEST`, `resource.subjectResourceExternalId

@@ -1,4 +1,12 @@
 #!/bin/sh
+# Stamp container start in UTC so `wizlab correlation inspect --since-boot` grades only state updated
+# during this play (`RUN_LAB_DIR` lets `test_entrypoint.py` exercise the write as non-root).
+run_lab=${RUN_LAB_DIR:-/run/lab}
+if mkdir -p "$run_lab" 2>/dev/null; then
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$run_lab/boot_at"
+  chmod 0644 "$run_lab/boot_at"
+fi
+
 # Dev-only remote access. When a real tailnet key is injected (dev tracks only), join the tailnet and
 # open a key-based sshd so an operator can reach this grader for live iteration. The gate is the key's
 # shape, not its presence: the team store rejects an empty value, so a lab that keeps its dev-access

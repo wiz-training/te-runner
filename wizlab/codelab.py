@@ -14,6 +14,7 @@ import base64
 import datetime
 import json
 import os
+import pathlib
 import re
 import sys
 import time
@@ -31,6 +32,7 @@ EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 # learner's slot claim and `patch/<stem>` PR get evicted mid-session.
 CLAIM_TTL_S = 7200
 DEFAULT_RULE = "Docker Correlation"
+BOOT_AT = pathlib.Path("/run/lab/boot_at")
 _LAB_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
 _CLAIM_REF_RE = re.compile(rf"^refs/{CLAIM_NS}/([^/]+)/slot-(.+)$")
@@ -38,7 +40,7 @@ _TOKEN = {}
 
 CORRELATIONS_Q = """query Correlations($f: GraphEntityCorrelationFilters, $after: String) {
   graphEntityCorrelations(first: 100, after: $after, filterBy: $f) {
-    nodes { id ignored correlationRule { name } from { type name properties } to { type name } }
+    nodes { id ignored createdAt updatedAt correlationRule { name } from { type name properties } to { type name } }
     pageInfo { hasNextPage endCursor }
   }
 }"""
@@ -51,22 +53,62 @@ def _repo(args):
     return repo
 
 
+def _iso_utc(raw):
+    dt = datetime.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        raise ValueError("missing timezone")
+    return dt
+
+
+def _since(args):
+    if args.since and args.since_boot:
+        core.die(2, "--since and --since-boot cannot be used together")
+    if args.since_boot:
+        try:
+            raw = BOOT_AT.read_text().strip()
+            return raw, _iso_utc(raw)
+        except (OSError, ValueError) as e:
+            core.die(3, f"cannot read {BOOT_AT}: {e}")
+    if args.since:
+        try:
+            return args.since, _iso_utc(args.since)
+        except ValueError:
+            core.die(2, f"--since {args.since!r}: expected RFC3339 UTC timestamp")
+    return None, None
+
+
+def _edge_after(node, cutoff):
+    raw = node.get("updatedAt")
+    if not raw:
+        return False
+    try:
+        return _iso_utc(raw) >= cutoff
+    except ValueError:
+        return False
+
+
 def cmd_correlation_inspect(args):
     """Assert the code-to-cloud edge: a correlation under --rule (default Docker Correlation) from a
     Dockerfile whose externalId starts `github.com##<org/name>##` to a CONTAINER_IMAGE. Read on the image
-    side, filtered by `toType`, so a sibling slot's edge never grades this repo."""
+    side, filtered by `toType`, so a sibling slot's edge never grades this repo. With --since or
+    --since-boot, an edge counts only if its `updatedAt` is at or after the cut-off."""
     repo = _repo(args)
+    since_raw, cutoff = _since(args)
     prefix = f"github.com##{repo}##"
     filters = {"f": {"toType": {"equals": ["CONTAINER_IMAGE"]}}}
     nodes = core._all_nodes(CORRELATIONS_Q, filters, "graphEntityCorrelations")
-    edges = [n for n in nodes if not n.get("ignored")
-             and (n.get("correlationRule") or {}).get("name") == args.rule
-             and str(((n.get("from") or {}).get("properties") or {}).get("externalId", "")).startswith(prefix)]
+    matched = [n for n in nodes if not n.get("ignored")
+               and (n.get("correlationRule") or {}).get("name") == args.rule
+               and str(((n.get("from") or {}).get("properties") or {}).get("externalId", "")).startswith(prefix)]
+    newest = max((n["updatedAt"] for n in matched if n.get("updatedAt")), default="none")
+    edges = [n for n in matched if _edge_after(n, cutoff)] if cutoff is not None else matched
     if not edges:
-        print(f"no {args.rule} edge from {repo} to a container image")
+        suffix = f" since {since_raw}" if since_raw else ""
+        print(f"no {args.rule} edge from {repo} to a container image{suffix} (newest updatedAt: {newest})")
         sys.exit(1)
     for e in edges:
-        print(f"edge {e['id']}: {e['from']['properties']['externalId']} -> {(e.get('to') or {}).get('name')}")
+        print(f"edge {e['id']}: {e['from']['properties']['externalId']} -> {(e.get('to') or {}).get('name')}"
+              f" (updatedAt: {e.get('updatedAt') or 'none'}, newest updatedAt: {newest})")
 
 
 PR_SCANS_Q = """query PullRequestScans($f: CloudEventFilters, $after: String) {
