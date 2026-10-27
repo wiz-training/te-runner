@@ -7,6 +7,7 @@ message is the session stem; ref creation is atomic, so two graders cannot take 
 (te-code-labs `scripts/pool.py`, the seed/reset side of the same refs).
 """
 import base64
+import datetime
 import json
 import os
 import re
@@ -21,6 +22,7 @@ GH_API = "https://api.github.com"
 ORG = "wiz-training"
 CONTROL_REPO = "te-code-labs"
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+CLAIM_TTL_S = 7200
 DEFAULT_RULE = "Docker Correlation"
 _LAB_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
@@ -187,14 +189,37 @@ def _slot_repo(lab, slot):
     return f"{ORG}/te-code-{lab}-{slot}"
 
 
+def _claim_expired(commit):
+    """True when the claim commit's timestamp is older than CLAIM_TTL_S."""
+    ts = (commit.get("committer") or {}).get("date") or (commit.get("author") or {}).get("date")
+    if not ts:
+        return False
+    return (time.time() - datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()) > CLAIM_TTL_S
+
+
 def _claims(lab):
-    """{slot: session stem} from the claim refs."""
+    """{slot: (session stem, expired)} from the claim refs."""
     status, refs = _gh("GET", f"/repos/{ORG}/{CONTROL_REPO}/git/matching-refs/claims/{lab}/", tolerate=(404,))
     out = {}
     for ref in refs if status == 200 else []:
         _, commit = _gh("GET", f"/repos/{ORG}/{CONTROL_REPO}/git/commits/{ref['object']['sha']}")
-        out[ref["ref"].rsplit("slot-", 1)[-1]] = commit["message"].strip()
+        out[ref["ref"].rsplit("slot-", 1)[-1]] = (commit["message"].strip(), _claim_expired(commit))
     return out
+
+
+def _close_patch(lab, slot, stem):
+    """Close any open PR on head `patch/<stem>` and delete `refs/heads/patch/<stem>` on the slot repo."""
+    repo, head = _slot_repo(lab, slot), f"patch/{stem}"
+    number = _open_pr(repo, head)
+    if number is not None:
+        _gh("PATCH", f"/repos/{repo}/pulls/{number}", {"state": "closed"}, tolerate=(404, 422))
+    _gh("DELETE", f"/repos/{repo}/git/refs/heads/{head}", tolerate=(422, 404))
+
+
+def _drop_claim(lab, slot, stem):
+    status, _ = _gh("DELETE", f"/repos/{ORG}/{CONTROL_REPO}/git/refs/claims/{lab}/slot-{slot}", tolerate=(422, 404))
+    _close_patch(lab, slot, stem)
+    return status
 
 
 def _emit_slot(lab, slot):
@@ -203,39 +228,43 @@ def _emit_slot(lab, slot):
 
 def cmd_slot_claim(args):
     """Take the first free pool slot for this session and print SLOT / REPO. A slot this session already
-    holds is reprinted, never re-claimed; no free slot is 1."""
+    holds is reprinted, never re-claimed; a claim older than CLAIM_TTL_S is evicted; no free slot is 1."""
     lab, stem = _lab(args), core._stem(args)
     _, repos = _gh("GET", f"/orgs/{ORG}/repos?per_page=100&type=public")
     prefix = f"te-code-{lab}-"
     slots = sorted(r["name"][len(prefix):] for r in repos if r["name"].startswith(prefix))
     claims = _claims(lab)
-    held = [s for s, who in claims.items() if who == stem]
+    active = {s: who for s, (who, exp) in claims.items() if not exp}
+    held = [s for s, who in active.items() if who == stem]
     if held:
         return _emit_slot(lab, held[0])
     for slot in slots:
-        if slot in claims:
+        if slot in active:
             continue
+        if slot in claims:
+            _drop_claim(lab, slot, claims[slot][0])
         _, commit = _gh("POST", f"/repos/{ORG}/{CONTROL_REPO}/git/commits",
                         {"message": stem, "tree": EMPTY_TREE, "parents": []})
         status, _ = _gh("POST", f"/repos/{ORG}/{CONTROL_REPO}/git/refs",
                         {"ref": f"refs/claims/{lab}/slot-{slot}", "sha": commit["sha"]}, tolerate=(422,))
         if status == 201:
             return _emit_slot(lab, slot)
-    print(f"no free slot for {lab}: {len(slots)} slot(s), {len(claims)} claimed")
+    print(f"no free slot for {lab}: {len(slots)} slot(s), {len(active)} claimed")
     sys.exit(1)
 
 
 def cmd_slot_release(args):
-    """Drop every claim this session holds; nothing held is a no-op."""
+    """Drop every claim this session holds, closing its open patch PR and branch; nothing held is a no-op."""
     lab, stem = _lab(args), core._stem(args)
-    for slot, who in _claims(lab).items():
+    for slot, (who, _) in _claims(lab).items():
         if who == stem:
-            _gh("DELETE", f"/repos/{ORG}/{CONTROL_REPO}/git/refs/claims/{lab}/slot-{slot}", tolerate=(422, 404))
+            _drop_claim(lab, slot, stem)
             print(f"released slot {slot}")
 
 
 def release_claims_for(stem, commit):
-    """Release every pool claim across all labs whose commit message is `stem`. Returns
+    """Release every pool claim across all labs whose commit message is `stem` or whose commit is older
+    than CLAIM_TTL_S, closing its open patch PR and deleting `refs/heads/patch/<holder>`. Returns
     [(lab, slot, outcome)] with outcome 'removed' or 'absent' (`reap.REMOVED`/`reap.ABSENT`, passed as
     strings so the outcome constants stay defined in `reap` alone)."""
     status, refs = _gh("GET", f"/repos/{ORG}/{CONTROL_REPO}/git/matching-refs/claims/", tolerate=(404,))
@@ -246,14 +275,14 @@ def release_claims_for(stem, commit):
             continue
         lab, slot = m.groups()
         _, commit_obj = _gh("GET", f"/repos/{ORG}/{CONTROL_REPO}/git/commits/{ref['object']['sha']}")
-        if commit_obj["message"].strip() != stem:
+        holder = commit_obj["message"].strip()
+        if holder != stem and not _claim_expired(commit_obj):
             continue
         if not commit:
             print(f"DRY-RUN would release slot {lab}/{slot}")
             out.append((lab, slot, "removed"))
             continue
-        del_status, _ = _gh("DELETE", f"/repos/{ORG}/{CONTROL_REPO}/git/refs/claims/{lab}/slot-{slot}",
-                            tolerate=(422, 404))
+        del_status = _drop_claim(lab, slot, holder)
         if del_status in (404, 422):
             print(f"absent slot {lab}/{slot}")
             out.append((lab, slot, "absent"))

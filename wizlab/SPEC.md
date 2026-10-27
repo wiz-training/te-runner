@@ -42,7 +42,8 @@ One outcome per resource; `failed` outranks `operator`, which outranks `deferred
 | `removed`, `absent`, `unknown` | 0 | deleted |
 
 Exit 0 promises that every guaranteed-type resource (`_SWEEP_TYPES`) named for the session, every
-code-lab slot claim whose commit message is the stem (needs `WIZ_LABS_GH_APP`; absent = not swept, said
+code-lab slot claim whose commit message is the stem or whose commit is older than `CLAIM_TTL_S` (7200s),
+along with its open `patch/<stem>` PR and branch (needs `WIZ_LABS_GH_APP`; absent = not swept, said
 once; a GitHub transport fault is `deferred`), and every audit-attributed create carrying a handler and a
 name, is removed or absent; other residue is `unknown`.
 Blocking on `unknown` would fail every reap and retain every user, since handler coverage is partial by
@@ -118,6 +119,7 @@ The tag that first reads each contract; a lab pins at or above the highest row i
 | v0.1.81 | `--out-file` redacts stdout whatever `$EXEC_OUTPUT` holds: on v0.1.80 a caller blanking it got the secret printed anyway |
 | v0.1.82 | `user reap` releases code-lab slot claims whose commit message is the stem (`WIZ_LABS_GH_APP`) |
 | v0.1.84 | `connector ensure` deletes any foreign `lab-<other>` connector on the account before converging (preserving learner-named connectors); `connector inspect` filters foreign `lab-<other>` connectors out and ranks this session's first |
+| v0.1.85 | `slot claim` evicts claims older than `CLAIM_TTL_S` (7200s); `slot release` and `user reap` close the open `patch/<stem>` PR, delete `refs/heads/patch/<stem>`, and sweep expired claims regardless of session |
 
 <!-- verb-floors:begin -->
 | noun | verb | first tag |
@@ -394,9 +396,12 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
 - `slot claim|release --lab <name>` — the learner-repo pool (te-code-labs `scripts/pool.py` seeds and
   resets it): `claim` takes the first free `te-code-<lab>-NN` by creating `refs/claims/<lab>/slot-NN` in
   te-code-labs on an empty commit whose message is the session stem (atomic, so two graders cannot share
-  a slot) and emits `SLOT`, `REPO`; a slot the session already holds is reprinted; none free is 1.
-  `release` drops the session's claims, a no-op when none; `user reap` releases code-lab slot claims whose
-  commit message is the stem (needs `WIZ_LABS_GH_APP`; absent = not swept, said once). GitHub is reached as
+  a slot) and emits `SLOT`, `REPO`; a slot the session already holds is reprinted; a claim whose commit is
+  older than `CLAIM_TTL_S` (7200s) is evicted and treated as free; none free is 1.
+  `release` drops the session's claims, closes the open PR on `patch/<stem>` and deletes
+  `refs/heads/patch/<stem>` on the slot repo, a no-op when none; `user reap` does the same for every
+  code-lab slot claim whose commit message is the stem or whose commit is older than `CLAIM_TTL_S` (needs
+  `WIZ_LABS_GH_APP`; absent = not swept, said once). GitHub is reached as
   the App through the one JSON secret `WIZ_LABS_GH_APP` (`app_id`, `install_id`, base64 PEM `key`); absent
   is 3 before any request.
 - `patch open --repo <org/name>` — the learner's fix as a PR: branch `patch/<stem>` from `main`,
