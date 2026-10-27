@@ -3204,13 +3204,23 @@ class OutpostGrading(unittest.TestCase):
             ("UNINSTALLED", [], ["deleteOutpost"], 0),
             ("UNINSTALLATION_FAILED", [], ["deleteOutpost"], 0),
             ("UNINSTALLING", ["UNINSTALLED"], ["deleteOutpost"], 0),
-            ("PARTIALLY_UNINSTALLED", [], [], 1),
-            ("INITIALIZED", ["PARTIALLY_UNINSTALLED"], ["uninstallOutpost"], 1),
+            ("PARTIALLY_UNINSTALLED", [], ["deleteOutpost"], 0),
+            ("INITIALIZED", ["PARTIALLY_UNINSTALLED"], both, 0),
             (None, [], [], 0),
         ]:
             with self.subTest(status=status):
                 wiz = self._wiz(status, after=after)
                 self.assertEqual(self._exit(wz.cmd_outpost_delete, ["--name", "lab-x"], wiz), code)
+                self.assertEqual(self._mutations(wiz), want)
+        # On _OUTPOST_STUCK, a refused deleteOutpost exits 1 (state, not 3) after attempting it once.
+        for status, after, want in [
+            ("PARTIALLY_UNINSTALLED", [], ["deleteOutpost"]),
+            ("INITIALIZED", ["PARTIALLY_UNINSTALLED"], both),
+        ]:
+            with self.subTest(status=status, refused=True):
+                wiz = self._wiz(status, after=after)
+                wiz.fields["deleteOutpost"] = FakeWiz.error("cannot delete")
+                self.assertEqual(self._exit(wz.cmd_outpost_delete, ["--name", "lab-x"], wiz), 1)
                 self.assertEqual(self._mutations(wiz), want)
         # By id, an absent record is GONE: no uninstall is fired at it and no wait is spent on it.
         wiz = self._wiz("GONE")
