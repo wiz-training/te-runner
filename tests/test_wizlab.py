@@ -1267,6 +1267,20 @@ class ExitCodeContract(unittest.TestCase):
         declared = set().union(*wz.FLAGS.values())
         self.assertEqual(read - declared, set())
 
+    def test_module_names_do_not_collide_across_package(self):
+        """wizlab.__init__ flattens MODULES into package globals and _owner assumes each non-module
+        symbol has a single defining module."""
+        seen, collisions = {}, {}
+        for m in wz.MODULES:
+            for k, v in vars(m).items():
+                if k.startswith("__") or isinstance(v, types.ModuleType):
+                    continue
+                if k in seen:
+                    collisions.setdefault(k, [seen[k]]).append(m.__name__)
+                else:
+                    seen[k] = m.__name__
+        self.assertEqual(collisions, {})
+
     def test_every_flag_in_measurements_yaml_is_declared(self):
         """measurements.yaml carried `--assert-exists` and `--assert-ok` after connector inspect standardized
         on `--require exists|healthy`."""
