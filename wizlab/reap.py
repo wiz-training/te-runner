@@ -228,7 +228,7 @@ def _reap_delete(tok, dc, h, rid, name):
     return _reap_delete_uniform(tok, dc, h, rid, name)
 
 
-def _reap_one(tok, dc, action, name, commit):
+def _reap_one(tok, dc, action, name, commit, stem=""):
     """Reap one caught Create*. Returns (outcome, review_msg_or_None) — see _reap_exit for which
     outcomes keep the session's user alive."""
     x = action[len("Create"):]
@@ -245,6 +245,10 @@ def _reap_one(tok, dc, action, name, commit):
         return ABSENT, None
     if count > 1:
         return FAILED, f"FAILED {action} {name!r}: matched {count}, need exactly 1 — skipping"
+    if not core._owned(name, stem):
+        # Audit entries carry `actionParameters = {input, selection}` with no created id (measured
+        # 2026-10-27), so deleting a non-stem name by exact match could delete another learner's object.
+        return UNKNOWN, f"REVIEW audit-only {x} {name!r} ({rid[:8]}): not stem-owned, left in place"
     if not commit:
         print(f"DRY-RUN would delete {x} {name!r} ({rid[:8]}{', soft' if h['soft'] else ''})")
         return REMOVED, None
@@ -307,14 +311,14 @@ def cmd_reap(args):
         tally[FAILED] += 1
     # Removals the sweep could not have found by name. Every lab now instructs `lab-<sid>-*` names, so
     # this count over the reap.yml logs decides whether the audit layer stays a delete path or becomes
-    # a report.
+    # a report — non-stem matches are now left in place and counted here under UNKNOWN.
     audit_only = 0
     for action, name in actions:
-        outcome, review = _reap_one(tok, dc, action, name, commit)
+        outcome, review = _reap_one(tok, dc, action, name, commit, stem)
         if review:
             print(review)
         tally[outcome] += 1
-        if outcome == REMOVED and not core._owned(name or "", stem):
+        if review and review.startswith("REVIEW audit-only "):
             audit_only += 1
     for x in _SWEEP_TYPES:
         tally += _reap_sweep_type(tok, dc, x, stem, commit)
