@@ -228,6 +228,9 @@ def _reap_delete(tok, dc, h, rid, name):
     return _reap_delete_uniform(tok, dc, h, rid, name)
 
 
+_SCHEMA_ERR = ("no such field", "no such list field", "cannot query field", "not defined by type", "unknown argument")
+
+
 def _reap_one(tok, dc, action, name, commit, stem=""):
     """Reap one caught Create*. Returns (outcome, review_msg_or_None) — see _reap_exit for which
     outcomes keep the session's user alive."""
@@ -237,7 +240,9 @@ def _reap_one(tok, dc, action, name, commit, stem=""):
     h = _reap_handler(x)
     rid, count, err = _reap_find(tok, dc, h, name)
     if err:
-        return UNKNOWN, f"UNKNOWN {action} {name!r}: no handler ({err})"
+        if any(s in err.lower() for s in _SCHEMA_ERR):
+            return UNKNOWN, f"UNKNOWN {action} {name!r}: no handler ({err})"
+        return FAILED, f"FAILED {action} {name!r}: {err}"
     if count == 0:
         # Steady state, not a failure: a previous run reaped it (the reap window overlaps by design)
         # or the learner deleted it themselves. The audit entry survives the resource either way.

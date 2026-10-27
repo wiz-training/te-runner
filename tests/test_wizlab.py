@@ -1712,13 +1712,22 @@ class ConnectorAndReaperSafety(unittest.TestCase):
 
     def test_an_unhandled_type_is_unknown_and_does_not_block(self):
         # Handler coverage is partial by construction: the generic plural+search handler misses most
-        # create types, so blocking a miss would fail every reap and retain every user.
+        # create types, so blocking a schema miss would fail every reap and retain every user; a
+        # non-schema lookup error on a handled type is FAILED so the session is retried.
+        for schema_err in ("no such field", "no such list field", 'Cannot query field "widgets" on type "Query".'):
+            with mock.patch.object(_owner("_reap_handler"), "_reap_handler", return_value=self.HANDLER), \
+                 mock.patch.object(_owner("_reap_find"), "_reap_find", return_value=(None, None, schema_err)):
+                outcome, review = wz._reap_one("tok", "dc", "CreateWidget", "lab-s1-w", True)
+            self.assertEqual(outcome, wz.UNKNOWN)
+            self.assertIn("no handler", review)
+            self.assertEqual(wz._reap_exit(wz.Counter({wz.UNKNOWN: 1})), 0)
         with mock.patch.object(_owner("_reap_handler"), "_reap_handler", return_value=self.HANDLER), \
-             mock.patch.object(_owner("_reap_find"), "_reap_find", return_value=(None, None, "no such field")):
-            outcome, review = wz._reap_one("tok", "dc", "CreateWidget", "lab-s1-w", True)
-        self.assertEqual(outcome, wz.UNKNOWN)
-        self.assertIn("no handler", review)
-        self.assertEqual(wz._reap_exit(wz.Counter({wz.UNKNOWN: 1})), 0)
+             mock.patch.object(_owner("_reap_find"), "_reap_find", return_value=(None, None, "Internal server error")):
+            outcome, review = wz._reap_one("tok", "dc", "CreateReport", "lab-s1-r", True)
+        self.assertEqual(outcome, wz.FAILED)
+        self.assertIn("Internal server error", review)
+        self.assertNotIn("no handler", review)
+        self.assertEqual(wz._reap_exit(wz.Counter({wz.FAILED: 1})), 3)
 
     def test_an_audit_entry_with_no_name_is_unknown(self):
         outcome, review = wz._reap_one("tok", "dc", "CreateWidget", None, True)
@@ -2419,6 +2428,18 @@ class TransientGraphqlErrors(unittest.TestCase):
             wz.api("query Q { x }", {})
         self.assertEqual(cm.code, 3)
         self.assertEqual(post.call_count, 1)
+
+    def test_gql_retries_transient_read_error_then_succeeds_and_never_retries_a_mutation(self):
+        boom = {"errors": [{"message": "Internal server error"}], "data": None}
+        ok = {"data": {"reports": {"nodes": [{"id": "r1"}]}}}
+        post = self._post_returning(boom, boom, ok)
+        with mock.patch.object(_owner("_post"), "_post", post), mock.patch.object(wz.time, "sleep"):
+            data, errs = wz._gql("t", "dc", "query Q { reports { nodes { id } } }")
+        self.assertEqual((data["reports"]["nodes"], errs, post.call_count), ([{"id": "r1"}], [], 3))
+        post_mut = self._post_returning(boom, boom, boom)
+        with mock.patch.object(_owner("_post"), "_post", post_mut), mock.patch.object(wz.time, "sleep"):
+            data, errs = wz._gql("t", "dc", 'mutation M { deleteReport(input: { id: "r1" }) { _stub } }')
+        self.assertEqual((data, len(errs), post_mut.call_count), ({}, 1, 1))
 
 
 class MutationSubmissionBudget(unittest.TestCase):
