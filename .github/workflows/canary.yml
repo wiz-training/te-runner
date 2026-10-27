@@ -22,7 +22,6 @@ jobs:
       cancel-in-progress: false
     env:
       LAB: ${{ inputs.lab || 'te-dev-aws' }}
-      INSTRUQT_API: ${{ secrets.INSTRUQT_TOKEN }}
     steps:
       # `runner.temp` is not a valid context in a job-level `env:` (GitHub rejects the dispatch with
       # "Unrecognized named-value: 'runner'"), so the two paths are set from inside a step instead.
@@ -33,6 +32,7 @@ jobs:
       - name: check required secrets
         env:
           LABKIT_READ_TOKEN: ${{ secrets.LABKIT_READ_TOKEN }}
+          INSTRUQT_API: ${{ secrets.INSTRUQT_TOKEN }}
         run: |
           if [ -z "$LABKIT_READ_TOKEN" ]; then
             echo "::error::missing secret LABKIT_READ_TOKEN (fine-grained PAT with contents:read on wiz-training/te-labkit-v2)"
@@ -56,7 +56,7 @@ jobs:
           python-version: "3.12"
       - name: install playwright
         run: |
-          pip install playwright
+          pip install playwright==1.64.1   # the version the 2026-10-27 runs resolved; bump on purpose
           playwright install --with-deps chromium
       # A pt_ token binds to the browser identity in WIZLAB_PLAY_DIR; without caching that directory
       # across runs, `play stop --lab` in the clean step cannot see `Resume lab` to stop an orphan play.
@@ -68,9 +68,13 @@ jobs:
           restore-keys: |
             wizlab-play-${{ inputs.lab || 'te-dev-aws' }}-
       - name: clean
+        env:
+          INSTRUQT_API: ${{ secrets.INSTRUQT_TOKEN }}
         run: |
           python3 labkit/scripts/wizops play stop --lab "$LAB" || true
       - name: boot
+        env:
+          INSTRUQT_API: ${{ secrets.INSTRUQT_TOKEN }}
         run: |
           mkdir -p "$CANARY_STATE_DIR"
           rc=0
