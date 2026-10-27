@@ -1595,3 +1595,24 @@ eks_fargate:
     services: [eks, ec2, ecr, iam, sts]                 # what two applies used; a minimum is unproven
     verify: |
       time terraform apply -auto-approve -var name=lab-<sid>; time terraform destroy -auto-approve -var name=lab-<sid>
+
+code_lab_pool:
+  github_refs_fast_forward:
+    measured_on: "2026-10-27"
+    repo: wiz-training/te-code-labs
+    refs_claims:
+      namespace: refs/claims/<lab>/slot-NN
+      non_force_patch_sibling_status: 200               # PATCH /git/refs/claims/_probe/slot-00 {"sha": <sibling>, "force": false} accepted
+      non_force_patch_rewind_status: 200                # PATCH /git/refs/claims/_probe/slot-00 {"sha": <parent>, "force": false} accepted
+      enforces_fast_forward: false
+    refs_heads_claims:
+      namespace: refs/heads/claims/<lab>/slot-NN
+      non_force_patch_descendant_status: 200            # PATCH /git/refs/heads/_probe-ff {"sha": <child>, "force": false} accepted
+      non_force_patch_sibling_status: 422               # HTTP 422 "Update is not a fast forward"
+      non_force_patch_rewind_status: 422                # HTTP 422 "Update is not a fast forward"
+      enforces_fast_forward: true
+    verify: |
+      gh api -X POST repos/wiz-training/te-code-labs/git/refs -f ref=refs/heads/claims/_probe/slot-00 -f sha=<A>
+      gh api -X PATCH repos/wiz-training/te-code-labs/git/refs/heads/claims/_probe/slot-00 -F force=false -f sha=<B_child_of_A>      # -> 200
+      gh api -X PATCH repos/wiz-training/te-code-labs/git/refs/heads/claims/_probe/slot-00 -F force=false -f sha=<C_sibling_of_B>    # -> 422 Update is not a fast forward
+      gh api -X DELETE repos/wiz-training/te-code-labs/git/refs/heads/claims/_probe/slot-00

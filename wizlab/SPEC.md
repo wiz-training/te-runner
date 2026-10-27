@@ -26,7 +26,7 @@ Deliberate exceptions (never renamed; shipped labs call them):
 
 | pair | why `ensure` / `inspect` / `delete` does not fit |
 |---|---|
-| `slot claim` | a pool slot is claimed from the free set (`refs/claims/<lab>/slot-NN`), not converged by name |
+| `slot claim` | a pool slot is claimed from the free set (`refs/heads/claims/<lab>/slot-NN`), not converged by name |
 | `slot release` | drops the session's claimed pool slot refs; inverse of `slot claim` |
 | `patch open` | branches `patch/<stem>` and opens a Dockerfile PR on GitHub, not a converged resource |
 | `user login-url` | read-only author tool that prints a tenant's SAML sign-in URL without grading |
@@ -394,10 +394,13 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   finding, so the verdict grades a completed scan, never the fix. No row or PENDING is 1; FAILURE or
   SKIPPED (the scan did not run) is 3. Emits `PR_SCAN_STATE`, `PR_SCAN_VERDICT`, `PR_SCAN_FINDINGS`.
 - `slot claim|release --lab <name>` — the learner-repo pool (te-code-labs `scripts/pool.py` seeds and
-  resets it): `claim` takes the first free `te-code-<lab>-NN` by creating `refs/claims/<lab>/slot-NN` in
+  resets it): `claim` takes the first free `te-code-<lab>-NN` by creating `refs/heads/claims/<lab>/slot-NN` in
   te-code-labs on an empty commit whose message is the session stem (atomic, so two graders cannot share
   a slot) and emits `SLOT`, `REPO`; a slot the session already holds is reprinted; a claim whose commit is
-  older than `CLAIM_TTL_S` (7200s) is evicted and treated as free; none free is 1.
+  older than `CLAIM_TTL_S` (7200s) is evicted and treated as free by minting the new claim commit with
+  `parents: [<expired sha>]` and a non-force `PATCH /git/refs/heads/claims/<lab>/slot-NN` (`force: false`,
+  200 = claimed, 422 `Update is not a fast forward` = another claimer evicted first, move on; GitHub
+  enforces fast-forward only under `refs/heads/`); none free is 1.
   `release` drops the session's claims, closes the open PR on `patch/<stem>` and deletes
   `refs/heads/patch/<stem>` on the slot repo, a no-op when none; `user reap` does the same for every
   code-lab slot claim whose commit message is the stem or whose commit is older than `CLAIM_TTL_S` (needs
