@@ -1,11 +1,30 @@
 #!/usr/bin/env python3
 import os
 import pathlib
+import stat
 import subprocess
 import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent
+
+
+class BootTimestamp(unittest.TestCase):
+    """At container start, the entrypoint stamps `/run/lab/boot_at` (mode 0644) with RFC3339 UTC so
+    `wizlab correlation inspect --since-boot` rejects stale correlation edges from prior plays."""
+
+    def test_writes_utc_rfc3339_boot_at_with_mode_0644(self):
+        with tempfile.TemporaryDirectory() as td:
+            run_lab = pathlib.Path(td) / "run" / "lab"
+            env = {**os.environ, "RUN_LAB_DIR": str(run_lab), "TS_AUTHKEY": "", "TE_DEV_SSH_PUBKEY": "",
+                   "GOOGLE_CREDENTIALS": "", "ARM_CLIENT_ID": ""}
+            result = subprocess.run(["/bin/sh", str(ROOT / "entrypoint.sh"), "true"], env=env,
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            boot_at = run_lab / "boot_at"
+            self.assertTrue(boot_at.is_file())
+            self.assertEqual(stat.S_IMODE(boot_at.stat().st_mode), 0o644)
+            self.assertRegex(boot_at.read_text(), r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n$")
 
 
 class CredentialFile(unittest.TestCase):

@@ -246,7 +246,9 @@ class InspectContract(unittest.TestCase):
                            "externalId": "github.com##wiz-training/te-code-juice-shop-101-02##main##Dockerfile"}}})},
                        {"graphEntityCorrelations": _conn(
                            {**CORR, "correlationRule": {"name": "Container Image Annotation"}})}],
-            "invalid": [[], ["--repo", "no slash"]]},
+            "invalid": [[], ["--repo", "no slash"],
+                        ["--repo", SLOT_REPO, "--since", "2026-10-27T11:17:00Z", "--since-boot"],
+                        ["--repo", SLOT_REPO, "--since", "not-a-timestamp"]]},
         ("connector", "inspect"): {"argv": ["--account-id", "111111111111"],
                                    "present": {"connectors": _conn(CONNECTOR)}, "absent": [{"connectors": _conn()}]},
         # --cluster-arn keeps the row on the Wiz plane; the --cluster path is K8sConnectorGrading's.
@@ -662,6 +664,42 @@ def _gh_app_env():
                             serialization.NoEncryption())
     secret = {"app_id": "123", "install_id": "456", "key": base64.b64encode(pem).decode()}
     return {"WIZ_LABS_GH_APP": json.dumps(secret)}
+
+
+class CorrelationGrading(unittest.TestCase):
+    """`correlation inspect --since / --since-boot`: Wiz updates a reused slot repo's correlation edge in
+    place (`createdAt` stays fixed while `updatedAt` moves on image rebuild), and
+    `GraphEntityCorrelationFilters` has no time filter, so the cut-off compares `updatedAt >= since`
+    client-side."""
+
+    ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "x"}
+    REPO = InspectContract.SLOT_REPO
+    EDGE: typing.ClassVar = {**InspectContract.CORR, "createdAt": "2026-10-16T22:21:24Z",
+                             "updatedAt": "2026-10-26T21:53:26Z"}
+
+    def _code(self, argv, *edges, out=None):
+        return exit_code(wz.cmd_correlation_inspect, ["--repo", self.REPO, *argv],
+                         wiz=FakeWiz(graphEntityCorrelations=_conn(*edges)), env=self.ENV, out=out)
+
+    def test_since_rejects_stale_updated_at_and_accepts_newer_or_equal(self):
+        out = io.StringIO()
+        self.assertEqual(self._code(["--since", "2026-10-27T11:17:00Z"], self.EDGE, out=out), 1)
+        self.assertIn("2026-10-26T21:53:26Z", out.getvalue())
+        self.assertEqual(self._code(["--since", "2026-10-26T21:53:26Z"], self.EDGE), 0)
+        self.assertEqual(self._code(["--since", "2026-10-26T00:00:00Z"], self.EDGE), 0)
+        self.assertEqual(self._code(["--since", "2026-10-26T00:00:00Z"], InspectContract.CORR), 1)
+        self.assertEqual(self._code([], InspectContract.CORR), 0)
+
+    def test_since_boot_reads_boot_at_and_exits_3_when_missing_and_2_on_conflict(self):
+        with tempfile.TemporaryDirectory() as td:
+            boot_at = pathlib.Path(td) / "boot_at"
+            with mock.patch.object(_owner("BOOT_AT"), "BOOT_AT", boot_at):
+                self.assertEqual(self._code(["--since-boot"], self.EDGE), 3)
+                boot_at.write_text("2026-10-27T11:17:00Z\n")
+                self.assertEqual(self._code(["--since-boot"], self.EDGE), 1)
+                fresh = {**self.EDGE, "updatedAt": "2026-10-27T11:25:00Z"}
+                self.assertEqual(self._code(["--since-boot"], fresh), 0)
+                self.assertEqual(self._code(["--since", "2026-10-27T11:17:00Z", "--since-boot"], fresh), 2)
 
 
 class PullRequestGrading(unittest.TestCase):
