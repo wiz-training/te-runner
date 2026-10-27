@@ -101,7 +101,7 @@ jobs:
       - name: verdict
         run: |
           python3 - <<'PY'
-          import os, pathlib, sys
+          import os, pathlib, re, subprocess, sys
           state = pathlib.Path(os.environ["CANARY_STATE_DIR"])
           lab = os.environ.get("LAB", "te-dev-aws")
           rc = int((state / "boot.rc").read_text().strip())
@@ -130,6 +130,29 @@ jobs:
           ]
           if grep_lines:
               lines.extend(f"- `GREP={ln}`" for ln in grep_lines)
+          runner = next((ln.split("=", 1)[1].strip() for ln in grep_lines if ln.startswith("CANARY_RUNNER=")), "")
+          def _ver(s):
+              m = re.fullmatch(r"v(\d+(?:\.\d+)*)", s)
+              return tuple(int(p) for p in m.group(1).split(".")) if m else None
+          if rver := _ver(runner):
+              try:
+                  ls = subprocess.run(
+                      ["git", "ls-remote", "--tags", "--refs", "origin", "refs/tags/v*"],
+                      capture_output=True, text=True, check=False, timeout=15,
+                  )
+              except (OSError, subprocess.SubprocessError):
+                  ls = None
+              tags = []
+              for ln in (ls.stdout.splitlines() if ls and ls.returncode == 0 else []):
+                  if "\trefs/tags/" in ln:
+                      t = ln.split("\trefs/tags/", 1)[1].strip()
+                      if tv := _ver(t):
+                          tags.append((tv, t))
+              if tags:
+                  newest_ver, newest_tag = max(tags)
+                  if rver < newest_ver:
+                      print(f"::warning::{lab} runs te-runner {runner} behind newest tag {newest_tag}")
+                      lines.append(f"- note: `{lab}` runs `{runner}` (newest `te-runner` tag: `{newest_tag}`)")
           if err and outcome != "ok":
               lines.extend(["", f"stderr: `{err.splitlines()[-1]}`"])
           summary = "\n".join(lines) + "\n"
