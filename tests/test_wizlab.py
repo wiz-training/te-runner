@@ -1155,6 +1155,15 @@ class OktaContract(unittest.TestCase):
         self.assertIn("not resubmitted", err.getvalue())
         self.assertNotIn("re-run the same ensure", err.getvalue())
 
+    def test_gen_password_is_20_chars_with_all_four_character_classes_guaranteed(self):
+        with mock.patch.object(_owner("_gen_password").secrets, "choice", side_effect=lambda s: s[-1]):
+            pwd = wz._gen_password()
+        self.assertEqual(len(pwd), 20)
+        self.assertTrue(any(c.isupper() for c in pwd))
+        self.assertTrue(any(c.islower() for c in pwd))
+        self.assertTrue(any(c.isdigit() for c in pwd))
+        self.assertIn("!", pwd)
+
 
 class AuthorTools(unittest.TestCase):
     LAB_USER: typing.ClassVar = {"id": "okta-chronical_lab-s1@wizlabs.cloudseclabs.io",
