@@ -228,8 +228,11 @@ def cmd_outpost_delete(args):
 
 
 def _status(oid):
-    """The Outpost's status by id, GONE when no record answers: the one terminal state the API never names."""
-    data, _ = core.api(OUTPOST_Q, {"id": oid})
+    """The Outpost's status by id, GONE when no record answers without errors: the one terminal state
+    the API never names."""
+    data, _, errors = core._api_full(OUTPOST_Q, {"id": oid})
+    if errors:
+        core.die(3, core._gql_msg(errors))
     return (data.get("outpost") or {}).get("status") or "GONE"
 
 

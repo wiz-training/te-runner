@@ -2815,6 +2815,26 @@ class TransientGraphqlErrors(unittest.TestCase):
         self.assertEqual(data["connectors"]["totalCount"], 1)
         self.assertIn("field x failed", err.getvalue())
 
+    def test_transient_read_error_beside_partial_data_is_retried(self):
+        partial_boom = {
+            "errors": [{"message": "Internal server error"}],
+            "data": {"outpost": {"id": "o1", "name": "lab-x", "status": None}},
+        }
+        ok = {"data": {"outpost": {"id": "o1", "name": "lab-x", "status": "CONNECTED"}}}
+        post = self._post_returning(partial_boom, ok)
+        with mock.patch.object(_owner("token_and_dc"), "token_and_dc", return_value=("t", "dc", "tid")), \
+             mock.patch.object(_owner("_post"), "_post", post), mock.patch.object(wz.time, "sleep"):
+            data, _ = wz.api("query Q { outpost(id: \"o1\") { id name status } }", {})
+        self.assertEqual(data["outpost"]["status"], "CONNECTED")
+        self.assertEqual(post.call_count, 2)
+        post_exhausted = self._post_returning(partial_boom, partial_boom, partial_boom)
+        with mock.patch.object(_owner("token_and_dc"), "token_and_dc", return_value=("t", "dc", "tid")), \
+             mock.patch.object(_owner("_post"), "_post", post_exhausted), mock.patch.object(wz.time, "sleep"), \
+             exits() as cm:
+            wz.api("query Q { outpost(id: \"o1\") { id name status } }", {})
+        self.assertEqual(cm.code, 3)
+        self.assertEqual(post_exhausted.call_count, 3)
+
     def test_a_real_error_is_not_retried(self):
         bad = {"errors": [{"message": "Resource not found"}], "data": None}
         post = self._post_returning(bad, bad, bad)
@@ -3650,6 +3670,25 @@ class OutpostGrading(unittest.TestCase):
         wiz = self._wiz("INITIALIZED", after=["UNINSTALLING"] * 40)
         self.assertEqual(self._exit(wz.cmd_outpost_delete, ["--name", "lab-x", "--timeout", "60"], wiz), 0)
         self.assertEqual(self._mutations(wiz), ["uninstallOutpost"])
+
+    def test_status_does_not_report_gone_when_errors_accompany_response(self):
+        for payload in (
+            {"data": {"outpost": None}, "errors": [{"message": "resolver failed"}]},
+            {"data": {"outpost": None, "viewer": {"id": "u1"}}, "errors": [{"message": "resolver failed"}]},
+            {"data": {"outpost": {"id": "o1", "name": "lab-x", "status": None}},
+             "errors": [{"message": "status resolver failed"}]},
+        ):
+            with self.subTest(payload=payload), \
+                 mock.patch.object(_owner("token_and_dc"), "token_and_dc", return_value=("t", "dc", "tid")), \
+                 mock.patch.object(_owner("_post"), "_post", return_value=payload), \
+                 exits() as cm:
+                wz._status("o1")
+            self.assertEqual(cm.code, 3)
+        with mock.patch.object(_owner("_api_full"), "_api_full",
+                               return_value=({"outpost": None}, "tid", [{"message": "resolver failed"}])), \
+             exits() as cm_full:
+            wz._status("o1")
+        self.assertEqual(cm_full.code, 3)
 
 
 class OutpostConnectorBinding(unittest.TestCase):

@@ -314,14 +314,17 @@ def _api_full(query, variables):
         if not errors:
             return data, tid, []
         msg = "; ".join(_err_text(e) for e in errors)
-        if any(data.get(k) is not None for k in data):
-            return data, tid, errors
         # One rule for both layers: whatever may not be resubmitted over HTTP may not be replayed here
         # either, so a transient GraphQL fault is retried for reads and fatal for everything else.
         is_read = _submissions(query) > 1
-        if not (is_read and any(t in msg.lower() for t in _TRANSIENT_GQL)) or i == _READ_SUBMISSIONS - 1:
-            die(3, msg)
-        time.sleep(2**i)  # 1s, 2s
+        if is_read and any(t in msg.lower() for t in _TRANSIENT_GQL):
+            if i == _READ_SUBMISSIONS - 1:
+                die(3, msg)
+            time.sleep(2**i)  # 1s, 2s
+            continue
+        if any(data.get(k) is not None for k in data):
+            return data, tid, errors
+        die(3, msg)
     die(3, "unreachable")  # pragma: no cover
 
 
