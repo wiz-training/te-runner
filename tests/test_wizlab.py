@@ -1868,6 +1868,21 @@ class K8sConnectorGrading(unittest.TestCase):
         code, wiz = self._run(("k8sconnector", "ensure"), ["--cluster-arn", self.ARN], both)
         self.assertEqual((code, _mutations(wiz)), (0, []))
 
+    def test_ensure_refuses_foreign_connector_and_prefers_stem_owned(self):
+        foreign = dict(InspectContract.K8S, id="k-other", name="lab-other-k8s", enabled=True, status="CONNECTED")
+        for enabled in ("false", "true"):
+            code, wiz = self._run(("k8sconnector", "ensure"),
+                                  ["--cluster-arn", self.ARN, "--enabled", enabled],
+                                  {"connectors": _conn(foreign)})
+            self.assertEqual((code, _mutations(wiz)), (3, []))
+        mine = dict(InspectContract.K8S, id="k-mine", name="lab-x-k8s", enabled=True, status="DISABLED")
+        patched = dict(mine, enabled=False, status="DISABLED")
+        code, wiz = self._run(("k8sconnector", "ensure"),
+                              ["--cluster-arn", self.ARN, "--enabled", "false"],
+                              {"connectors": _conn(foreign, mine), "updateConnector": {"connector": patched}})
+        self.assertEqual((code, _mutations(wiz)), (0, ["updateConnector"]))
+        self.assertEqual(wiz.sent("updateConnector")[0]["input"], {"id": "k-mine", "patch": {"enabled": False}})
+
     def test_require_reads_status(self):
         for status, require, want in (("CONNECTED", "connected", 0), ("INITIAL_SCANNING", "connected", 1),
                                       ("INITIAL_SCANNING", "exists", 0), ("DISABLED", "disabled", 0),
