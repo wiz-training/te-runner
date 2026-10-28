@@ -33,6 +33,7 @@ def _gen_password():
     pool = string.ascii_letters + string.digits
     return (
         secrets.choice(string.ascii_uppercase)
+        + secrets.choice(string.ascii_lowercase)
         + "".join(secrets.choice(pool) for _ in range(16))
         + secrets.choice(string.digits)
         + "!"
