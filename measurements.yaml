@@ -1336,6 +1336,11 @@ outpost_lifecycle:
       uninstalled_row_shows_critical: true
       # A row empty of health issues while CONNECTED carries 1 Critical once UNINSTALLED: the count is not
       # a teardown-progress signal in either direction.
+    builtin_child_connector_delete_refusal: "Cannot delete builtin connector"
+    # 2026-10-28, reap.yml run 40687172010, session 7nph2tnq4kfn (TBCMP, te-aws-outpost-trust-201):
+    # Wiz auto-spawns child connector `ECR in lab-7nph2tnq4kfn-connector` (type.id=ecr) bound to the
+    # same Outpost `lab-7nph2tnq4kfn` as parent `lab-7nph2tnq4kfn-connector` (type.id=aws);
+    # deleteConnector on the child refused with "Cannot delete builtin connector".
 
     # -- Convergence & latencies -------------------------------------------------------------------
     create_status: INITIALIZING       # returned synchronously by createOutpost

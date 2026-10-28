@@ -2286,6 +2286,38 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         self.assertEqual(deleted, ["c-own", "c-bound"])
         self.assertEqual(tally, wz.Counter({wz.REMOVED: 2}))
 
+    def test_connector_sweep_skips_child_connector_bound_to_session_outpost(self):
+        queries, deleted = [], []
+        stem = "lab-7nph2tnq4kfn"
+
+        def gql(_tok, _dc, query, variables=None):
+            queries.append(query)
+            if "ReapList" in query:
+                if f'"{stem}"' in query and not deleted:
+                    return {"connectors": {"nodes": [
+                        {"id": "c-child", "name": "ECR in lab-7nph2tnq4kfn-connector",
+                         "type": {"id": "ecr"}, "outpost": {"name": stem}},
+                        {"id": "c-parent", "name": "lab-7nph2tnq4kfn-connector",
+                         "type": {"id": "aws"}, "outpost": {"name": stem}},
+                    ]}}, []
+                return {"connectors": {"nodes": []}}, []
+            if "deleteConnector" in query:
+                deleted.append(variables["id"])
+            return {}, []
+
+        out = io.StringIO()
+        with mock.patch.object(_owner("_gql"), "_gql", side_effect=gql), contextlib.redirect_stdout(out):
+            tally = wz._reap_sweep_type("tok", "dc", "Connector", stem, True)
+        self.assertTrue(any("type { id }" in q and "outpost { name }" in q for q in queries))
+        self.assertEqual(deleted, ["c-parent"])
+        self.assertEqual(tally, wz.Counter({wz.REMOVED: 1, wz.UNKNOWN: 1}))
+        self.assertEqual(tally[wz.FAILED], 0)
+        self.assertIn(
+            "REVIEW child connector 'ECR in lab-7nph2tnq4kfn-connector' (type ecr): "
+            "builtin, not deletable by us, left in place",
+            out.getvalue(),
+        )
+
     def test_which_outcomes_keep_the_user_and_the_retry(self):
         # DEFERRED and FAILED both earn one more daily pass, and they exit differently because only one
         # of them needs a human: a deferred Outpost uninstall is the documented lifecycle, and sharing

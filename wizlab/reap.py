@@ -120,7 +120,7 @@ def _reap_integration_or_uniform(tok, dc, h, rid, name):
 
 
 _REAP_OVERRIDES = {
-    "Connector": {"select": "id name outpost { name }"},
+    "Connector": {"select": "id name type { id } outpost { name }"},
     "ServiceAccount": {"list": "serviceAccounts", "filter": "name", "soft": True,
                        "deleter": _reap_service_account},
     "Outpost": {"deleter": _reap_outpost},
@@ -282,6 +282,11 @@ def _reap_sweep_type(tok, dc, x, stem, commit):
         nm = n.get("name") or ""
         oname = (n.get("outpost") or {}).get("name") or ""
         if not (core._owned(nm, stem) or oname == stem):
+            continue
+        tid = (n.get("type") or {}).get("id")
+        if not core._owned(nm, stem) and tid and tid not in core.CLOUDS:
+            print(f"REVIEW child connector {nm!r} (type {tid}): builtin, not deletable by us, left in place")
+            tally[UNKNOWN] += 1
             continue
         if not commit:
             print(f"DRY-RUN would sweep {x} {nm!r} ({n['id'][:8]})")
