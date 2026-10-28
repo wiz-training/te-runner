@@ -1,6 +1,6 @@
 """One record per credential noun: how it is found, minted, read back and deleted."""
 import dataclasses
-import pathlib
+import os
 import sys
 from collections.abc import Callable
 
@@ -78,7 +78,9 @@ def ensure(cred, args):
         # apiaccount ensure` to keep the pair out of the exec's output attributes, and under
         # `_emit(secret=True)` — which gates on $EXEC_OUTPUT — that put the secret back on stdout,
         # which the platform captures. Print the keys and nothing else.
-        pathlib.Path(out_file).write_text(lines)
+        fd = os.open(out_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(lines)
         sys.stdout.write("".join(f"{k}=<redacted>\n" for k in cred.emit_keys))
     else:
         core._emit(lines)
