@@ -10,6 +10,13 @@ if [ ! -r "$verbs" ] || [ ! -r "$snapshot" ]; then
   echo "wizlab: this lab grants the learner shell no wizlab verbs (wizlab-grant did not run)" >&2
   exit 2
 fi
+for a in "$@"; do
+  case "$a" in
+    *$'\n'*)
+      echo "wizlab: newline in argument is not permitted from the learner shell" >&2
+      exit 2 ;;
+  esac
+done
 args=("$@")
 [ "${args[0]:-}" = "--check" ] && args=("${args[@]:1}")
 pair="${args[0]:-} ${args[1]:-}"
@@ -17,6 +24,30 @@ if ! grep -qxF -- "$pair" "$verbs"; then
   echo "wizlab: '$pair' is not permitted from the learner shell in this lab; permitted: $(paste -sd, "$verbs")" >&2
   exit 2
 fi
+for a in "${args[@]:2}"; do
+  case "$a" in
+    -*) ;;
+    *) continue ;;
+  esac
+  flag="${a%%=*}"
+  case "$pair" in
+    "session verify")
+      case "$flag" in --account-id|--cloud|--min-runner) continue ;; esac ;;
+    "connector inspect")
+      case "$flag" in --account-id|--cloud|--outpost-name|--require) continue ;; esac ;;
+    "role inspect")
+      case "$flag" in --account-id|--cloud|--role-name|--trusts-service) continue ;; esac ;;
+    "k8sconnector ensure")
+      case "$flag" in --cluster|--enabled) continue ;; esac ;;
+    "container inspect")
+      case "$flag" in --account-id|--image-contains|--require-image) continue ;; esac ;;
+    *)
+      echo "wizlab: '$pair' has no learner flag allowlist in wizlab-learner; add a row in te-runner before granting flags" >&2
+      exit 2 ;;
+  esac
+  echo "wizlab: flag '$flag' is not permitted from the learner shell for '$pair'" >&2
+  exit 2
+done
 set -a
 # shellcheck disable=SC1090
 . "$snapshot"

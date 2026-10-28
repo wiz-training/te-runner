@@ -180,6 +180,75 @@ class LearnerWrapper(unittest.TestCase):
             self.assertIn("below this lab's floor", chk.stderr)
             self.assertIn("wizlab: exit 2", chk.stderr)
 
+    def test_learner_wrapper_enforces_newline_and_per_verb_flag_allowlist(self):
+        grant_src = (ROOT / "bin" / "wizlab-grant").read_text()
+        learner_src = (ROOT / "bin" / "wizlab-learner").read_text()
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            run_lab = tmp / "run" / "lab"
+            wizlab_bin = tmp / "wizlab"
+            captured = tmp / "captured.json"
+            wizlab_bin.write_text(
+                f"#!{sys.executable}\n"
+                "import json, pathlib, sys\n"
+                f"pathlib.Path({str(captured)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+            )
+            wizlab_bin.chmod(0o755)
+            grant = tmp / "wizlab-grant"
+            grant.write_text(grant_src.replace("/run/lab", str(run_lab)))
+            grant.chmod(0o755)
+            learner = tmp / "wizlab-learner"
+            learner.write_text(
+                learner_src.replace("/run/lab", str(run_lab)).replace("/usr/local/bin/wizlab", str(wizlab_bin)))
+            learner.chmod(0o755)
+            env = {k: v for k, v in os.environ.items() if not k.startswith("WIZ_")}
+            g = subprocess.run(
+                ["/bin/bash", str(grant), "session verify", "connector inspect", "role inspect",
+                 "k8sconnector ensure", "container inspect", "sensor inspect"],
+                env={**env, "WIZ_CLIENT_ID": "cid"}, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(g.returncode, 0, g.stderr)
+
+            for bad_argv, want_err in (
+                (["session", "verify\nconnector inspect"], "newline in argument is not permitted"),
+                (["session", "verify", "--min-runner", "v0.1.0\nx"], "newline in argument is not permitted"),
+                (["k8sconnector", "ensure", "--cluster-arn", "arn:aws:eks:us-east-1:111111111111:cluster/lab-other",
+                  "--enabled", "false"], "flag '--cluster-arn' is not permitted"),
+                (["k8sconnector", "ensure", "--cluster-arn=arn:aws:eks:us-east-1:111111111111:cluster/lab-other"],
+                 "flag '--cluster-arn' is not permitted"),
+                (["k8sconnector", "ensure", "--session", "other"], "flag '--session' is not permitted"),
+                (["k8sconnector", "ensure", "--name", "lab-other-k8s"], "flag '--name' is not permitted"),
+                (["connector", "inspect", "--session", "other"], "flag '--session' is not permitted"),
+                (["connector", "inspect", "--outpost-id", "o-1"], "flag '--outpost-id' is not permitted"),
+                (["--check", "session", "verify", "--session", "other"], "flag '--session' is not permitted"),
+                (["sensor", "inspect", "--require", "active"], "has no learner flag allowlist"),
+            ):
+                with self.subTest(bad_argv=bad_argv):
+                    captured.unlink(missing_ok=True)
+                    r = subprocess.run(["/bin/bash", str(learner), *bad_argv],
+                                       env=env, capture_output=True, text=True, check=False)
+                    self.assertEqual(r.returncode, 2, r.stderr)
+                    self.assertIn(want_err, r.stderr)
+                    self.assertFalse(captured.exists())
+
+            for ok_argv in (
+                ["--check", "session", "verify", "--min-runner", "v0.1.88", "--cloud", "aws",
+                 "--account-id", "111111111111"],
+                ["k8sconnector", "ensure", "--cluster", "lab-x", "--enabled", "true"],
+                ["connector", "inspect", "--account-id", "111111111111", "--require", "healthy",
+                 "--cloud", "aws", "--outpost-name", "lab-x"],
+                ["container", "inspect", "--account-id", "111111111111", "--image-contains", "lab-x",
+                 "--require-image"],
+                ["role", "inspect", "--cloud", "aws", "--account-id", "111111111111",
+                 "--role-name", "WizAccess-Role", "--trusts-service", "eks.amazonaws.com"],
+            ):
+                with self.subTest(ok_argv=ok_argv):
+                    captured.unlink(missing_ok=True)
+                    r = subprocess.run(["/bin/bash", str(learner), *ok_argv],
+                                       env=env, capture_output=True, text=True, check=False)
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    self.assertEqual(json.loads(captured.read_text()), ok_argv)
+
 
 class DevAccessGate(unittest.TestCase):
     """The gate is the credential's shape, not its presence. A lab that keeps its dev-access block live
