@@ -2213,6 +2213,32 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         self.assertIn("lab-s1-cli", detail)
         self.assertEqual(wz._reap_exit(wz.Counter({wz.UNKNOWN: 1})), 0)
 
+    def test_cli_deployment_lookup_pages_past_page_one_and_surfaces_pagination_error(self):
+        name = "lab-s1-cli-deployment-26dc83b5-503a-4725-a087-0764b1ef671d"
+        cursors = []
+
+        def _gql(_tok, _dc, query, variables=None):
+            if "deployments" in query:
+                after = (variables or {}).get("after")
+                cursors.append(after)
+                if after is None:
+                    return {"deployments": {"nodes": [{"id": "other", "name": "lab-s1-cli-extra"}],
+                                            "pageInfo": {"hasNextPage": True, "endCursor": "c1"}}}, None
+                return {"deployments": {"nodes": [{"id": "dep2", "name": "lab-s1-cli"}],
+                                        "pageInfo": {"hasNextPage": False, "endCursor": None}}}, None
+            return {}, None
+
+        with mock.patch.object(_owner("_gql"), "_gql", side_effect=_gql), \
+             mock.patch.object(_owner("_reap_find"), "_reap_find", return_value=(None, 0, None)):
+            outcome, detail = wz._reap_service_account("tok", "dc", self.SA_HANDLER, "sa1", name)
+        self.assertEqual((outcome, detail, cursors), (wz.REMOVED, None, [None, "c1"]))
+
+        bad_page = {"deployments": {"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": None}}}
+        with mock.patch.object(_owner("_gql"), "_gql", return_value=(bad_page, None)):
+            outcome, detail = wz._reap_service_account("tok", "dc", self.SA_HANDLER, "sa1", name)
+        self.assertEqual(outcome, wz.FAILED)
+        self.assertIn("deployment lookup failed (hasNextPage without an endCursor)", detail)
+
     def test_reap_enumeration_surfaces_graphql_errors(self):
         with mock.patch.object(_owner("_gql"), "_gql", return_value=({}, [{"message": "denied"}])):
             actions, alert = wz._reap_enumerate("tok", "dc", "lab-s1@example.com", 60)
