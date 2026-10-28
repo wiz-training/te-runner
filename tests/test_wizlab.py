@@ -3083,6 +3083,44 @@ class AzureConnector(unittest.TestCase):
         self.assertEqual(len(payload["extraConfig"]), 6)
         self.assertTrue(all(v == [] for v in payload["extraConfig"].values()))
 
+    def test_ensure_checks_tenant_drift_and_reenables_disabled_connectors(self):
+        env = {"INSTRUQT_SESSION_ID": "x"}
+        az_live = {"id": "az1", "name": "lab-x-connector", "enabled": True, "status": "CONNECTED",
+                   "type": {"id": "azure"}, "config": {"subscriptionId": self.SUB, "tenantId": "dir-1"}}
+        wiz_ok = FakeWiz(connectors=_conn(az_live))
+        self.assertEqual(exit_code(wz.cmd_connector_ensure,
+                                   ["--cloud", "azure", "--account-id", self.SUB, "--tenant-id", "dir-1"],
+                                   wiz=wiz_ok, env=env), 0)
+        self.assertEqual(_mutations(wiz_ok), [])
+        wiz_drift = FakeWiz(connectors=_conn(az_live))
+        self.assertEqual(exit_code(wz.cmd_connector_ensure,
+                                   ["--cloud", "azure", "--account-id", self.SUB, "--tenant-id", "dir-2"],
+                                   wiz=wiz_drift, env=env), 3)
+        self.assertEqual(_mutations(wiz_drift), [])
+        for argv, node in (
+            (["--account-id", "111111111111"], {**InspectContract.CONNECTOR, "enabled": False, "status": "DISABLED"}),
+            (["--cloud", "gcp", "--account-id", "wiz-lab-42"],
+             {**CloudSelection.GCP_NODE, "name": "lab-x-connector", "enabled": False, "status": "DISABLED"}),
+            (["--cloud", "azure", "--account-id", self.SUB, "--tenant-id", "dir-1"],
+             {**az_live, "enabled": False, "status": "DISABLED"}),
+        ):
+            with self.subTest(argv=argv):
+                wiz = FakeWiz(connectors=_conn(node),
+                              updateConnector={"connector": {**node, "enabled": True, "status": "CONNECTED"}})
+                self.assertEqual(exit_code(wz.cmd_connector_ensure, argv, wiz=wiz, env=env), 0)
+                self.assertEqual(_mutations(wiz), ["updateConnector"])
+                self.assertEqual(wiz.sent("updateConnector"),
+                                 [{"input": {"id": node["id"], "patch": {"enabled": True}}}])
+        aws_dis_drift = {**InspectContract.CONNECTOR, "enabled": False, "status": "DISABLED",
+                         "config": {"customerRoleARN": "arn:aws:iam::111111111111:role/OldRole"}}
+        wiz_both = FakeWiz(connectors=_conn(aws_dis_drift),
+                           updateConnector={"connector": {**InspectContract.CONNECTOR, "status": "INITIAL_SCANNING"}})
+        self.assertEqual(exit_code(wz.cmd_connector_ensure, ["--account-id", "111111111111"],
+                                   wiz=wiz_both, env=env), 0)
+        self.assertEqual([v["input"]["patch"] for v in wiz_both.sent("updateConnector")],
+                         [{"enabled": True},
+                          {"authParams": {"customerRoleARN": "arn:aws:iam::111111111111:role/WizAccess-Role"}}])
+
 
 class AzureRoleInspect(unittest.TestCase):
     SUB = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
