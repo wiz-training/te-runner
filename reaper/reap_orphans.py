@@ -226,7 +226,7 @@ def main():
             print(f"reap_orphans: tenant {tenant} ({tag}) not swept: {e}", file=sys.stderr)
             unread.append(tenant)
             continue
-        print(f"# tenant {tenant} ({tag}): {len(sids)} stopped session(s) in last {WINDOW_H}h")
+        print(f"# tenant {tenant} ({tag}): {len(sids)} stopped session(s) in last {_window_h()}h")
         sessions += [(tenant, sid) for sid in sids]
     failed, deferred = {}, []
     for tenant, sid in sessions:

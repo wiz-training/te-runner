@@ -87,6 +87,18 @@ class ReapOrdering(unittest.TestCase):
         i = reap_args.index("--last-min")
         self.assertEqual(reap_args[i:i + 2], ["--last-min", "4320"])
 
+        buf = io.BytesIO()
+        out = io.TextIOWrapper(buf, encoding="utf-8")
+        with mock.patch.object(rp, "TENANTS", {"TBCMP": "tid:tbcmp"}), \
+             mock.patch.object(rp, "stopped_sessions", return_value=["ghtvgsxcgphw"]), \
+             mock.patch.dict(rp.os.environ, {"REAP_WINDOW_HOURS": "72"}, clear=True), \
+             mock.patch.object(rp.sys, "argv", ["reap_orphans.py"]), \
+             mock.patch.object(rp.sys, "stdout", out), \
+             mock.patch.object(rp.sys, "stderr", io.StringIO()):
+            rp.main()
+        out.flush()
+        self.assertIn("# tenant TBCMP (tid:tbcmp): 1 stopped session(s) in last 72h", buf.getvalue().decode())
+
     def test_slot_claims_are_listed_and_inspected_at_most_once_per_commit_run(self):
         """Across multi-tenant and dual-tagged sessions, reap_orphans sweeps GitHub slot claims once
         in-process (and passes WIZLAB_SKIP_SLOT_SWEEP=1 to per-session wizlab subprocesses), including
