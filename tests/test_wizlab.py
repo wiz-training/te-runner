@@ -1717,6 +1717,14 @@ class RoleInspectGrading(unittest.TestCase):
         role = {"Role": {"AssumeRolePolicyDocument": _trust(self.DELEGATOR, self.TID)}}
         self.assertEqual(self._run(_proc(0, json.dumps(role))), 0)
 
+    def test_empty_delegator_or_tid_exit_3_and_delegator_re_is_anchored(self):
+        role = {"Role": {"AssumeRolePolicyDocument": _trust(self.DELEGATOR, self.TID)}}
+        self.assertEqual(self._run(_proc(0, json.dumps(role)), delegator=""), 3)
+        self.assertEqual(self._run(_proc(0, json.dumps(role)), tid=""), 3)
+        self.assertTrue(wz._trusts_delegator({"Principal": {"AWS": self.DELEGATOR}}, ""))
+        self.assertFalse(wz._trusts_delegator({"Principal": {"AWS": f"not-arn/{self.DELEGATOR}"}}, ""))
+        self.assertFalse(wz._trusts_delegator({"Principal": {"AWS": f"{self.DELEGATOR}-extra"}}, ""))
+
     def test_wrong_external_id_exit_1(self):
         role = {"Role": {"AssumeRolePolicyDocument": _trust(self.DELEGATOR, "WRONG-ID")}}
         self.assertEqual(self._run(_proc(0, json.dumps(role))), 1)

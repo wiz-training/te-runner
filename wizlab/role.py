@@ -7,7 +7,7 @@ import urllib.parse
 
 from . import core, wiz
 
-_DELEGATOR_RE = re.compile(r"role/prod-[A-Za-z0-9_-]+-AssumeRoleDelegator", re.IGNORECASE)
+_DELEGATOR_RE = re.compile(r"^arn:aws:iam::\d{12}:role/prod-[A-Za-z0-9_-]+-AssumeRoleDelegator$", re.IGNORECASE)
 
 
 ROLE_NAME = "WizAccess-Role"
@@ -188,6 +188,10 @@ def _inspect_aws_trust(role, role_obj):
         print(f"role {role} exists but its trust policy could not be decoded")
         sys.exit(1)
     delegator, tid = _wiz_delegator()
+    if not delegator:
+        core.die(3, "managedIdentityParameters.aws.roleArn is empty; cannot verify trust policy")
+    if not tid:
+        core.die(3, "no tenant id (tid) in token; cannot verify sts:ExternalId")
     grants = [s for s in _as_list(policy.get("Statement")) if isinstance(s, dict) and _grants_assume_role(s)]
     if not grants:
         print(f"role {role}: trust policy grants no sts:AssumeRole (trusts nobody)")
@@ -199,20 +203,17 @@ def _inspect_aws_trust(role, role_obj):
     trusting = [s for s in grants if _trusts_delegator(s, delegator)]
     if not trusting:
         principals = [p for s in grants for p in _principals(s)]
-        if delegator:
-            print(f"role {role}: does not trust this tenant's Wiz delegator {delegator}; trusts {principals}")
-        else:
-            print(f"role {role}: trusts no Wiz AssumeRoleDelegator; trusts {principals}")
+        print(f"role {role}: does not trust this tenant's Wiz delegator {delegator}; trusts {principals}")
         sys.exit(1)
     ext = [v for s in trusting for v in _external_ids(s)]
     if not ext:
         print(f"role {role}: no StringEquals sts:ExternalId condition on the statement trusting "
-              f"{delegator or 'the Wiz delegator'}; Wiz's assume-role is rejected")
+              f"{delegator}; Wiz's assume-role is rejected")
         sys.exit(1)
-    if tid and tid not in ext:
+    if tid not in ext:
         print(f"role {role}: sts:ExternalId {ext} != tenant id {tid}")
         sys.exit(1)
-    print(f"role {role}: trust valid (assume-role to {delegator or 'Wiz delegator'}, externalId={tid})")
+    print(f"role {role}: trust valid (assume-role to {delegator}, externalId={tid})")
 
 
 def _inspect_aws_service_trust(role, role_obj, service):
