@@ -16,10 +16,12 @@ def _okta_env():
 
 
 def _okta_call(invoke_url, token, body):
-    """POST body to the Okta Workflows Router; returns the parsed response. `inspect` is a read and keeps
-    `_READ_SUBMISSIONS`; mutations submit once because the router creates the user before answering."""
+    """POST body to the Okta Workflows Router; returns the parsed response. `inspect` is a read and retries
+    once (`attempts=2`, 61s worst-case at `_post`'s 30s timeout + 1s backoff so two `user inspect` calls fit
+    inside `canary.sh`'s 300s window); mutations submit once because the router creates the user before
+    answering."""
     headers = {"x-api-client-token": token, "Content-Type": "application/json", "Accept": "application/json"}
-    attempts = core._READ_SUBMISSIONS if body.get("action") == "inspect" else 1
+    attempts = 2 if body.get("action") == "inspect" else 1
     return core._post(invoke_url, body, headers, attempts=attempts)
 
 

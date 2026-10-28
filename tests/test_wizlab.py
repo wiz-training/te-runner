@@ -1134,11 +1134,18 @@ class OktaContract(unittest.TestCase):
         ok_cm = mock.MagicMock()
         ok_cm.__enter__.return_value.read.return_value = b'{"okta_user_id": "oid-1"}'
         e1 = urllib.error.HTTPError("https://okta.wf/invoke", 503, "boom", None, io.BytesIO(b"busy"))
-        e2 = urllib.error.HTTPError("https://okta.wf/invoke", 503, "boom", None, io.BytesIO(b"busy"))
-        op_read = mock.MagicMock(side_effect=[e1, e2, ok_cm])
+        op_read = mock.MagicMock(side_effect=[e1, ok_cm])
         with mock.patch.object(wz.urllib.request, "urlopen", op_read), mock.patch.object(wz.time, "sleep"):
             self.assertEqual(exit_code(wz.cmd_user_inspect, [], env=self.ENV), 0)
-        self.assertEqual(op_read.call_count, 3)
+        self.assertEqual(op_read.call_count, 2)
+
+        e_fail1 = urllib.error.HTTPError("https://okta.wf/invoke", 503, "boom", None, io.BytesIO(b"busy"))
+        e_fail2 = urllib.error.HTTPError("https://okta.wf/invoke", 503, "boom", None, io.BytesIO(b"busy"))
+        e_fail3 = urllib.error.HTTPError("https://okta.wf/invoke", 503, "boom", None, io.BytesIO(b"busy"))
+        op_exhaust = mock.MagicMock(side_effect=[e_fail1, e_fail2, e_fail3])
+        with mock.patch.object(wz.urllib.request, "urlopen", op_exhaust), mock.patch.object(wz.time, "sleep"):
+            self.assertEqual(exit_code(wz.cmd_user_inspect, [], env=self.ENV), 3)
+        self.assertEqual(op_exhaust.call_count, 2)
 
         e_mut = urllib.error.HTTPError("https://okta.wf/invoke", 503, "boom", None, io.BytesIO(b"busy"))
         op_mut, err = mock.MagicMock(side_effect=e_mut), io.StringIO()
