@@ -2267,6 +2267,19 @@ class ConnectorAndReaperSafety(unittest.TestCase):
             call(wz.cmd_reap, ["--session", "bapr82q9xmm5", "--commit"])
         self.assertEqual(cm.code, 3)
 
+    def test_dry_run_reap_exits_3_on_failed_tally_and_0_on_non_failed(self):
+        self.assertEqual(
+            exit_code(wz.cmd_reap, ["--session", "bapr82q9xmm5"], wiz=FakeWiz(),
+                      _reap_enumerate=([], "denied"), _reap_sweep_type=wz.Counter()),
+            3,
+        )
+        self.assertEqual(
+            exit_code(wz.cmd_reap, ["--session", "bapr82q9xmm5"], wiz=FakeWiz(),
+                      _reap_enumerate=([], None),
+                      _reap_sweep_type=wz.Counter({wz.REMOVED: 1, wz.DEFERRED: 1})),
+            0,
+        )
+
     def test_reap_commit_requires_play_id_while_dry_run_accepts_any_session(self):
         for bad in ("bapr", "bapr82q9xmm5x", "BAPR82Q9XMM5", "bapr-2q9xmm5"):
             err = io.StringIO()

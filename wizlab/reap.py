@@ -342,7 +342,7 @@ def cmd_reap(args):
     counts = ", ".join(f"{tally[o]} {o}" for o in (ABSENT, DEFERRED, UNKNOWN, OPERATOR, FAILED))
     print(f"# {tally[REMOVED]} {verb} ({audit_only} audit-only), {counts}, {slots} slot(s) for {email} / {stem}*",
           file=sys.stderr)
-    sys.exit(_reap_exit(tally) if commit else 0)
+    sys.exit(_reap_exit(tally) if commit or tally[FAILED] else 0)
 
 
 def _reap_slots(stem, commit):
