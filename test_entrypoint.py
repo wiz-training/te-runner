@@ -38,8 +38,14 @@ class WizlabGrant(unittest.TestCase):
         # args, env, expected exit code, expected learner-verbs content (None = file absent)
         ((), {"WIZ_TBCMP_CLIENT_ID": "id"}, 2, None),
         (("session verify",), {}, 3, None),
+        (("session verify",), {"WIZ_CLIENT_ID": ""}, 3, None),
+        (("session verify",), {"WIZ_TENANT": "TE", "WIZ_IDP_LOGIN_CLIENT_ID": "idp-id",
+                               "WIZ_TE_IDP_LOGIN_CLIENT_ID": "te-idp-id", "WIZ_TE_SSO_CLIENT_ID": "sso-id",
+                               "WIZ_TE_MCP_CLIENT_ID": "mcp-id"}, 3, None),
         (("session verify",), {"WIZ_CLIENT_ID": "id"}, 0, "session verify\n"),
-        (("session verify", "connector inspect"), {"WIZ_TBCMP_CLIENT_ID": "id", "UNRELATED": "x"}, 0,
+        (("session verify",), {"WIZ_TENANT": "TS_PROD", "WIZ_TS_PROD_CLIENT_ID": "id"}, 0, "session verify\n"),
+        (("session verify", "connector inspect"),
+         {"WIZ_TBCMP_CLIENT_ID": "id", "WIZ_CLIENT_ID": "", "UNRELATED": "x"}, 0,
          "session verify\nconnector inspect\n"),
     )
 
@@ -65,6 +71,7 @@ class WizlabGrant(unittest.TestCase):
                     wiz_env = run_lab / "wiz.env"
                     self.assertEqual(stat.S_IMODE(wiz_env.stat().st_mode), 0o600)
                     self.assertNotIn("UNRELATED=", wiz_env.read_text())
+                    self.assertNotIn("WIZ_CLIENT_ID=''\n", wiz_env.read_text())
                 if want_rc == 3:
                     self.assertIn("no WIZ_<TENANT>_CLIENT_ID", result.stderr)
                     self.assertNotIn("will exit 3", result.stderr)
