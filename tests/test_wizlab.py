@@ -3952,6 +3952,10 @@ class CredentialRecords(unittest.TestCase):
                 self.assertRegex(written, rf"{secret_key}=\S+")      # the caller still gets the pair
                 self.assertNotIn(written.split(f"{secret_key}=")[1].strip(), printed)
                 self.assertIn(f"{id_key}=<redacted>", printed)       # the key still shows the verb ran
+                path.chmod(0o644)
+                self.assertEqual(exit_code(lambda _argv, a=args: wz.ensure(cred, a), [],
+                                           wiz=FakeWiz(**present), env=env, out=io.StringIO()), 0)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
                 target = pathlib.Path(d) / "target.env"
                 target.write_text("keep")
                 link = pathlib.Path(d) / "link.env"

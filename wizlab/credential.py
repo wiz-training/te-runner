@@ -71,6 +71,7 @@ def ensure(cred, args):
     # platform captures an exec's stdout, and a script that parses stdout for the secret publishes it
     # to anyone with access to the lab. With the flag the values go to the file and 0600 is the
     # caller's business (the grader is root-only); without it, behaviour is unchanged.
+    # (2026-10-28, CORE-4): the file is now opened 0600 with O_NOFOLLOW and fchmod'd to 0600 on write.
     out_file = getattr(args, "out_file", None)
     if out_file:
         # The caller has the file, so no other sink needs the value: redaction here cannot depend on
@@ -79,6 +80,7 @@ def ensure(cred, args):
         # `_emit(secret=True)` — which gates on $EXEC_OUTPUT — that put the secret back on stdout,
         # which the platform captures. Print the keys and nothing else.
         fd = os.open(out_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(lines)
         sys.stdout.write("".join(f"{k}=<redacted>\n" for k in cred.emit_keys))
