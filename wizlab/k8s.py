@@ -105,15 +105,20 @@ def _create(args, arn, cluster):
 
 def cmd_k8sconnector_ensure(args):
     """Converge to one Kubernetes connector for the cluster in the requested enabled state: absent ->
-    createConnector; present with `enabled` differing -> updateConnector; present and matching -> 0.
+    createConnector; present with `enabled` differing -> updateConnector; present and matching -> 0;
+    present on another session's stem (`connector._foreign`) -> 3 without mutating.
     An auto-onboarded child answers the patch with `Child connectors cannot be individually
     disabled/enabled`; that surfaces as 3, since only a connector the lab created can be toggled."""
     want = args.enabled == "true"
+    stem = core._stem_opt(args)
     arn, cluster = _cluster_arn(args)
     nodes = _find(arn)
     if not nodes:
         return _create(args, arn, cluster)
-    n = core._prefer(nodes, "CONNECTED")
+    n = min(nodes, key=lambda n: (not connector._stem_owned(n, stem), connector._foreign(n, stem),
+                                  n.get("status") != "CONNECTED"))
+    if connector._foreign(n, stem):
+        core.die(3, f"k8s connector {n['name']} ({n['id']}) belongs to another session; not mutated")
     if bool(n.get("enabled")) == want:
         print(f"k8s connector {n['name']} ({n['id']}) already enabled={n['enabled']} status={n['status']}")
         return
