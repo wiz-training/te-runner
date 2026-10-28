@@ -183,13 +183,27 @@ def _create_connector(name, cloud, auth, extra):
     print(f"created connector {c['name']} ({c['id']}) status={c['status']}")
 
 
+def _enable_if_disabled(n):
+    """Re-enable a disabled connector via UPDATE `{enabled: True}` alone (never inside authParams)."""
+    if n.get("enabled", True):
+        return False
+    data, _ = core.api(UPDATE, {"input": {"id": n["id"], "patch": {"enabled": True}}})
+    c = (data.get("updateConnector") or {}).get("connector") or {}
+    print(f"connector {n['name']}: enabled {n.get('enabled')} -> {c.get('enabled', True)} status={c.get('status')}")
+    return True
+
+
 def _ensure_gcp(args, account):
     """GCP has nothing to converge: the connector carries a project id and Wiz's own managed identity,
     neither of which can drift the way an AWS customerRoleARN does (there is no customer-side role).
-    So this is create-if-absent only — the repair path AWS needs has no GCP equivalent."""
+    So this is create-if-absent (plus re-enabling a disabled connector) — the ARN repair path AWS needs
+    has no GCP equivalent."""
     matches = _reap_foreign(account, "gcp", core._stem_opt(args))
     if matches:
-        print(f"connector {matches[0]['name']} already targets project {account}; nothing to do")
+        n = matches[0]
+        if _enable_if_disabled(n):
+            return
+        print(f"connector {n['name']} already targets project {account}; nothing to do")
         return
     # Project scope means every scope list is empty, NOT absent.
     extra = {
@@ -205,7 +219,8 @@ def _ensure_gcp(args, account):
 
 def _ensure_azure(args, account):
     """Create-if-absent, like GCP: an azure connector carries the subscription and Wiz's own managed
-    identity, so there is nothing that can drift. isManagedIdentity is always set; subscriptionId
+    identity, so there is nothing to patch in authParams (a tenantId mismatch is refused via core._drift
+    and a disabled connector is re-enabled via UPDATE). isManagedIdentity is always set; subscriptionId
     only at subscription scope. The authParams/extraConfig BOUNDARY is inferred by analogy to
     aws+gcp: testConnectorConfig answers success:true even for a bogus key, so it cannot prove the
     split."""
@@ -215,7 +230,13 @@ def _ensure_azure(args, account):
                "stores the directory the subscription belongs to")
     matches = _reap_foreign(account, "azure", core._stem_opt(args))
     if matches:
-        print(f"connector {matches[0]['name']} already targets subscription {account}; nothing to do")
+        n = matches[0]
+        core._drift(f"connector {n['name']} ({n['id']})", [
+            ("tenantId", (n.get("config") or {}).get("tenantId"), tenant_id),
+        ])
+        if _enable_if_disabled(n):
+            return
+        print(f"connector {n['name']} already targets subscription {account}; nothing to do")
         return
     # Subscription scope: every scope list present and EMPTY, not absent (readback of the live 89).
     extra = {
@@ -304,6 +325,7 @@ def _patch_aws(args, node, auth, same):
     CONNECTED, errorCode null, no health issue, lastActivity frozen — and Rescan does not
     re-authenticate. A patch that ADDS outpostId to an existing connector is unexercised."""
     _binding_guard(args, node)
+    _enable_if_disabled(node)
     data, _ = core.api(UPDATE, {"input": {"id": node["id"], "patch": {"authParams": auth}}})
     status = (((data.get("updateConnector") or {}).get("connector")) or {}).get("status")
     cur = (node.get("config") or {}).get("customerRoleARN") or "(none)"
@@ -321,9 +343,9 @@ _AWS_ONLY = ("--role-arn", "--scanner-role-arn", "--outpost-id", "--outpost-name
 
 
 def cmd_connector_ensure(args):
-    """Idempotent converge: create the connector if absent, else correct its customerRoleARN if it
-    drifted (this is also the repair path — a lab seeds a wrong ARN, `ensure` fixes it). --reauth
-    patches even when nothing drifted (_patch_aws)."""
+    """Idempotent converge: create the connector if absent, else re-enable if disabled and on AWS
+    correct its customerRoleARN if it drifted (this is also the repair path — a lab seeds a wrong
+    ARN, `ensure` fixes it). --reauth patches even when nothing drifted (_patch_aws)."""
     cloud = args.cloud
     account = core._account_id(args, "connector ensure")
     if cloud != "aws":
@@ -344,6 +366,8 @@ def cmd_connector_ensure(args):
         cur_outpost = (n.get("outpost") or {}).get("id") or ""
         same = cur == role_arn and (not outpost_id or cur_outpost == outpost_id)
         if same and not args.reauth:
+            if _enable_if_disabled(n):
+                return
             print(f"connector {n['name']} already targets {account} with {role_arn}; nothing to do")
             return
         return _patch_aws(args, n, auth, same)
