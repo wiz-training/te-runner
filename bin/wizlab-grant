@@ -19,6 +19,8 @@ umask 077
 # are the session, lease and Okta inputs (user._okta_env, cmd_user_ensure).
 while IFS= read -r -d '' kv; do
   k=${kv%%=*}
+  v=${kv#*=}
+  [ -n "$v" ] || continue
   case "$k" in
     WIZ_*|INSTRUQT_SESSION_ID|WIZLAB_SESSION_PREFIX) ;;
     OKTA_WF_INVOKE_URL|OKTA_WF_CLIENT_TOKEN|LAB_PROFILE|INSTRUQT_PARTICIPANT_ID) ;;
@@ -26,9 +28,9 @@ while IFS= read -r -d '' kv; do
     AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|AWS_DEFAULT_REGION|AWS_ACCOUNT_ID) ;;
     *) continue ;;
   esac
-  printf '%s=%q\n' "$k" "${kv#*=}" >> /run/lab/wiz.env
+  printf '%s=%q\n' "$k" "$v" >> /run/lab/wiz.env
 done < <(env -0)
-n=$(grep -c -E '^WIZ_([A-Z0-9_]+_)?CLIENT_ID=' /run/lab/wiz.env || true)
+n=$(grep -E '^WIZ_([A-Z0-9]+_)?CLIENT_ID=' /run/lab/wiz.env | grep -cv -E '^WIZ_(SSO|MCP|API)_CLIENT_ID=' || true)
 [ "$n" -ge 1 ] || { echo "wizlab-grant: no WIZ_<TENANT>_CLIENT_ID in this exec's environment" >&2; exit 3; }
 printf '%s\n' "$@" > /run/lab/learner-verbs
 echo "granted $# verb pair(s) to the learner shell; snapshot holds $(wc -l < /run/lab/wiz.env) variable(s)"
