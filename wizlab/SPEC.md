@@ -194,6 +194,24 @@ never a traceback and never a value. Checks and solves run as root with their ta
 wizlab directly. Operator decision, 2026-09-25, forced by the shared tenant's service account being
 readable from every learner terminal.
 
+`wizlab-learner` also rejects any argument containing a newline and enforces a per-verb flag allowlist
+after `<noun> <verb>` (plus optional leading `--check`), measured from the four fleet `grant_learner.sh`
+files (`te-aws-connector-auth-break-201/scripts/grant_learner.sh`,
+`te-aws-scan-mode-dependency-201/scripts/grant_learner.sh`,
+`te-code-juice-shop-101/scripts/grant_learner.sh`, `te-lab-template/scripts/grant_learner.sh`):
+
+| granted `<noun> <verb>` | learner-permitted flags |
+|---|---|
+| `session verify` | `--account-id`, `--cloud`, `--min-runner` |
+| `connector inspect` | `--account-id`, `--cloud`, `--outpost-name`, `--require` |
+| `role inspect` | `--account-id`, `--cloud`, `--role-name`, `--trusts-service` |
+| `k8sconnector ensure` | `--cluster`, `--enabled` |
+| `container inspect` | `--account-id`, `--image-contains`, `--require-image` |
+
+Any other flag on a granted verb (including `--session`, `--cluster-arn`, `--out-file`, `--definition`,
+`--id`, `--outpost-id`, `--email`, `--name`, `--domain`) or any flag on a pair with no row in
+`wizlab-learner` is refused at the wrapper with exit 2.
+
 ## Nouns
 `session`, `connector`, `role`, `instance`, `user`, `wiz`, `outpost`, for Kubernetes labs `k8sconnector`
 and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`, for Wiz Code labs
