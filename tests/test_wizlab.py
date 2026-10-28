@@ -3972,6 +3972,8 @@ class CredentialRecords(unittest.TestCase):
         te-code-juice-shop-101's provision_wizcli.sh and te-stack-trace-aws-101's setup_agent.sh both
         did. `--out-file` is the only way to take the value without logging it; without the flag
         stdout is unchanged, because that is the hand-run contract."""
+        for noun in self.ROWS:
+            self.assertEqual(wz.parse((noun, "ensure"), ["--out-file", "/tmp/x"]).out_file, "/tmp/x")
         cred, node, create = self.ROWS["apiaccount"]
         present = {cred.find_field: _conn(node), **create}
         id_key, secret_key = cred.emit_keys
@@ -3985,13 +3987,31 @@ class CredentialRecords(unittest.TestCase):
                 out = io.StringIO()
                 env = {**self.ENV, **{k: (str(pathlib.Path(d) / "exec.out") if v == "<tmp>" else v)
                                       for k, v in extra.items()}}
-                code = exit_code(lambda _argv, a=args: wz.ensure(cred, a), [],
-                                 wiz=FakeWiz(**present), env=env, out=out)
+                old_umask = os.umask(0o022)
+                try:
+                    code = exit_code(lambda _argv, a=args: wz.ensure(cred, a), [],
+                                     wiz=FakeWiz(**present), env=env, out=out)
+                finally:
+                    os.umask(old_umask)
                 self.assertEqual(code, 0)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
                 written, printed = path.read_text(), out.getvalue()
                 self.assertRegex(written, rf"{secret_key}=\S+")      # the caller still gets the pair
                 self.assertNotIn(written.split(f"{secret_key}=")[1].strip(), printed)
                 self.assertIn(f"{id_key}=<redacted>", printed)       # the key still shows the verb ran
+                path.chmod(0o644)
+                self.assertEqual(exit_code(lambda _argv, a=args: wz.ensure(cred, a), [],
+                                           wiz=FakeWiz(**present), env=env, out=io.StringIO()), 0)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                target = pathlib.Path(d) / "target.env"
+                target.write_text("keep")
+                link = pathlib.Path(d) / "link.env"
+                link.symlink_to(target)
+                args.out_file = str(link)
+                with self.assertRaises(OSError):
+                    exit_code(lambda _argv, a=args: wz.ensure(cred, a), [],
+                              wiz=FakeWiz(**present), env=env, out=out)
+                self.assertEqual(target.read_text(), "keep")
 
     def test_every_record_mints_deletes_and_emits_the_same_way(self):
         hostile = 'x" }) { id } } mutation { deleteTenant(input: { id: "t'

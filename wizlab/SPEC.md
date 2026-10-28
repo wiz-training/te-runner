@@ -122,6 +122,7 @@ The tag that first reads each contract; a lab pins at or above the highest row i
 | v0.1.82 | `user reap` releases code-lab slot claims whose commit message is the stem (`WIZ_LABS_GH_APP`) |
 | v0.1.84 | `connector ensure` deletes any foreign `lab-<other>` connector on the account before converging (preserving learner-named connectors); `connector inspect` filters foreign `lab-<other>` connectors out and ranks this session's first |
 | v0.1.85 | `slot claim` evicts claims older than `CLAIM_TTL_S` (7200s); `slot release` and `user reap` close the open `patch/<stem>` PR, delete `refs/heads/patch/<stem>`, and sweep expired claims regardless of session |
+| vNEXT | `sensor\|mcp ensure --out-file <path>`; `credential.ensure` opens `--out-file` with `0o600` (`O_NOFOLLOW`, `fchmod`) |
 
 <!-- verb-floors:begin -->
 | noun | verb | first tag |
@@ -265,7 +266,7 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   connector untouched), `inspect` filters foreign connectors out and ranks a stem-named connector ahead
   of a learner-named one, and `delete` removes all connectors for the account.
 - `sensor ensure|delete|inspect [--session <sid>] [--name N]` — a `type:SENSOR` service account is the sensor's credential
-  (`ensure` re-mints it named on the session stem, emits `WIZ_API_CLIENT_ID/SECRET`; `delete` by `--id` or `--name` removes it;
+  (`ensure [--out-file <path>]` re-mints it named on the session stem, emits `WIZ_API_CLIENT_ID/SECRET` (or writes the pair to `--out-file` and redacts stdout); `delete` by `--id` or `--name` removes it;
   the reaper's ServiceAccount sweep also covers it). `inspect [--require exists|active]` asserts the sensor
   named for the session reports `ACTIVE`. Scoping key: the installed sensor's name == the host name,
   which a lab pins to the session stem (neither `SensorFilters` nor `DetectionFilters` has a
@@ -363,9 +364,9 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   which **accepts this type**: no owner object, so the reaper's `ServiceAccount` prefix sweep deletes it
   on the uniform path. The caller needs `create:service_accounts` + `delete:service_accounts`.
 - `mcp ensure|inspect|delete [--session <sid>] [--name N]` — *(author/legacy-only: 0 lab-script callers; agent labs use `apiaccount`, kept in `VERBS` for verb-floor compatibility)* the Wiz MCP integration an agent in a lab reads the tenant through.
-  `ensure [--scopes S] [--expires-at <RFC3339>]` names it `<stem>-mcp` (or `--name`) and converges to one fresh integration (delete-then-mint: `clientSecret`
+  `ensure [--scopes S] [--expires-at <RFC3339>] [--out-file <path>]` names it `<stem>-mcp` (or `--name`) and converges to one fresh integration (delete-then-mint: `clientSecret`
   is readable only in the create payload), emitting `WIZ_CLIENT_ID` / `WIZ_CLIENT_SECRET` to stdout +
-  `$EXEC_OUTPUT`. `createIntegration(input:{name, type: WIZ_MCP, serviceAccountScopes, overrideScopes,
+  `$EXEC_OUTPUT` (or writing the pair to `--out-file` and redacting stdout). `createIntegration(input:{name, type: WIZ_MCP, serviceAccountScopes, overrideScopes,
   isAccessibleToAllProjects, serviceAccountExpiresAt})`; the type takes no `params`. `--scopes` defaults
   to the single string `read:all` and a value that is not `<verb>:<object>` is invocation error 2 — the
   API accepts an unknown scope silently and the agent then sees a tool short, not an error, because
