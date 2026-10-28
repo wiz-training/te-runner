@@ -91,10 +91,10 @@ def _reap_service_account(tok, dc, h, rid, name):
     if not m:
         return _reap_integration_or_uniform(tok, dc, h, rid, name)
     dep = m.group("dep")
-    data, errs = core._gql(tok, dc, serviceaccount.CLI_DEPLOYMENTS_Q, {"f": {"type": ["WIZ_CLI"], "search": dep}})
-    if errs:
-        return FAILED, f"deployment lookup failed ({core._gql_msg(errs)})"
-    nodes = ((data.get("deployments") or {}).get("nodes") or [])
+    nodes, err = core._paged(functools.partial(core._gql, tok, dc), serviceaccount.CLI_DEPLOYMENTS_Q,
+                             {"f": {"type": ["WIZ_CLI"], "search": dep}}, "deployments")
+    if err:
+        return FAILED, f"deployment lookup failed ({err})"
     owner = core._exact(nodes, dep)
     if not owner:
         # Nothing left that can delete this record, so blocking would retain the user forever with no
