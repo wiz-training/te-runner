@@ -60,6 +60,18 @@ SCAN_METRICS = """query ScanMetrics($s: DateTime!, $e: DateTime!, $o: String!) {
 }"""
 
 
+_OUTPOST_DELETABLE = ("UNINSTALLED", "UNINSTALLATION_FAILED")
+
+# No proven transition reaches UNINSTALLED from here and the uninstall refuses a second call. Console
+# deletes of two PARTIALLY_UNINSTALLED records (ghtvgsxcgphw, k8m01846391n) succeeded via deleteOutpost,
+# which is a single call with no wait: both this verb and the nightly reaper attempt it once, and a
+# refusal here is state (1), never an environment fault (3).
+_OUTPOST_STUCK = ("PARTIALLY_UNINSTALLED",)
+
+_OUTPOST_RANK = ("CONNECTED", "INITIALIZED", "INITIALIZING", "ERROR", "UNINSTALLING",
+                 *_OUTPOST_STUCK, *_OUTPOST_DELETABLE)
+
+
 def _outpost_name(args):
     # Pinned to the session stem so the reaper's `search` finds it and concurrent leases never collide.
     return core._named(args)
@@ -67,9 +79,10 @@ def _outpost_name(args):
 
 def _resolve_outpost(name):
     """The AWS Outpost whose name exactly matches (search is substring, so filter to ==),
-    CONNECTED-first so a healthy one outranks a stale UNINSTALLED record on a recycled name."""
+    CONNECTED-first and ranked by _OUTPOST_RANK so a live or in-flight record outranks a stale
+    UNINSTALLED record on a recycled name."""
     nodes = core._all_nodes(OUTPOSTS_Q, {"s": name}, "outposts")
-    return core._prefer([n for n in nodes if n.get("name") == name], "CONNECTED")
+    return core._prefer([n for n in nodes if n.get("name") == name], *_OUTPOST_RANK)
 
 
 def cmd_outpost_inspect(args):
@@ -119,23 +132,28 @@ def cmd_outpost_ensure(args):
     """Create the AWS Automated Outpost named on the session stem, idempotent by name. Needs the
     orchestrator role ARN (--role-arn, the output of the Wiz orchestrator TF module) — Wiz assumes it
     to build the EKS scan cluster + network in the leased account. useWizServiceAccount so no
-    per-outpost SA is minted. Solve/setup only."""
+    per-outpost SA is minted; an existing _OUTPOST_DELETABLE record is deleted before recreating.
+    Solve/setup only."""
     name = _outpost_name(args)
     role_arn = args.role_arn or core.die(
         2, "outpost ensure needs --role-arn (the orchestrator role ARN from the TF module)")
     region = args.region or "us-east-1"
     existing = _resolve_outpost(name)
     if existing:
-        # A role change is a knowing delete-and-recreate, never a silent "nothing to do".
-        live_regions = existing.get("allowedRegions")
-        core._drift(f"outpost {name} ({existing['id']})", [
-            ("roleARN", (existing.get("config") or {}).get("roleARN"), role_arn),
-            ("allowedRegions", live_regions, [region] if args.region and live_regions != [] else None),
-        ])
-        if existing["status"] == "ERROR":
-            return _reprovision(existing)
-        print(f"outpost {name} already exists ({existing['id']}) status={existing['status']}; nothing to do")
-        return
+        if existing["status"] in _OUTPOST_DELETABLE:
+            core.api(DELETE_OUTPOST, {"id": existing["id"]})
+            print(f"deleted stale outpost {name} ({existing['id']}) status={existing['status']}")
+        else:
+            # A role change is a knowing delete-and-recreate, never a silent "nothing to do".
+            live_regions = existing.get("allowedRegions")
+            core._drift(f"outpost {name} ({existing['id']})", [
+                ("roleARN", (existing.get("config") or {}).get("roleARN"), role_arn),
+                ("allowedRegions", live_regions, [region] if args.region and live_regions != [] else None),
+            ])
+            if existing["status"] == "ERROR":
+                return _reprovision(existing)
+            print(f"outpost {name} already exists ({existing['id']}) status={existing['status']}; nothing to do")
+            return
     # allowedRegions pins the scan cluster to the workload region (the EC2's). The capture used []
     # (unrestricted); [region] is the deterministic form — the validator confirms the cluster lands
     # in <region>. awsConfig keys are the capture's exact shape (roleARN is caps). An existing Outpost
@@ -169,15 +187,6 @@ def _reprovision(outpost):
         data, _ = core.api(INVOKE_CLUSTER_UPDATE, {"input": {"id": c["id"]}})
         rid = (data.get("invokeOutpostClusterUpdate") or {}).get("requestID")
         print(f"outpost {outpost['name']}: cluster {c['id']} ({c.get('region')}) re-provisioning, requestID={rid}")
-
-
-_OUTPOST_DELETABLE = ("UNINSTALLED", "UNINSTALLATION_FAILED")
-
-# No proven transition reaches UNINSTALLED from here and the uninstall refuses a second call. Console
-# deletes of two PARTIALLY_UNINSTALLED records (ghtvgsxcgphw, k8m01846391n) succeeded via deleteOutpost,
-# which is a single call with no wait: both this verb and the nightly reaper attempt it once, and a
-# refusal here is state (1), never an environment fault (3).
-_OUTPOST_STUCK = ("PARTIALLY_UNINSTALLED",)
 
 
 def _uninstall_in_flight(status):

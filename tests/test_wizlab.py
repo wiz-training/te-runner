@@ -3609,6 +3609,24 @@ class OutpostGrading(unittest.TestCase):
         self.assertEqual(inp["awsConfig"]["roleARN"], "arn:r")   # caps, nested — the capture's shape
         self.assertEqual(inp["allowedRegions"], ["us-east-1"])
 
+    def test_resolve_outpost_ranks_lifecycle_tiers_and_ensure_recreates_deletable(self):
+        dead = {"id": "o-dead", "name": "lab-x", "status": "UNINSTALLED", "allowedRegions": ["us-east-1"],
+                "config": {"roleARN": "a"}, "clusters": []}
+        for live_status in ("CONNECTED", "INITIALIZED", "INITIALIZING", "ERROR", "UNINSTALLING",
+                            "PARTIALLY_UNINSTALLED"):
+            live = {**dead, "id": "o-live", "status": live_status}
+            wiz = FakeWiz(outposts={"nodes": [dead, live], "totalCount": 2})
+            with mock.patch.object(_owner("_post"), "_post", wiz):
+                self.assertEqual(wz._resolve_outpost("lab-x")["id"], "o-live")
+        for status in wz._OUTPOST_DELETABLE:
+            with self.subTest(status=status):
+                wiz = self._wiz(status)
+                wiz.fields["deleteOutpost"] = {"_stub": None}
+                self.assertEqual(
+                    self._exit(wz.cmd_outpost_ensure, ["--name", "lab-x", "--role-arn", "arn:r"], wiz), 0)
+                self.assertEqual(self._mutations(wiz), ["deleteOutpost", "createOutpost"])
+                self.assertEqual(wiz.sent("deleteOutpost"), [{"id": "o1"}])
+
     def test_delete_uninstalls_first_waits_then_deletes(self):
         # deleteOutpost on a live Outpost is a server-side internal error, so it is never attempted
         # first; an already-UNINSTALLED record skips the uninstall. A status already carrying UNINSTALL

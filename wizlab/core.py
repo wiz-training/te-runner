@@ -84,10 +84,11 @@ def _exact(nodes, name):
     return next((n for n in nodes if n.get("name") == name), None)
 
 
-def _prefer(nodes, status):
-    """The node in `status` if there is one, else the first: a healthy record outranks a stale one left
-    on a recycled name."""
-    return min(nodes, key=lambda n: n.get("status") != status, default=None)
+def _prefer(nodes, *statuses):
+    """The node in the earliest tier of `statuses` if there is one, else the first: a healthy record
+    outranks a stale one left on a recycled name."""
+    rank = {s: i for i, s in enumerate(statuses)}
+    return min(nodes, key=lambda n: rank.get(n.get("status"), len(statuses)), default=None)
 
 
 def _emit(lines, secret=False):
