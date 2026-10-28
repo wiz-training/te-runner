@@ -351,8 +351,10 @@ def _csp_json(r, cmd):
     and leaves a terraform apply mid-lab to hit the real failure."""
     if r.returncode != 0:
         die(3, f"{cmd} failed: {r.stderr.strip()}")
+    if not (r.stdout or "").strip():
+        die(3, f"{cmd}: printed no JSON")
     try:
-        return json.loads(r.stdout or "null")
+        return json.loads(r.stdout)
     except json.JSONDecodeError:
         die(3, f"{cmd} returned no parseable identity: {r.stdout.strip()[:200]!r}")
 

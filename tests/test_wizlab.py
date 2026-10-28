@@ -3276,6 +3276,16 @@ class SessionVerifyCsp(unittest.TestCase):
         self.assertEqual(self._verify("gcp", self.GCP_ENV, _proc(0, "Updates are available")), 3)
         self.assertEqual(self._verify("aws", self.AWS_ENV, _proc(0, "")), 3)
 
+    def test_empty_csp_stdout_exits_3_naming_the_tool_while_empty_json_containers_parse(self):
+        for blank in ("", "  \n"):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), exits() as cm:
+                wz._csp_json(_proc(0, blank), "az role assignment list")
+            self.assertEqual(cm.code, 3)
+            self.assertIn("az role assignment list: printed no JSON", err.getvalue())
+        self.assertEqual(wz._csp_json(_proc(0, "[]"), "az role assignment list"), [])
+        self.assertEqual(wz._csp_json(_proc(0, "{}"), "gcloud projects get-iam-policy"), {})
+
     def test_aws_credentials_for_another_account_cannot_pass(self):
         proc = _proc(0, '{"Account": "999999999999"}')
         self.assertEqual(self._verify("aws", self.AWS_ENV, proc, ["--account-id", "123456789012"]), 3)
