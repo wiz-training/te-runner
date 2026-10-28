@@ -357,7 +357,7 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   create payload), emitting `WIZ_CLIENT_ID` / `WIZ_CLIENT_SECRET` to stdout + `$EXEC_OUTPUT` (or writing the pair to `--out-file` and redacting stdout):
   `createServiceAccount(input:{name, type: THIRD_PARTY, scopes, assignedProjectIds: [], expiresAt})`.
   `--scopes` defaults to `read:all` under the same `<verb>:<object>` check as `mcp`; `--expires-at` is
-  null by default, so the reap is the account's only end of life. `inspect --require exists` and `delete
+  null by default, so the reap is the account's only end of life. `inspect --require exists` (author/legacy-only: 0 lab-script callers, kept in `VERBS` for verb-floor compatibility) and `delete
   --id|--name` go through `serviceAccounts(filterBy:{name, deleted:false})` / `deleteServiceAccount`,
   which **accepts this type**: no owner object, so the reaper's `ServiceAccount` prefix sweep deletes it
   on the uniform path. The caller needs `create:service_accounts` + `delete:service_accounts`.
@@ -386,7 +386,7 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   BLOCK` on `deploymentLifecycle CLI`, scoped (`iacParams.cloudConfigurationRules`) to the builtin
   Dockerfile control 'Last User Is root' (resolved live via `cloudConfigurationRules` matching `--control-search`, never
   hard-coded; `--rule-id`/`--severity`/`--count-threshold` override), `default:false` so only a
-  `wizcli --policies <name>` scan is gated. `inspect --require exists` verifies setup; `delete`
+  `wizcli --policies <name>` scan is gated. `inspect --require exists` (author/legacy-only: 0 lab-script callers, kept in `VERBS` for verb-floor compatibility) verifies setup; `delete`
   (author/legacy-only: 0 lab-script callers, kept in `VERBS` for operator teardown and verb-floor compatibility) removes it. A SHARED, PERSISTENT fixture — the reaper never touches it (not session-scoped).
 - `correlation inspect --repo <org/name> [--session <sid>] [--rule 'Docker Correlation'] [--since <RFC3339>|--since-boot] --require edge` — the code-to-cloud
   edge: a `graphEntityCorrelations(filterBy:{toType:{equals:[CONTAINER_IMAGE]}})` node under `--rule` whose
@@ -398,7 +398,7 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   rebuilt while `createdAt` stays fixed — measured 2026-10-27 on TE: slot-01 `createdAt 2026-10-16T22:21:24Z`,
   `updatedAt 2026-10-26T21:53:26Z` after a solve play, and neither slot-01 nor slot-02 `updatedAt` moved during
   no-solve play `mwgvp4n6aj5j`).
-- `pullrequest inspect --repo <org/name> [--number N] [--session <sid>] --require scanned|passed` — the Patch PR's scan (no
+- `pullrequest inspect --repo <org/name> [--number N] [--session <sid>] --require scanned|passed` — *(author/legacy-only: 0 lab-script callers, kept in `VERBS` for verb-floor compatibility)* the Patch PR's scan (no
   `--number`: the open PR on head `patch/<stem>`, read from GitHub, never opened): a
   `cloudEvents` row (`kind CI_CD_SCAN`, `cicdScan.trigger PULL_REQUEST`, `resource.subjectResourceExternalId
   github.com##<org>/<name>`) matched client-side on `codeAnalyzerDetails.pullRequest.id` (no server-side PR
