@@ -351,3 +351,72 @@ class CanaryWorkflowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _gamekit_steps(text):
+    """`[(label, body)]` for `jobs.gamekit.steps`: the parser reads the first `steps:` it meets, so slice to the job."""
+    return _image_steps(text[text.index("\n  gamekit:\n") :])
+
+
+class GamekitCanaryTests(unittest.TestCase):
+    """The GameKit canary is a round trip from the runner, not a lab play: one event from the `canary` pack,
+    created and deleted inside the run, so no standing event and no sandbox hours."""
+
+    def test_job_runs_roundtrip_every_against_live_with_the_canary_pack(self):
+        steps = dict(_gamekit_steps(CANARY_YML.read_text()))
+        self.assertIn("roundtrip.py", _run_block(steps["round trip"]))
+        self.assertIn('canary --every', _run_block(steps["round trip"]))
+        self.assertIn("wiz-training/te-gamekit-service", steps["checkout te-gamekit-service"])
+
+    def test_check_secrets_refuses_each_missing_name(self):
+        steps = dict(_gamekit_steps(CANARY_YML.read_text()))
+        script = _run_block(steps["check required secrets"])
+        full = {"GAMEKIT_READ_TOKEN": "r", "GAMEKIT_ADMIN_TOKEN": "a", "GAMEKIT_LAB_TOKEN": "l"}
+        for missing in ("GAMEKIT_READ_TOKEN", "GAMEKIT_ADMIN_TOKEN", "GAMEKIT_LAB_TOKEN", None):
+            with self.subTest(missing=missing):
+                env = {**os.environ, **full, **({missing: ""} if missing else {})}
+                res = subprocess.run(["sh", "-e", "-c", script], env=env, capture_output=True, text=True, check=False)
+                self.assertEqual(res.returncode, 1 if missing else 0, res.stdout + res.stderr)
+                if missing:
+                    self.assertIn(missing, res.stdout + res.stderr)
+
+    def test_round_trip_step_maps_outcomes_and_issue_step_follows(self):
+        steps = dict(_gamekit_steps(CANARY_YML.read_text()))
+        run_script = _run_block(steps["round trip"])
+        issue_script = _run_block(steps["report issue"])
+        # (name, fake roundtrip stdout, fake rc, outcome, step rc, gh calls when no issue is open)
+        rows = (
+            ("ok", "GAMEKIT_CANARY=ok:multi=1,single=1,text=1\n", 0, "ok", 0, []),
+            ("degraded", "GAMEKIT_CANARY=degraded:GET /play/x/next -> 500\n", 1, "degraded", 1,
+             ["label create", "issue list", "issue create"]),
+            ("no line", "", 2, "error", 1, ["label create", "issue list", "issue create"]),
+        )
+        for name, out, rc, want_outcome, want_rc, want_gh in rows:
+            with self.subTest(name), tempfile.TemporaryDirectory() as d:
+                tmp = pathlib.Path(d)
+                (tmp / "gamekit" / "service").mkdir(parents=True)
+                (tmp / "gamekit" / "service" / "roundtrip.py").write_text(
+                    f"import sys\nsys.stdout.write({out!r})\nsys.stderr.write('x')\nsys.exit({rc})\n")
+                state = tmp / "state"
+                env = {**os.environ, "GAMEKIT_STATE_DIR": str(state), "GAMEKIT_URL": "https://live.example",
+                       "GAMEKIT_ADMIN_TOKEN": "a", "GAMEKIT_LAB_TOKEN": "l", "GITHUB_STEP_SUMMARY": str(tmp / "sum.md")}
+                res = subprocess.run(["sh", "-e", "-c", run_script], cwd=tmp, env=env,
+                                     capture_output=True, text=True, check=False)
+                self.assertEqual(res.returncode, want_rc, res.stdout + res.stderr)
+                self.assertEqual((state / "outcome").read_text(), want_outcome)
+                self.assertIn("### Canary: GameKit", (tmp / "sum.md").read_text())
+                log_file = tmp / "gh.log"
+                gh = tmp / "bin" / "gh"
+                gh.parent.mkdir()
+                gh.write_text("#!/bin/sh\n" f"printf '%s\\n' \"$*\" >> {str(log_file)!r}\n")
+                gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
+                res = subprocess.run(["sh", "-e", "-c", issue_script],
+                                     env={**env, "PATH": f"{gh.parent}:{os.environ['PATH']}"},
+                                     capture_output=True, text=True, check=False)
+                self.assertEqual(res.returncode, 0, res.stderr)
+                logged = log_file.read_text().splitlines() if log_file.exists() else []
+                self.assertEqual(len(logged), len(want_gh), logged)
+                for got, want_sub in zip(logged, want_gh, strict=True):
+                    self.assertIn(want_sub, got)
+                if want_gh:
+                    self.assertIn("on GameKit", logged[-1])
