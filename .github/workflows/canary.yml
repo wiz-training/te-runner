@@ -189,3 +189,83 @@ jobs:
           else
             gh issue create --label canary --title "canary $today: $outcome on $LAB" --body-file "$CANARY_STATE_DIR/summary.md"
           fi
+  # GameKit: the service is a Lambda, not a lab, so its canary is one round trip from this runner — create an
+  # event from the `canary` pack, register, answer one question of each type, read the board, delete the
+  # event — with no standing event and no sandbox hours. Lives here because te-gamekit-service is private
+  # and the org's Actions minutes run only on public repos.
+  gamekit:
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: canary-gamekit
+      cancel-in-progress: false
+    env:
+      GAMEKIT_URL: https://zl5uwon984.execute-api.us-east-1.amazonaws.com
+    steps:
+      - name: paths
+        run: echo "GAMEKIT_STATE_DIR=$RUNNER_TEMP/gamekit-state" >> "$GITHUB_ENV"
+      - name: check required secrets
+        env:
+          GAMEKIT_READ_TOKEN: ${{ secrets.GAMEKIT_READ_TOKEN }}
+          GAMEKIT_ADMIN_TOKEN: ${{ secrets.GAMEKIT_ADMIN_TOKEN }}
+          GAMEKIT_LAB_TOKEN: ${{ secrets.GAMEKIT_LAB_TOKEN }}
+        run: |
+          for name in GAMEKIT_READ_TOKEN GAMEKIT_ADMIN_TOKEN GAMEKIT_LAB_TOKEN; do
+            eval "val=\${$name}"
+            if [ -z "$val" ]; then
+              echo "::error::missing secret $name (GAMEKIT_READ_TOKEN: fine-grained PAT with contents:read on wiz-training/te-gamekit-service; the other two: SSM /gamekit/admin_token and /gamekit/lab_token)"
+              exit 1
+            fi
+          done
+      - name: checkout te-gamekit-service
+        uses: actions/checkout@v5
+        with:
+          repository: wiz-training/te-gamekit-service
+          token: ${{ secrets.GAMEKIT_READ_TOKEN }}
+          path: gamekit
+      - name: setup python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: round trip
+        env:
+          GAMEKIT_ADMIN_TOKEN: ${{ secrets.GAMEKIT_ADMIN_TOKEN }}
+          GAMEKIT_LAB_TOKEN: ${{ secrets.GAMEKIT_LAB_TOKEN }}
+        run: |
+          mkdir -p "$GAMEKIT_STATE_DIR"
+          set +e
+          out=$(python3 gamekit/service/roundtrip.py "$GAMEKIT_URL" "$GAMEKIT_ADMIN_TOKEN" "$GAMEKIT_LAB_TOKEN" canary --every 2>"$GAMEKIT_STATE_DIR/stderr")
+          rc=$?
+          set -e
+          line=$(printf '%s\n' "$out" | grep '^GAMEKIT_CANARY=' | tail -n 1)
+          case "$line" in
+            GAMEKIT_CANARY=ok:*) outcome=ok ;;
+            GAMEKIT_CANARY=degraded:*) outcome=degraded ;;
+            *) outcome=error ;;
+          esac
+          printf '%s' "$outcome" > "$GAMEKIT_STATE_DIR/outcome"
+          {
+            printf '### Canary: GameKit — `%s`\n\n' "$outcome"
+            printf '`%s`\n\n' "${line:-no GAMEKIT_CANARY line (rc=$rc)}"
+            if [ -s "$GAMEKIT_STATE_DIR/stderr" ]; then printf 'stderr: `%s`\n' "$(head -c 400 "$GAMEKIT_STATE_DIR/stderr")"; fi
+          } > "$GAMEKIT_STATE_DIR/summary.md"
+          cat "$GAMEKIT_STATE_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "$GAMEKIT_STATE_DIR/summary.md"
+          [ "$outcome" = ok ]
+      - name: report issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          outcome=$(cat "$GAMEKIT_STATE_DIR/outcome" 2>/dev/null || echo "")
+          case "$outcome" in
+            degraded|error) ;;
+            *) exit 0 ;;
+          esac
+          today=$(date -u +%Y-%m-%d)
+          gh label create canary --description "Nightly lab canary failure" --color d93f0b 2>/dev/null || true
+          existing=$(gh issue list --state open --label canary --search "\"GameKit\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$GAMEKIT_STATE_DIR/summary.md"
+          else
+            gh issue create --label canary --title "canary $today: $outcome on GameKit" --body-file "$GAMEKIT_STATE_DIR/summary.md"
+          fi

@@ -67,5 +67,7 @@ while IFS= read -r -d '' kv; do export "$kv"; done < /proc/1/environ
 
 Secrets: `INSTRUQT_TOKEN` (mapped to `INSTRUQT_API`) and `LABKIT_READ_TOKEN` (fine-grained PAT with `contents:read` on `wiz-training/te-labkit-v2`).
 
+A second job, `gamekit`, canaries the GameKit service on the same schedule with no lab and no standing event: it checks out `wiz-training/te-gamekit-service` and runs `service/roundtrip.py <live url> … canary --every` (create an event from the `canary` pack → register → answer one question of each type → board → delete). `GAMEKIT_CANARY=ok:…` is `ok`; `degraded:<step>` or no line opens or comments on the `canary`-labelled issue titled `… on GameKit`. Secrets: `GAMEKIT_READ_TOKEN` (fine-grained PAT, `contents:read` on `wiz-training/te-gamekit-service`), `GAMEKIT_ADMIN_TOKEN`, `GAMEKIT_LAB_TOKEN` (SSM `/gamekit/admin_token`, `/gamekit/lab_token`). It lives here because the service repo is private and Actions minutes run only on public repos.
+
 Open items for the repo family live in `te-labkit-v2/TODO.md`; review backlogs behind them are
 `research/review.md` and `research/health-plan.md`.
