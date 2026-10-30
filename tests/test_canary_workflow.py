@@ -83,6 +83,7 @@ class CanaryWorkflowTests(unittest.TestCase):
                 "paths",
                 "check required secrets",
                 "checkout te-runner",
+                "app token",
                 "checkout te-labkit-v2",
                 "setup python",
                 "install playwright",
@@ -102,18 +103,63 @@ class CanaryWorkflowTests(unittest.TestCase):
             r"concurrency:\s*\n\s*group:\s*canary-\$\{\{\s*inputs\.lab\s*\|\|\s*'te-dev-aws'\s*\}\}\s*\n\s*cancel-in-progress:\s*false",
         )
 
-    def test_step_1_refuses_when_labkit_read_token_is_missing(self):
+    def test_step_1_refuses_when_the_app_secret_is_missing(self):
+        """Both checkouts ride the wiz-labs-code-grader App; no personal PAT is read anywhere in the workflow."""
         steps = dict(_image_steps(CANARY_YML.read_text()))
         script = _run_block(steps["check required secrets"])
         bad = subprocess.run(
             ["sh", "-e", "-c", script],
-            env={**os.environ, "LABKIT_READ_TOKEN": "", "INSTRUQT_API": "tok"},
+            env={**os.environ, "WIZ_LABS_GH_APP": "", "INSTRUQT_API": "tok"},
             capture_output=True,
             text=True,
             check=False,
         )
         self.assertEqual(bad.returncode, 1)
-        self.assertIn("LABKIT_READ_TOKEN", bad.stdout + bad.stderr)
+        self.assertIn("WIZ_LABS_GH_APP", bad.stdout + bad.stderr)
+        self.assertNotIn("READ_TOKEN", CANARY_YML.read_text())
+        self.assertIn("steps.app.outputs.token", steps["checkout te-labkit-v2"])
+
+    def test_app_token_action_signs_a_jwt_the_app_key_verifies(self):
+        """The composite mints the installation token itself (openssl + curl): the JWT it sends must verify
+        against the App's public key and name the App id, and the token must reach $GITHUB_OUTPUT masked."""
+        action = ROOT / ".github" / "actions" / "app-token" / "action.yml"
+        # The block sits 8 spaces in; YAML hands GitHub the dedented text, so the heredoc's `PY` lands in column 0.
+        body = action.read_text().split("run: |", 1)[1]
+        script = "\n".join(ln[8:] if ln.startswith("        ") else ln for ln in body.splitlines())
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            subprocess.run(["openssl", "genrsa", "-out", str(tmp / "k.pem"), "2048"], check=True, capture_output=True)
+            subprocess.run(["openssl", "rsa", "-in", str(tmp / "k.pem"), "-pubout", "-out", str(tmp / "k.pub")],
+                           check=True, capture_output=True)
+            import base64
+            import json
+            app = json.dumps({"app_id": 4242, "install_id": 99,
+                              "key": base64.b64encode((tmp / "k.pem").read_bytes()).decode()})
+            curl = tmp / "bin" / "curl"
+            curl.parent.mkdir()
+            curl.write_text("#!/bin/sh\n"
+                            f"printf '%s\\n' \"$*\" > {str(tmp / 'curl.args')!r}\n"
+                            'printf \'{"token":"ghs_fake"}\'\n')
+            curl.chmod(curl.stat().st_mode | stat.S_IXUSR)
+            out = tmp / "out"
+            env = {**os.environ, "PATH": f"{curl.parent}:{os.environ['PATH']}", "WIZ_LABS_GH_APP": app,
+                   "GH_API": "https://gh.example", "GITHUB_OUTPUT": str(out)}
+            res = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+            self.assertEqual(out.read_text().strip(), "token=ghs_fake")
+            self.assertIn("::add-mask::ghs_fake", res.stdout)
+            args = (tmp / "curl.args").read_text()
+            self.assertIn("https://gh.example/app/installations/99/access_tokens", args)
+            jwt = re.search(r"Bearer (\S+)", args).group(1)
+            hdr, pl, sig = jwt.split(".")
+            pad = lambda s: s + "=" * (-len(s) % 4)  # noqa: E731
+            self.assertEqual(json.loads(base64.urlsafe_b64decode(pad(pl)))["iss"], "4242")
+            (tmp / "sig").write_bytes(base64.urlsafe_b64decode(pad(sig)))
+            (tmp / "msg").write_text(f"{hdr}.{pl}")
+            ver = subprocess.run(["openssl", "dgst", "-sha256", "-verify", str(tmp / "k.pub"),
+                                  "-signature", str(tmp / "sig"), str(tmp / "msg")],
+                                 capture_output=True, text=True, check=False)
+            self.assertEqual(ver.returncode, 0, ver.stdout + ver.stderr)
 
     def test_verdict_warns_and_notes_when_canary_runner_lags_newest_tag(self):
         steps = dict(_image_steps(CANARY_YML.read_text()))
@@ -371,8 +417,8 @@ class GamekitCanaryTests(unittest.TestCase):
     def test_check_secrets_refuses_each_missing_name(self):
         steps = dict(_gamekit_steps(CANARY_YML.read_text()))
         script = _run_block(steps["check required secrets"])
-        full = {"GAMEKIT_READ_TOKEN": "r", "GAMEKIT_ADMIN_TOKEN": "a", "GAMEKIT_LAB_TOKEN": "l"}
-        for missing in ("GAMEKIT_READ_TOKEN", "GAMEKIT_ADMIN_TOKEN", "GAMEKIT_LAB_TOKEN", None):
+        full = {"WIZ_LABS_GH_APP": "{}", "GAMEKIT_ADMIN_TOKEN": "a", "GAMEKIT_LAB_TOKEN": "l"}
+        for missing in ("WIZ_LABS_GH_APP", "GAMEKIT_ADMIN_TOKEN", "GAMEKIT_LAB_TOKEN", None):
             with self.subTest(missing=missing):
                 env = {**os.environ, **full, **({missing: ""} if missing else {})}
                 res = subprocess.run(["sh", "-e", "-c", script], env=env, capture_output=True, text=True, check=False)

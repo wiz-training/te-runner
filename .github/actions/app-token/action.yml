@@ -1,0 +1,46 @@
+name: app-token
+description: >-
+  Mints a one-hour GitHub App installation token from the WIZ_LABS_GH_APP secret ({app_id, install_id, key}
+  JSON, key a base64 PEM), so a workflow checks out private sibling repos with the App's identity instead of a
+  personal PAT that expires on someone's calendar. The App is installed on every wiz-training repo.
+inputs:
+  app:
+    description: the WIZ_LABS_GH_APP secret value
+    required: true
+outputs:
+  token:
+    description: installation access token, masked
+    value: ${{ steps.mint.outputs.token }}
+runs:
+  using: composite
+  steps:
+    - id: mint
+      shell: bash
+      env:
+        WIZ_LABS_GH_APP: ${{ inputs.app }}
+        GH_API: ${{ env.GH_API || 'https://api.github.com' }}
+      run: |
+        set -euo pipefail
+        umask 077
+        work=$(mktemp -d)
+        trap 'rm -rf "$work"' EXIT
+        read -r app_id install_id < <(python3 - "$work/app.pem" <<'PY'
+        import base64, json, os, sys
+        app = json.loads(os.environ["WIZ_LABS_GH_APP"])
+        open(sys.argv[1], "w").write(base64.b64decode(app["key"]).decode())
+        print(app["app_id"], app["install_id"])
+        PY
+        )
+        b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+        now=$(date +%s)
+        hdr=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
+        pl=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$((now - 60))" "$((now + 540))" "$app_id" | b64url)
+        sig=$(printf '%s.%s' "$hdr" "$pl" | openssl dgst -sha256 -sign "$work/app.pem" | b64url)
+        tok=$(curl -sS -X POST -H "Authorization: Bearer $hdr.$pl.$sig" -H "Accept: application/vnd.github+json" \
+          -H "X-GitHub-Api-Version: 2022-11-28" "$GH_API/app/installations/$install_id/access_tokens" | jq -r '.token // empty')
+        if [ -z "$tok" ]; then
+          echo "::error::installation token not minted: check WIZ_LABS_GH_APP and that the App is installed on the target repos"
+          exit 1
+        fi
+        echo "::add-mask::$tok"
+        echo "token=$tok" >> "$GITHUB_OUTPUT"
