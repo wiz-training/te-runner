@@ -31,11 +31,11 @@ jobs:
           echo "CANARY_STATE_DIR=$RUNNER_TEMP/canary-state" >> "$GITHUB_ENV"
       - name: check required secrets
         env:
-          LABKIT_READ_TOKEN: ${{ secrets.LABKIT_READ_TOKEN }}
+          WIZ_LABS_GH_APP: ${{ secrets.WIZ_LABS_GH_APP }}
           INSTRUQT_API: ${{ secrets.INSTRUQT_TOKEN }}
         run: |
-          if [ -z "$LABKIT_READ_TOKEN" ]; then
-            echo "::error::missing secret LABKIT_READ_TOKEN (fine-grained PAT with contents:read on wiz-training/te-labkit-v2)"
+          if [ -z "$WIZ_LABS_GH_APP" ]; then
+            echo "::error::missing secret WIZ_LABS_GH_APP (the wiz-labs-code-grader App: {app_id, install_id, key}; it checks out te-labkit-v2)"
             exit 1
           fi
           if [ -z "$INSTRUQT_API" ]; then
@@ -44,11 +44,16 @@ jobs:
           fi
       - name: checkout te-runner
         uses: actions/checkout@v5
+      - name: app token
+        id: app
+        uses: ./.github/actions/app-token
+        with:
+          app: ${{ secrets.WIZ_LABS_GH_APP }}
       - name: checkout te-labkit-v2
         uses: actions/checkout@v5
         with:
           repository: wiz-training/te-labkit-v2
-          token: ${{ secrets.LABKIT_READ_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           path: labkit
       - name: setup python
         uses: actions/setup-python@v6
@@ -205,22 +210,29 @@ jobs:
         run: echo "GAMEKIT_STATE_DIR=$RUNNER_TEMP/gamekit-state" >> "$GITHUB_ENV"
       - name: check required secrets
         env:
-          GAMEKIT_READ_TOKEN: ${{ secrets.GAMEKIT_READ_TOKEN }}
+          WIZ_LABS_GH_APP: ${{ secrets.WIZ_LABS_GH_APP }}
           GAMEKIT_ADMIN_TOKEN: ${{ secrets.GAMEKIT_ADMIN_TOKEN }}
           GAMEKIT_LAB_TOKEN: ${{ secrets.GAMEKIT_LAB_TOKEN }}
         run: |
-          for name in GAMEKIT_READ_TOKEN GAMEKIT_ADMIN_TOKEN GAMEKIT_LAB_TOKEN; do
+          for name in WIZ_LABS_GH_APP GAMEKIT_ADMIN_TOKEN GAMEKIT_LAB_TOKEN; do
             eval "val=\${$name}"
             if [ -z "$val" ]; then
-              echo "::error::missing secret $name (GAMEKIT_READ_TOKEN: fine-grained PAT with contents:read on wiz-training/te-gamekit-service; the other two: SSM /gamekit/admin_token and /gamekit/lab_token)"
+              echo "::error::missing secret $name (WIZ_LABS_GH_APP: the wiz-labs-code-grader App, checks out te-gamekit-service; the other two: SSM /gamekit/admin_token and /gamekit/lab_token)"
               exit 1
             fi
           done
+      - name: checkout te-runner
+        uses: actions/checkout@v5
+      - name: app token
+        id: app
+        uses: ./.github/actions/app-token
+        with:
+          app: ${{ secrets.WIZ_LABS_GH_APP }}
       - name: checkout te-gamekit-service
         uses: actions/checkout@v5
         with:
           repository: wiz-training/te-gamekit-service
-          token: ${{ secrets.GAMEKIT_READ_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           path: gamekit
       - name: setup python
         uses: actions/setup-python@v6
