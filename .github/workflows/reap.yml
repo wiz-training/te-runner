@@ -1,10 +1,12 @@
 name: reap-orphans
-# Out-of-band reaper: daily, finds stopped tagged lab sessions and reaps their Wiz footprint and the
-# Wiz user each SSO login minted (via the baked-in reaper + wizlab).
+# Out-of-band reaper: daily, discovers session ids tenant-side (`lab-<12 chars>@` Wiz users and
+# `lab-<12 chars>*` `_SWEEP_TYPES` resources, with no age cutoff), unions them with stopped
+# `tid:<tenant>` `labPlayReports` sessions in the rolling 48h window and `REAP_SESSIONS`, and reaps
+# each session's Wiz footprint and the Wiz user its SSO login minted (via the baked-in reaper + wizlab).
 # Commit mode has one source per trigger: a manual run deletes iff its `commit` box is ticked (it is
 # by default; untick for a dry run), the schedule deletes iff repo variable REAP_COMMIT=true. Neither
 # overrides the other. A dry run reports the backlog and leaves it. A run is red only when a session
-# left residue no later pass clears (wizlab exit 3) or a tenant's labPlayReports could not be read;
+# left residue no later pass clears (wizlab exit 3/5) or a tenant's discovery could not be read;
 # deferrals (an Outpost mid-uninstall) are green.
 on:
   schedule:
@@ -16,7 +18,7 @@ on:
         type: boolean
         default: true
       sessions:
-        description: "Manual session ids to reap (comma-separated), bypassing the tag/window filter"
+        description: "Manual session ids to reap (comma-separated), unioned with tenant-side and labPlayReports discovery"
         type: string
         default: ""
       tenant:

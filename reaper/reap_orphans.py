@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Out-of-band reaper. Per tenant: ask Instruqt labPlayReports for STOPPED lab sessions (tagged
-tid:<tenant>), then reap each session's Wiz footprint and the Wiz user its SSO login minted, via
-wizlab, keyed on the session id (objects are named lab-<session_id>). DRY-RUN by default; --commit
-deletes. A lab whose tenant is chosen per play (an embed variable) carries one tid: tag per tenant it
-can sign in to, so every tenant's sweep reaps the same session; on a tenant the play never touched
-the footprint reads ABSENT and `user delete` finds no record, both exit 0.
+"""Out-of-band reaper. Per tenant in REAP_TENANTS: discover session ids tenant-side with no age cutoff
+(Wiz users whose email matches `lab-<12 chars>@` via `users(filterBy:{search:"lab-"})` and every
+`_SWEEP_TYPES` resource named `lab-<12 chars>*`) and union with STOPPED Instruqt `labPlayReports`
+sessions in the rolling 48h window (tagged `tid:<tenant>`) and `REAP_SESSIONS`. Then reap each
+(tenant, sid) Wiz footprint and the Wiz user its SSO login minted, via wizlab, keyed on the session id
+(objects are named `lab-<session_id>`). DRY-RUN by default; `--commit` deletes.
 
-Stopped is Instruqt's own done-signal (immune to long/paused labs). The session id is the join:
-it's the labPlayReports id AND the naming stem. No account, no Okta attributes, no age heuristic.
+GameKit seat plays (`te-magic-labs` family) never get a `labPlayReports` row (`labPlayReportItem`
+returns `BE_034_EntityNotFound`), and untagged labs never match `tags:["tid:<tenant>"]`; tenant-side
+discovery finds their `lab-<sid>@` users and `lab-<sid>*` resources directly, while `labPlayReports`
+remains the second source for sessions whose audit-only creates carry non-stem names.
 
 Env: INSTRUQT_TOKEN (API key); REAP_TENANTS, the comma-separated tenant keys to sweep (default TBCMP);
-for --commit also WIZ_<TENANT>_CLIENT_ID/SECRET per listed tenant. REAP_DOMAIN is the login's email
-domain (the audit-log performer and the Wiz user record) when labs do not use wizlab's default
+WIZ_<TENANT>_CLIENT_ID/SECRET per listed tenant. REAP_DOMAIN is the login's email domain (the
+audit-log performer and the Wiz user record) when labs do not use wizlab's default
 (wizlabs.cloudseclabs.io): unset, a login on another domain is "absent", the footprint reap reads as
 done and its Wiz user stays.
 """
@@ -31,9 +33,13 @@ if (_REPO_ROOT / "wizlab").is_dir() and str(_REPO_ROOT) not in sys.path:
 
 from wizlab import codelab as _codelab  # noqa: E402
 from wizlab import core as _core  # noqa: E402
+from wizlab import reap as _reap  # noqa: E402
 
 # Same shape as wizlab.core.PLAY_ID_RE (measured 2026-10-27: 512/512 play ids in 30 d).
 PLAY_ID_RE = re.compile(r"[a-z0-9]{12}")
+_USER_STEM_RE = re.compile(r"^lab-([a-z0-9]{12})@")
+_RESOURCE_STEM_RE = re.compile(r"^lab-([a-z0-9]{12})(?:$|[-@])")
+_USER_HANDLER = {"list": "users", "filter": "search", "soft": False, "select": "id email status"}
 
 TEAM = os.getenv("INSTRUQT_TEAM", "wiz")
 # Rolling window, so a session is seen by several consecutive runs. That is safe only because an
@@ -115,6 +121,41 @@ def stopped_sessions(tag):
     else:
         _die(f"{tag}: still paging after {MAX_PAGES * PAGE_SIZE} reports; refusing to loop")
     return [it["id"] for it in items if it.get("stoppedReason")]
+
+
+def _stem_sid(pattern, text):
+    m = pattern.match(text or "")
+    sid = m.group(1) if m else ""
+    return sid if PLAY_ID_RE.fullmatch(sid) else None
+
+
+def tenant_sessions(tenant):
+    """Session ids present on `tenant` with no age cutoff: active `lab-<12 chars>@` Wiz users and
+    `_SWEEP_TYPES` resources named `lab-<12 chars>*`."""
+    prev = os.environ.get("WIZ_TENANT")
+    os.environ["WIZ_TENANT"] = tenant
+    try:
+        tok, dc, _ = _core.token_and_dc()
+        users, err = _reap._reap_list(tok, dc, _USER_HANDLER, "lab-")
+        if err:
+            raise _core.WizlabError(3, f"users: {err}")
+        sids = [
+            sid for u in users if u.get("status") != "DELETED"
+            if (sid := _stem_sid(_USER_STEM_RE, u.get("email")))
+        ]
+        for x in _reap._SWEEP_TYPES:
+            nodes, err = _reap._reap_list(tok, dc, _reap._reap_handler(x), "lab-")
+            if err:
+                raise _core.WizlabError(3, f"{x}: {err}")
+            for n in nodes:
+                if sid := _stem_sid(_RESOURCE_STEM_RE, n.get("name")):
+                    sids.append(sid)
+        return list(dict.fromkeys(sids))
+    finally:
+        if prev is None:
+            os.environ.pop("WIZ_TENANT", None)
+        else:
+            os.environ["WIZ_TENANT"] = prev
 
 
 # One session's `user reap` pages the audit log and nine sweep types; a hang here must cost that
@@ -206,6 +247,7 @@ def main():
     # The container's stdout is a pipe, so block-buffered; stderr is not. Unbuffered, the per-session
     # wizlab lines land after the summary that says "see preceding wizlab output".
     sys.stdout.reconfigure(line_buffering=True)
+    _core._TOKENS.clear()
     # Manual override: reap explicit sids regardless of tag/window. For orphans that predate a track's
     # tid:<tenant> tag (labPlayReports captures tags at play time, so a late tag never back-fills), or
     # any one-off. `REAP_SESSIONS="sid1,sid2"`; reaped under REAP_SESSIONS_TENANT (default: the first
@@ -221,13 +263,17 @@ def main():
     unread = []
     for tenant, tag in TENANTS.items():
         try:
-            sids = stopped_sessions(tag)
-        except InstruqtError as e:
+            report_sids = stopped_sessions(tag)
+            wiz_sids = tenant_sessions(tenant)
+        except (InstruqtError, _core.WizlabError) as e:
             print(f"reap_orphans: tenant {tenant} ({tag}) not swept: {e}", file=sys.stderr)
             unread.append(tenant)
             continue
-        print(f"# tenant {tenant} ({tag}): {len(sids)} stopped session(s) in last {_window_h()}h")
+        sids = list(dict.fromkeys([*report_sids, *wiz_sids]))
+        print(f"# tenant {tenant} ({tag}): {len(report_sids)} stopped session(s) in last {_window_h()}h, "
+              f"{len(wiz_sids)} tenant-side ({len(sids)} total)")
         sessions += [(tenant, sid) for sid in sids]
+    sessions = list(dict.fromkeys(sessions))
     failed, deferred = {}, []
     for tenant, sid in sessions:
         outcome = _reap_session(tenant, sid, commit)
