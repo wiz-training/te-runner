@@ -43,7 +43,7 @@ class SessionDiscovery(unittest.TestCase):
     def test_tenant_side_discovery_finds_stem_objects_ignores_non_stem_and_dedups_with_reports(self):
         """GameKit seat plays (te-magic-labs family) never get a labPlayReports row (labPlayReportItem
         returns BE_034_EntityNotFound while instruqt lab logs --session shows the boot), and untagged labs
-        never match tid:<tenant>; TE held 29 orphan lab-<sid>@ users and 18 lab-<sid>-api service accounts
+        never match tid:<tenant>; TE held 18 orphan lab-<sid>-api service accounts and TBCMP 4 live users
         the report-only reaper could not see."""
         ok_proc = rp.subprocess.CompletedProcess(["wizlab"], 0, stdout="", stderr="")
         now = rp.datetime.now(rp.UTC)
