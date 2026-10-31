@@ -46,18 +46,66 @@ class SessionDiscovery(unittest.TestCase):
         never match tid:<tenant>; TE held 29 orphan lab-<sid>@ users and 18 lab-<sid>-api service accounts
         the report-only reaper could not see."""
         ok_proc = rp.subprocess.CompletedProcess(["wizlab"], 0, stdout="", stderr="")
+        now = rp.datetime.now(rp.UTC)
+        old_ts = (now - rp.timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        young_ts = (now - rp.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
         rows = [
             (
-                "tenant-side sid found + reaped",
+                "tenant-side sid found + reaped (25 h old, including fallback to user createdAt)",
                 [],
                 {},
                 {
-                    "users": tw._conn({"id": "u1", "email": "lab-ghtvgsxcgphw@wizlabs.cloudseclabs.io",
-                                       "status": "ACTIVE"}),
-                    "serviceAccounts": tw._conn({"id": "sa1", "name": "lab-k8m01846391n-api"}),
+                    "users": tw._conn(
+                        {"id": "u1", "email": "lab-ghtvgsxcgphw@wizlabs.cloudseclabs.io",
+                         "status": "ACTIVE", "createdAt": old_ts},
+                        {"id": "u2", "email": "lab-7nph2tnq4kfn@wizlabs.cloudseclabs.io",
+                         "status": "ACTIVE", "createdAt": old_ts},
+                    ),
+                    "serviceAccounts": tw._conn({"id": "sa1", "name": "lab-k8m01846391n-api", "createdAt": old_ts}),
                     "outposts": tw._conn({"id": "op1", "name": "lab-7nph2tnq4kfn"}),
                 },
-                ["ghtvgsxcgphw", "k8m01846391n", "7nph2tnq4kfn"],
+                ["ghtvgsxcgphw", "7nph2tnq4kfn", "k8m01846391n"],
+                [],
+            ),
+            (
+                "young sid (1 h) excluded, old sid (25 h) included",
+                [],
+                {},
+                {
+                    "users": tw._conn(
+                        {"id": "u-young", "email": "lab-bapr82q9xmm5@wizlabs.cloudseclabs.io",
+                         "status": "ACTIVE", "createdAt": young_ts},
+                        {"id": "u-old", "email": "lab-ghtvgsxcgphw@wizlabs.cloudseclabs.io",
+                         "status": "ACTIVE", "createdAt": old_ts},
+                    ),
+                    "serviceAccounts": tw._conn(
+                        {"id": "sa-young", "name": "lab-bapr82q9xmm5-api", "createdAt": young_ts},
+                        {"id": "sa-old", "name": "lab-k8m01846391n-api", "createdAt": old_ts},
+                    ),
+                },
+                ["ghtvgsxcgphw", "k8m01846391n"],
+                [],
+            ),
+            (
+                "no-createdAt sid skipped with stderr line",
+                [],
+                {},
+                {
+                    "users": tw._conn(
+                        {"id": "u-nots", "email": "lab-bapr82q9xmm5@wizlabs.cloudseclabs.io", "status": "ACTIVE"},
+                    ),
+                    "serviceAccounts": tw._conn(
+                        {"id": "sa-old", "name": "lab-k8m01846391n-api", "createdAt": old_ts},
+                    ),
+                    "outposts": tw._conn(
+                        {"id": "op-nots", "name": "lab-7nph2tnq4kfn"},
+                    ),
+                },
+                ["k8m01846391n"],
+                [
+                    "tenant-side bapr82q9xmm5: no createdAt, not reaped",
+                    "tenant-side 7nph2tnq4kfn: no createdAt, not reaped",
+                ],
             ),
             (
                 "non-stem name ignored",
@@ -65,24 +113,31 @@ class SessionDiscovery(unittest.TestCase):
                 {},
                 {
                     "users": tw._conn(
-                        {"id": "u-admin", "email": "admin@wizlabs.cloudseclabs.io", "status": "ACTIVE"},
-                        {"id": "u-short", "email": "lab-bapr@wizlabs.cloudseclabs.io", "status": "ACTIVE"},
-                        {"id": "u-long", "email": "lab-ghtvgsxcgphwx@wizlabs.cloudseclabs.io", "status": "ACTIVE"},
-                        {"id": "u-upper", "email": "lab-UPPERCASE123@wizlabs.cloudseclabs.io", "status": "ACTIVE"},
-                        {"id": "u-noat", "email": "lab-ghtvgsxcgphw", "status": "ACTIVE"},
-                        {"id": "u-del", "email": "lab-bapr82q9xmm5@wizlabs.cloudseclabs.io", "status": "DELETED"},
+                        {"id": "u-admin", "email": "admin@wizlabs.cloudseclabs.io",
+                         "status": "ACTIVE", "createdAt": old_ts},
+                        {"id": "u-short", "email": "lab-bapr@wizlabs.cloudseclabs.io",
+                         "status": "ACTIVE", "createdAt": old_ts},
+                        {"id": "u-long", "email": "lab-ghtvgsxcgphwx@wizlabs.cloudseclabs.io",
+                         "status": "ACTIVE", "createdAt": old_ts},
+                        {"id": "u-upper", "email": "lab-UPPERCASE123@wizlabs.cloudseclabs.io",
+                         "status": "ACTIVE", "createdAt": old_ts},
+                        {"id": "u-noat", "email": "lab-ghtvgsxcgphw",
+                         "status": "ACTIVE", "createdAt": old_ts},
+                        {"id": "u-del", "email": "lab-bapr82q9xmm5@wizlabs.cloudseclabs.io",
+                         "status": "DELETED", "createdAt": old_ts},
                     ),
                     "serviceAccounts": tw._conn(
-                        {"id": "sa-ci", "name": "terraform-ci"},
-                        {"id": "sa-short", "name": "lab-bapr-api"},
-                        {"id": "sa-long", "name": "lab-k8m01846391nx-api"},
-                        {"id": "sa-upper", "name": "lab-UPPERCASE123-api"},
-                        {"id": "sa-under", "name": "lab-k8m01846391n_other"},
+                        {"id": "sa-ci", "name": "terraform-ci", "createdAt": old_ts},
+                        {"id": "sa-short", "name": "lab-bapr-api", "createdAt": old_ts},
+                        {"id": "sa-long", "name": "lab-k8m01846391nx-api", "createdAt": old_ts},
+                        {"id": "sa-upper", "name": "lab-UPPERCASE123-api", "createdAt": old_ts},
+                        {"id": "sa-under", "name": "lab-k8m01846391n_other", "createdAt": old_ts},
                     ),
                     "connectors": tw._conn(
-                        {"id": "c-child", "name": "ECR in lab-7nph2tnq4kfn-connector"},
+                        {"id": "c-child", "name": "ECR in lab-7nph2tnq4kfn-connector", "createdAt": old_ts},
                     ),
                 },
+                [],
                 [],
             ),
             (
@@ -91,20 +146,22 @@ class SessionDiscovery(unittest.TestCase):
                 {"REAP_SESSIONS": "7nph2tnq4kfn", "REAP_SESSIONS_TENANT": "TE"},
                 {
                     "users": tw._conn({"id": "u1", "email": "lab-ghtvgsxcgphw@wizlabs.cloudseclabs.io",
-                                       "status": "ACTIVE"}),
+                                       "status": "ACTIVE", "createdAt": old_ts}),
                     "serviceAccounts": tw._conn(
-                        {"id": "sa-dup-rep", "name": "lab-ghtvgsxcgphw-api"},
-                        {"id": "sa-dup-man", "name": "lab-7nph2tnq4kfn-api"},
-                        {"id": "sa-new", "name": "lab-k8m01846391n-api"},
+                        {"id": "sa-dup-rep", "name": "lab-ghtvgsxcgphw-api", "createdAt": old_ts},
+                        {"id": "sa-dup-man", "name": "lab-7nph2tnq4kfn-api", "createdAt": old_ts},
+                        {"id": "sa-new", "name": "lab-k8m01846391n-api", "createdAt": old_ts},
                     ),
                 },
                 ["7nph2tnq4kfn", "ghtvgsxcgphw", "bapr82q9xmm5", "k8m01846391n"],
+                [],
             ),
         ]
         expected_fields = ["users", *[rp._reap._reap_handler(x)["list"] for x in rp._reap._SWEEP_TYPES]]
-        for label, report_sids, extra_env, wiz_fields, want_sids in rows:
+        for label, report_sids, extra_env, wiz_fields, want_sids, want_err in rows:
             with self.subTest(label=label):
                 wiz = tw.FakeWiz(**wiz_fields)
+                err = io.StringIO()
                 with mock.patch.object(rp, "TENANTS", {"TE": "tid:te"}), \
                      mock.patch.object(rp, "stopped_sessions", return_value=report_sids), \
                      mock.patch.object(rp._core, "_post", wiz), \
@@ -112,15 +169,22 @@ class SessionDiscovery(unittest.TestCase):
                      mock.patch.dict(rp.os.environ, {**tw.FakeWiz.ENV, **extra_env}, clear=True), \
                      mock.patch.object(rp.sys, "argv", ["reap_orphans.py", "--commit"]), \
                      mock.patch.object(rp.sys, "stdout", io.TextIOWrapper(io.BytesIO())), \
-                     mock.patch.object(rp.sys, "stderr", io.StringIO()):
+                     mock.patch.object(rp.sys, "stderr", err):
                     rp.main()
                 self.assertEqual([f for f, _ in wiz.calls], expected_fields)
+                docs_by_field = dict(zip([f for f, _ in wiz.calls], wiz.docs, strict=True))
+                for f in ("users", "connectors", "serviceAccounts"):
+                    self.assertIn("createdAt", docs_by_field[f])
                 reaped = [c.args[0][c.args[0].index("--session") + 1]
                           for c in proc.call_args_list if c.args[0][1:3] == ["user", "reap"]]
                 deleted = [c.args[0][c.args[0].index("--session") + 1]
                            for c in proc.call_args_list if c.args[0][1:3] == ["user", "delete"]]
                 self.assertEqual(reaped, want_sids)
                 self.assertEqual(deleted, want_sids)
+                for line in want_err:
+                    self.assertIn(line, err.getvalue())
+                if not want_err:
+                    self.assertNotIn("no createdAt, not reaped", err.getvalue())
 
 
 class TenantSelection(unittest.TestCase):

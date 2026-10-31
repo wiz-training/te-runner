@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
-"""Out-of-band reaper. Per tenant in REAP_TENANTS: discover session ids tenant-side with no age cutoff
-(Wiz users whose email matches `lab-<12 chars>@` via `users(filterBy:{search:"lab-"})` and every
-`_SWEEP_TYPES` resource named `lab-<12 chars>*`) and union with STOPPED Instruqt `labPlayReports`
-sessions in the rolling 48h window (tagged `tid:<tenant>`) and `REAP_SESSIONS`. Then reap each
-(tenant, sid) Wiz footprint and the Wiz user its SSO login minted, via wizlab, keyed on the session id
-(objects are named `lab-<session_id>`). DRY-RUN by default; `--commit` deletes.
+"""Out-of-band reaper. Per tenant in REAP_TENANTS: discover session ids tenant-side (Wiz users whose
+email matches `lab-<12 chars>@` via `users(filterBy:{search:"lab-"})` and every `_SWEEP_TYPES` resource
+named `lab-<12 chars>*`, keeping only sids whose earliest known `createdAt` is older than
+`REAP_TENANT_MIN_AGE_H` — a lab never runs 24 h, so anything older is residue) and union with STOPPED
+Instruqt `labPlayReports` sessions in the rolling 48h window (tagged `tid:<tenant>`) and
+`REAP_SESSIONS`. Then reap each (tenant, sid) Wiz footprint and the Wiz user its SSO login minted, via
+wizlab, keyed on the session id (objects are named `lab-<session_id>`). DRY-RUN by default; `--commit`
+deletes.
 
 GameKit seat plays (`te-magic-labs` family) never get a `labPlayReports` row (`labPlayReportItem`
 returns `BE_034_EntityNotFound`), and untagged labs never match `tags:["tid:<tenant>"]`; tenant-side
-discovery finds their `lab-<sid>@` users and `lab-<sid>*` resources directly, while `labPlayReports`
-remains the second source for sessions whose audit-only creates carry non-stem names.
+discovery finds their `lab-<sid>@` users and `lab-<sid>*` resources directly once past the 24 h age
+gate, while `labPlayReports` remains the second source for recently stopped plays and sessions whose
+audit-only creates carry non-stem names.
 
 Env: INSTRUQT_TOKEN (API key); REAP_TENANTS, the comma-separated tenant keys to sweep (default TBCMP);
-WIZ_<TENANT>_CLIENT_ID/SECRET per listed tenant. REAP_DOMAIN is the login's email domain (the
-audit-log performer and the Wiz user record) when labs do not use wizlab's default
-(wizlabs.cloudseclabs.io): unset, a login on another domain is "absent", the footprint reap reads as
-done and its Wiz user stays.
+WIZ_<TENANT>_CLIENT_ID/SECRET per listed tenant; REAP_TENANT_MIN_AGE_H (default 24: a lab never runs
+24 h, so anything older is residue). REAP_DOMAIN is the login's email domain (the audit-log performer
+and the Wiz user record) when labs do not use wizlab's default (wizlabs.cloudseclabs.io): unset, a
+login on another domain is "absent", the footprint reap reads as done and its Wiz user stays.
 """
 import json
 import os
@@ -39,7 +42,8 @@ from wizlab import reap as _reap  # noqa: E402
 PLAY_ID_RE = re.compile(r"[a-z0-9]{12}")
 _USER_STEM_RE = re.compile(r"^lab-([a-z0-9]{12})@")
 _RESOURCE_STEM_RE = re.compile(r"^lab-([a-z0-9]{12})(?:$|[-@])")
-_USER_HANDLER = {"list": "users", "filter": "search", "soft": False, "select": "id email status"}
+_USER_HANDLER = {"list": "users", "filter": "search", "soft": False, "select": "id email status createdAt"}
+_CREATED_AT_TYPES = ("Connector", "ServiceAccount")
 
 TEAM = os.getenv("INSTRUQT_TEAM", "wiz")
 # Rolling window, so a session is seen by several consecutive runs. That is safe only because an
@@ -49,10 +53,16 @@ TEAM = os.getenv("INSTRUQT_TEAM", "wiz")
 # mid-teardown leaves its footprint orphaned, and connectors accumulating past what a lookup can page
 # break every lab's staging (wizlab find_connector).
 WINDOW_H = int(os.getenv("REAP_WINDOW_HOURS", "48"))
+# A lab never runs 24 h, so anything older is residue.
+TENANT_MIN_AGE_H = int(os.getenv("REAP_TENANT_MIN_AGE_H", "24"))
 
 
 def _window_h():
     return int(os.getenv("REAP_WINDOW_HOURS", str(WINDOW_H)))
+
+
+def _tenant_min_age_h():
+    return int(os.getenv("REAP_TENANT_MIN_AGE_H", str(TENANT_MIN_AGE_H)))
 
 
 def _tenants(spec):
@@ -129,9 +139,39 @@ def _stem_sid(pattern, text):
     return sid if PLAY_ID_RE.fullmatch(sid) else None
 
 
+def _parse_created_at(raw):
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return dt if dt.tzinfo is not None else None
+    except ValueError:
+        return None
+
+
+def _record_sid(created_at, sid, raw_ts):
+    if not sid:
+        return
+    bucket = created_at.setdefault(sid, [])
+    if ts := _parse_created_at(raw_ts):
+        bucket.append(ts)
+
+
+def _aged_sids(created_at):
+    cutoff = datetime.now(UTC) - timedelta(hours=_tenant_min_age_h())
+    sids = []
+    for sid, timestamps in created_at.items():
+        if not timestamps:
+            print(f"tenant-side {sid}: no createdAt, not reaped", file=sys.stderr)
+        elif min(timestamps) <= cutoff:
+            sids.append(sid)
+    return sids
+
+
 def tenant_sessions(tenant):
-    """Session ids present on `tenant` with no age cutoff: active `lab-<12 chars>@` Wiz users and
-    `_SWEEP_TYPES` resources named `lab-<12 chars>*`."""
+    """Session ids present on `tenant` whose earliest known `createdAt` is older than
+    `REAP_TENANT_MIN_AGE_H`: active `lab-<12 chars>@` Wiz users and `_SWEEP_TYPES` resources
+    named `lab-<12 chars>*`."""
     prev = os.environ.get("WIZ_TENANT")
     os.environ["WIZ_TENANT"] = tenant
     try:
@@ -139,18 +179,20 @@ def tenant_sessions(tenant):
         users, err = _reap._reap_list(tok, dc, _USER_HANDLER, "lab-")
         if err:
             raise _core.WizlabError(3, f"users: {err}")
-        sids = [
-            sid for u in users if u.get("status") != "DELETED"
-            if (sid := _stem_sid(_USER_STEM_RE, u.get("email")))
-        ]
+        created_at = {}
+        for u in users:
+            if u.get("status") != "DELETED":
+                _record_sid(created_at, _stem_sid(_USER_STEM_RE, u.get("email")), u.get("createdAt"))
         for x in _reap._SWEEP_TYPES:
-            nodes, err = _reap._reap_list(tok, dc, _reap._reap_handler(x), "lab-")
+            h = _reap._reap_handler(x)
+            if x in _CREATED_AT_TYPES:
+                h = {**h, "select": f"{h['select']} createdAt"}
+            nodes, err = _reap._reap_list(tok, dc, h, "lab-")
             if err:
                 raise _core.WizlabError(3, f"{x}: {err}")
             for n in nodes:
-                if sid := _stem_sid(_RESOURCE_STEM_RE, n.get("name")):
-                    sids.append(sid)
-        return list(dict.fromkeys(sids))
+                _record_sid(created_at, _stem_sid(_RESOURCE_STEM_RE, n.get("name")), n.get("createdAt"))
+        return _aged_sids(created_at)
     finally:
         if prev is None:
             os.environ.pop("WIZ_TENANT", None)
