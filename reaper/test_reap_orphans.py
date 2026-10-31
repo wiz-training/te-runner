@@ -2,8 +2,16 @@
 import importlib.util
 import io
 import pathlib
+import sys
 import unittest
 from unittest import mock
+
+_ROOT = pathlib.Path(__file__).resolve().parent.parent
+for _p in (str(_ROOT), str(_ROOT / "tests")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+import test_wizlab as tw  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
     "reap_orphans", pathlib.Path(__file__).resolve().parent / "reap_orphans.py")
@@ -31,6 +39,152 @@ class SessionDiscovery(unittest.TestCase):
             rp.stopped_sessions("tid:x")
         self.assertEqual(api.call_count, 3)
         self.assertEqual(cm.exception.code, 1)
+
+    def test_tenant_side_discovery_finds_stem_objects_ignores_non_stem_and_dedups_with_reports(self):
+        """GameKit seat plays (te-magic-labs family) never get a labPlayReports row (labPlayReportItem
+        returns BE_034_EntityNotFound while instruqt lab logs --session shows the boot), and untagged labs
+        never match tid:<tenant>; TE held 18 orphan lab-<sid>-api service accounts and TBCMP 4 live users
+        the report-only reaper could not see."""
+        ok_proc = rp.subprocess.CompletedProcess(["wizlab"], 0, stdout="", stderr="")
+        now = rp.datetime.now(rp.UTC)
+        old_ts = (now - rp.timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        young_ts = (now - rp.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        rows = [
+            (
+                "tenant-side sid found + reaped (25 h old, including fallback to user createdAt)",
+                [],
+                {},
+                {
+                    "users": tw._conn(
+                        {"id": "u1", "email": "lab-ghtvgsxcgphw@wizlabs.cloudseclabs.io",
+                         "status": "ACTIVE", "createdAt": old_ts},
+                        {"id": "u2", "email": "lab-7nph2tnq4kfn@wizlabs.cloudseclabs.io",
+                         "status": "ACTIVE", "createdAt": old_ts},
+                    ),
+                    "serviceAccounts": tw._conn({"id": "sa1", "name": "lab-k8m01846391n-api", "createdAt": old_ts}),
+                    "outposts": tw._conn({"id": "op1", "name": "lab-7nph2tnq4kfn"}),
+                },
+                ["ghtvgsxcgphw", "7nph2tnq4kfn", "k8m01846391n"],
+                [],
+            ),
+            (
+                "young sid (1 h) excluded, old sid (25 h) included",
+                [],
+                {},
+                {
+                    "users": tw._conn(
+                        {"id": "u-young", "email": "lab-bapr82q9xmm5@wizlabs.cloudseclabs.io",
+                         "status": "ACTIVE", "createdAt": young_ts},
+                        {"id": "u-old", "email": "lab-ghtvgsxcgphw@wizlabs.cloudseclabs.io",
+                         "status": "ACTIVE", "createdAt": old_ts},
+                    ),
+                    "serviceAccounts": tw._conn(
+                        {"id": "sa-young", "name": "lab-bapr82q9xmm5-api", "createdAt": young_ts},
+                        {"id": "sa-old", "name": "lab-k8m01846391n-api", "createdAt": old_ts},
+                    ),
+                },
+                ["ghtvgsxcgphw", "k8m01846391n"],
+                [],
+            ),
+            (
+                "no-createdAt sid skipped with stderr line",
+                [],
+                {},
+                {
+                    "users": tw._conn(
+                        {"id": "u-nots", "email": "lab-bapr82q9xmm5@wizlabs.cloudseclabs.io", "status": "ACTIVE"},
+                    ),
+                    "serviceAccounts": tw._conn(
+                        {"id": "sa-old", "name": "lab-k8m01846391n-api", "createdAt": old_ts},
+                    ),
+                    "outposts": tw._conn(
+                        {"id": "op-nots", "name": "lab-7nph2tnq4kfn"},
+                    ),
+                },
+                ["k8m01846391n"],
+                [
+                    "tenant-side bapr82q9xmm5: no createdAt, not reaped",
+                    "tenant-side 7nph2tnq4kfn: no createdAt, not reaped",
+                ],
+            ),
+            (
+                "non-stem name ignored",
+                [],
+                {},
+                {
+                    "users": tw._conn(
+                        {"id": "u-admin", "email": "admin@wizlabs.cloudseclabs.io",
+                         "status": "ACTIVE", "createdAt": old_ts},
+                        {"id": "u-short", "email": "lab-bapr@wizlabs.cloudseclabs.io",
+                         "status": "ACTIVE", "createdAt": old_ts},
+                        {"id": "u-long", "email": "lab-ghtvgsxcgphwx@wizlabs.cloudseclabs.io",
+                         "status": "ACTIVE", "createdAt": old_ts},
+                        {"id": "u-upper", "email": "lab-UPPERCASE123@wizlabs.cloudseclabs.io",
+                         "status": "ACTIVE", "createdAt": old_ts},
+                        {"id": "u-noat", "email": "lab-ghtvgsxcgphw",
+                         "status": "ACTIVE", "createdAt": old_ts},
+                        {"id": "u-del", "email": "lab-bapr82q9xmm5@wizlabs.cloudseclabs.io",
+                         "status": "DELETED", "createdAt": old_ts},
+                    ),
+                    "serviceAccounts": tw._conn(
+                        {"id": "sa-ci", "name": "terraform-ci", "createdAt": old_ts},
+                        {"id": "sa-short", "name": "lab-bapr-api", "createdAt": old_ts},
+                        {"id": "sa-long", "name": "lab-k8m01846391nx-api", "createdAt": old_ts},
+                        {"id": "sa-upper", "name": "lab-UPPERCASE123-api", "createdAt": old_ts},
+                        {"id": "sa-under", "name": "lab-k8m01846391n_other", "createdAt": old_ts},
+                    ),
+                    "connectors": tw._conn(
+                        {"id": "c-child", "name": "ECR in lab-7nph2tnq4kfn-connector", "createdAt": old_ts},
+                    ),
+                },
+                [],
+                [],
+            ),
+            (
+                "union with report sids dedups",
+                ["ghtvgsxcgphw", "bapr82q9xmm5"],
+                {"REAP_SESSIONS": "7nph2tnq4kfn", "REAP_SESSIONS_TENANT": "TE"},
+                {
+                    "users": tw._conn({"id": "u1", "email": "lab-ghtvgsxcgphw@wizlabs.cloudseclabs.io",
+                                       "status": "ACTIVE", "createdAt": old_ts}),
+                    "serviceAccounts": tw._conn(
+                        {"id": "sa-dup-rep", "name": "lab-ghtvgsxcgphw-api", "createdAt": old_ts},
+                        {"id": "sa-dup-man", "name": "lab-7nph2tnq4kfn-api", "createdAt": old_ts},
+                        {"id": "sa-new", "name": "lab-k8m01846391n-api", "createdAt": old_ts},
+                    ),
+                },
+                ["7nph2tnq4kfn", "ghtvgsxcgphw", "bapr82q9xmm5", "k8m01846391n"],
+                [],
+            ),
+        ]
+        expected_fields = ["users", *[rp._reap._reap_handler(x)["list"] for x in rp._reap._SWEEP_TYPES]]
+        for label, report_sids, extra_env, wiz_fields, want_sids, want_err in rows:
+            with self.subTest(label=label):
+                wiz = tw.FakeWiz(**wiz_fields)
+                err = io.StringIO()
+                with mock.patch.object(rp, "TENANTS", {"TE": "tid:te"}), \
+                     mock.patch.object(rp, "stopped_sessions", return_value=report_sids), \
+                     mock.patch.object(rp._core, "_post", wiz), \
+                     mock.patch.object(rp.subprocess, "run", return_value=ok_proc) as proc, \
+                     mock.patch.dict(rp.os.environ, {**tw.FakeWiz.ENV, **extra_env}, clear=True), \
+                     mock.patch.object(rp.sys, "argv", ["reap_orphans.py", "--commit"]), \
+                     mock.patch.object(rp.sys, "stdout", io.TextIOWrapper(io.BytesIO())), \
+                     mock.patch.object(rp.sys, "stderr", err):
+                    rp.main()
+                self.assertEqual([f for f, _ in wiz.calls], expected_fields)
+                docs_by_field = dict(zip([f for f, _ in wiz.calls], wiz.docs, strict=True))
+                for f in ("users", "connectors", "serviceAccounts"):
+                    self.assertIn("createdAt", docs_by_field[f])
+                reaped = [c.args[0][c.args[0].index("--session") + 1]
+                          for c in proc.call_args_list if c.args[0][1:3] == ["user", "reap"]]
+                deleted = [c.args[0][c.args[0].index("--session") + 1]
+                           for c in proc.call_args_list if c.args[0][1:3] == ["user", "delete"]]
+                self.assertEqual(reaped, want_sids)
+                self.assertEqual(deleted, want_sids)
+                for line in want_err:
+                    self.assertIn(line, err.getvalue())
+                if not want_err:
+                    self.assertNotIn("no createdAt, not reaped", err.getvalue())
 
 
 class TenantSelection(unittest.TestCase):
@@ -91,7 +245,8 @@ class ReapOrdering(unittest.TestCase):
         out = io.TextIOWrapper(buf, encoding="utf-8")
         with mock.patch.object(rp, "TENANTS", {"TBCMP": "tid:tbcmp"}), \
              mock.patch.object(rp, "stopped_sessions", return_value=["ghtvgsxcgphw"]), \
-             mock.patch.dict(rp.os.environ, {"REAP_WINDOW_HOURS": "72"}, clear=True), \
+             mock.patch.object(rp._core, "_post", tw.FakeWiz()), \
+             mock.patch.dict(rp.os.environ, {"REAP_WINDOW_HOURS": "72", **tw.FakeWiz.ENV}, clear=True), \
              mock.patch.object(rp.sys, "argv", ["reap_orphans.py"]), \
              mock.patch.object(rp.sys, "stdout", out), \
              mock.patch.object(rp.sys, "stderr", io.StringIO()):
@@ -103,11 +258,6 @@ class ReapOrdering(unittest.TestCase):
         """Across multi-tenant and dual-tagged sessions, reap_orphans sweeps GitHub slot claims once
         in-process (and passes WIZLAB_SKIP_SLOT_SWEEP=1 to per-session wizlab subprocesses), including
         expired claims when zero sessions stopped."""
-        sys_path = str(pathlib.Path(__file__).resolve().parent.parent / "tests")
-        if sys_path not in rp.sys.path:
-            rp.sys.path.insert(0, sys_path)
-        import test_wizlab as tw
-
         gh = tw.FakeGitHub(
             claims={"01": "lab-ghtvgsxcgphw", "02": "lab-k8m01846391n", "03": "lab-live", "04": "lab-old"},
             claim_ages={"03": 30, "04": tw.wz.CLAIM_TTL_S + 60},
@@ -116,9 +266,10 @@ class ReapOrdering(unittest.TestCase):
         with mock.patch.object(rp, "TENANTS", {"TBCMP": "tid:tbcmp", "TE": "tid:te"}), \
              mock.patch.object(rp, "stopped_sessions",
                                side_effect=[["ghtvgsxcgphw", "bapr82q9xmm5"], ["ghtvgsxcgphw", "k8m01846391n"]]), \
+             mock.patch.object(rp._core, "_post", tw.FakeWiz()), \
              mock.patch.object(rp.subprocess, "run", return_value=ok_proc) as proc, \
              mock.patch.object(rp._codelab, "_gh_call", gh), \
-             mock.patch.dict(rp.os.environ, dict(tw.GitHubContract.GH_ENV), clear=True), \
+             mock.patch.dict(rp.os.environ, {**tw.GitHubContract.GH_ENV, **tw.FakeWiz.ENV}, clear=True), \
              mock.patch.object(rp.sys, "argv", ["reap_orphans.py", "--commit"]), \
              mock.patch.object(rp.sys, "stdout", io.TextIOWrapper(io.BytesIO())), \
              mock.patch.object(rp.sys, "stderr", io.StringIO()) as err:
@@ -140,9 +291,10 @@ class ReapOrdering(unittest.TestCase):
                                 claim_ages={"01": tw.wz.CLAIM_TTL_S + 60, "02": 30})
         with mock.patch.object(rp, "TENANTS", {"TE": "tid:te"}), \
              mock.patch.object(rp, "stopped_sessions", return_value=[]), \
+             mock.patch.object(rp._core, "_post", tw.FakeWiz()), \
              mock.patch.object(rp.subprocess, "run", return_value=ok_proc) as proc_zero, \
              mock.patch.object(rp._codelab, "_gh_call", gh_zero), \
-             mock.patch.dict(rp.os.environ, dict(tw.GitHubContract.GH_ENV), clear=True), \
+             mock.patch.dict(rp.os.environ, {**tw.GitHubContract.GH_ENV, **tw.FakeWiz.ENV}, clear=True), \
              mock.patch.object(rp.sys, "argv", ["reap_orphans.py", "--commit"]), \
              mock.patch.object(rp.sys, "stdout", io.TextIOWrapper(io.BytesIO())), \
              mock.patch.object(rp.sys, "stderr", io.StringIO()) as err_zero:
@@ -157,9 +309,10 @@ class ReapOrdering(unittest.TestCase):
                                claim_ages={"02": 30})
         with mock.patch.object(rp, "TENANTS", {"TE": "tid:te"}), \
              mock.patch.object(rp, "stopped_sessions", return_value=["ghtvgsxcgphw"]), \
+             mock.patch.object(rp._core, "_post", tw.FakeWiz()), \
              mock.patch.object(rp.subprocess, "run", return_value=ok_proc) as proc_dry, \
              mock.patch.object(rp._codelab, "_gh_call", gh_dry), \
-             mock.patch.dict(rp.os.environ, dict(tw.GitHubContract.GH_ENV), clear=True), \
+             mock.patch.dict(rp.os.environ, {**tw.GitHubContract.GH_ENV, **tw.FakeWiz.ENV}, clear=True), \
              mock.patch.object(rp.sys, "argv", ["reap_orphans.py"]), \
              mock.patch.object(rp.sys, "stdout", io.TextIOWrapper(io.BytesIO())) as out_dry, \
              mock.patch.object(rp.sys, "stderr", io.StringIO()) as err_dry:
@@ -256,8 +409,9 @@ class ReapOrdering(unittest.TestCase):
                    body(b'{"data": {"labPlayReports": {"items": [{"id": "b1", "stoppedReason": "done"}]}}}')]
         with mock.patch.object(rp, "TENANTS", {"A": "tid:a", "B": "tid:b"}), \
              mock.patch.object(rp.urllib.request, "urlopen", side_effect=answers), \
+             mock.patch.object(rp._core, "_post", tw.FakeWiz()), \
              mock.patch.object(rp, "_reap_session", return_value=rp.DONE) as reap, \
-             mock.patch.dict(rp.os.environ, {"INSTRUQT_TOKEN": "t"}, clear=True), \
+             mock.patch.dict(rp.os.environ, {"INSTRUQT_TOKEN": "t", **tw.FakeWiz.ENV}, clear=True), \
              mock.patch.object(rp.sys, "argv", ["reap_orphans.py", "--commit"]), \
              mock.patch.object(rp.sys, "stderr", io.StringIO()) as err, \
              self.assertRaises(SystemExit) as cm:
@@ -272,8 +426,9 @@ class ReapOrdering(unittest.TestCase):
         # retried from it swept TBCMP, found nothing, and deleted the one handle back to the TE residue.
         with mock.patch.object(rp, "TENANTS", {"TBCMP": "tid:tbcmp", "TE": "tid:te"}), \
              mock.patch.object(rp, "stopped_sessions", side_effect=[["a"], ["b", "c"]]), \
+             mock.patch.object(rp._core, "_post", tw.FakeWiz()), \
              mock.patch.object(rp, "_reap_session", side_effect=[rp.FAILED, rp.DONE, rp.FAILED]), \
-             mock.patch.dict(rp.os.environ, {}, clear=True), \
+             mock.patch.dict(rp.os.environ, dict(tw.FakeWiz.ENV), clear=True), \
              mock.patch.object(rp.sys, "argv", ["reap_orphans.py", "--commit"]), \
              mock.patch.object(rp.sys, "stderr", io.StringIO()) as err, \
              self.assertRaises(SystemExit):
@@ -287,9 +442,10 @@ class ReapOrdering(unittest.TestCase):
         out = io.TextIOWrapper(buf, encoding="utf-8")
         with mock.patch.object(rp, "TENANTS", {"TBCMP": "tid:tbcmp", "TE": "tid:te"}), \
              mock.patch.object(rp, "stopped_sessions", side_effect=[["ghtvgsxcgphw"], ["k8m01846391n"]]), \
+             mock.patch.object(rp._core, "_post", tw.FakeWiz()), \
              mock.patch.object(rp, "_wizlab", wraps=rp._wizlab) as wizlab, \
              mock.patch.object(rp.subprocess, "run") as proc, \
-             mock.patch.dict(rp.os.environ, {}, clear=True), \
+             mock.patch.dict(rp.os.environ, dict(tw.FakeWiz.ENV), clear=True), \
              mock.patch.object(rp.sys, "argv", ["reap_orphans.py"]), \
              mock.patch.object(rp.sys, "stdout", out), \
              mock.patch.object(rp.sys, "stderr", io.StringIO()) as err:
@@ -318,8 +474,10 @@ class ReapOrdering(unittest.TestCase):
                 out = io.TextIOWrapper(buf, encoding="utf-8")
                 with mock.patch.object(rp, "TENANTS", tenants), \
                      mock.patch.object(rp, "stopped_sessions", return_value=[]) as stopped, \
+                     mock.patch.object(rp._core, "_post", tw.FakeWiz()), \
                      mock.patch.object(rp.subprocess, "run", return_value=ok_proc) as proc, \
-                     mock.patch.dict(rp.os.environ, {"REAP_SESSIONS": "ghtvgsxcgphw", **extra_env}, clear=True), \
+                     mock.patch.dict(rp.os.environ, {"REAP_SESSIONS": "ghtvgsxcgphw",
+                                                     **tw.FakeWiz.ENV, **extra_env}, clear=True), \
                      mock.patch.object(rp.sys, "argv", ["reap_orphans.py", "--commit"]), \
                      mock.patch.object(rp.sys, "stdout", out), \
                      mock.patch.object(rp.sys, "stderr", io.StringIO()) as err:
