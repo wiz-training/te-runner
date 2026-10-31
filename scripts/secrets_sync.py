@@ -26,7 +26,7 @@ EXTRA_MAP = {
 }
 TEAM_SECRETS_Q = "query($t:String!){ teamSecrets(teamSlug:$t){ name } }"
 UPSERT_SECRET_M = (
-    "mutation($t:String!,$n:String!,$d:String,$s:String!)"
+    "mutation($t:String!,$n:String!,$d:String!,$s:String!)"
     "{ upsertTeamSecret(teamSlug:$t,name:$n,description:$d,secret:$s){ name } }"
 )
 
@@ -56,11 +56,13 @@ def _instruqt(query, variables):
         raise InstruqtError(f"instruqt unreachable: {type(e).__name__}: {e}") from e
     try:
         res = json.loads(raw)
-        errors, data = res.get("errors"), res["data"]
-    except (ValueError, KeyError, AttributeError) as e:
+        errors, data = res.get("errors"), res.get("data")
+    except (ValueError, AttributeError) as e:
         raise InstruqtError(f"instruqt body is not a GraphQL answer: {raw.decode(errors='replace')[:300]!r}") from e
     if errors:
         raise InstruqtError(f"instruqt: {errors}")
+    if data is None:
+        raise InstruqtError(f"instruqt answer has no data: {raw.decode(errors='replace')[:300]!r}")
     return data
 
 
@@ -164,7 +166,7 @@ def main(argv=None, *, ssm=None, send=None):
         # Instruqt stores `secret` verbatim and decodes base64 at sandbox build (`illegal base64 data` otherwise).
         encoded = base64.b64encode(val.encode()).decode()
         try:
-            send(UPSERT_SECRET_M, {"t": TEAM, "n": name, "d": desc, "s": encoded})
+            send(UPSERT_SECRET_M, {"t": TEAM, "n": name, "d": desc or "", "s": encoded})
         except InstruqtError as e:
             print(f"FAIL {name}: {e}", file=sys.stderr)
             failed += 1

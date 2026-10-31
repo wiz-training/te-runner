@@ -195,7 +195,7 @@ class SecretsSyncTests(unittest.TestCase):
                 for forbidden in want_absent:
                     self.assertNotIn(forbidden, stdout)
 
-    def test_upsert_sends_base64_of_ssm_plaintext_and_maps_missing_description_to_null(self):
+    def test_upsert_sends_base64_of_ssm_plaintext_and_an_empty_description_when_ssm_has_none(self):
         """Instruqt stores `secret` verbatim and decodes base64 at sandbox build (`illegal base64 data`
         when raw plaintext is sent, as `wizops/lease.py::_upsert_secret` documents)."""
         ssm = FakeSSM(
@@ -221,7 +221,7 @@ class SecretsSyncTests(unittest.TestCase):
             {
                 "t": "wiz",
                 "n": "GAMEKIT_ADMIN_TOKEN",
-                "d": None,
+                "d": "",
                 "s": base64.b64encode(b"raw-gk-admin").decode(),
             },
         )
