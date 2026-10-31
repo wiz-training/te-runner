@@ -29,6 +29,7 @@ jobs:
       - run: python test_entrypoint.py
       - run: python tests/test_build_workflow.py
       - run: python tests/test_canary_workflow.py
+      - run: python tests/test_secrets_sync.py
       # The repo is public: a credential in a tracked file is published the moment it lands.
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
