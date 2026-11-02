@@ -8,7 +8,10 @@
 #   wizlab-grant "k8sconnector ensure" "container inspect"
 set -eu
 [ "$#" -ge 1 ] || { echo "usage: wizlab-grant '<noun> <verb>' ..." >&2; exit 2; }
-install -d -m 700 /run/lab
+# `/run/lab` itself stays 0755 so the non-root `learner` user (including `wizlab-board serve`) can
+# traverse it to reach `board.json` (0644) and `board/runs/`; `umask 077` keeps `wiz.env` and
+# `learner-verbs` mode 0600 root-only.
+install -d -m 755 /run/lab
 umask 077
 : > /run/lab/wiz.env
 # NUL-delimited, so a value carrying a newline (a GOOGLE_CREDENTIALS key) survives whole; `%q` re-quotes

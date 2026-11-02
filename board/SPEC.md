@@ -77,7 +77,7 @@ One JSON file per run: a reload and a solve's poll read the same record.
 |---|---|
 | `schema`, `run_id`, `action`, `started_at`, `finished_at` | `1`, sortable id, action id, UTC times |
 | `status` | `running` · `succeeded` · `failed` |
-| `steps[]` | `title`, `argv`, `status` (`pending` `running` `succeeded` `failed` `skipped`), `exit_code`, `log` |
+| `steps[]` | `title`, `argv`, `status` (`pending` `running` `succeeded` `failed` `skipped`), `started_at`, `finished_at`, `exit_code`, `log` |
 | `outputs` | `KEY=value` lines a step printed on stdout (`^[A-Z][A-Z0-9_]*=`), later steps overriding |
 
 The first nonzero exit fails the run and skips later steps. `log` keeps the last 64 KiB of

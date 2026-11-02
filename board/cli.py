@@ -125,6 +125,7 @@ def arm(env=None):
     run_lab = _run_lab_dir(env)
     _check_granted_verbs(manifest, run_lab)
     run_lab.mkdir(parents=True, exist_ok=True)
+    run_lab.chmod(0o755)
     out = run_lab / "board.json"
     out.write_text(json.dumps(manifest, indent=2) + "\n")
     out.chmod(0o644)
@@ -133,11 +134,12 @@ def arm(env=None):
 
 def _load_board(run_lab):
     path = run_lab / "board.json"
-    if not path.is_file():
-        return None
     try:
+        if not path.is_file():
+            return None
         data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"wizlab-board: {path}: {e}", file=sys.stderr)
         return None
     if not isinstance(data, dict) or data.get("schema") != 1 or not isinstance(data.get("actions"), list):
         return None
@@ -161,24 +163,31 @@ def _read_envelope(runs_dir, run_id):
     if not _ID_RE.match(run_id):
         return None
     path = runs_dir / f"{run_id}.json"
-    if not path.is_file():
-        return None
     try:
+        if not path.is_file():
+            return None
         return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"wizlab-board: {path}: {e}", file=sys.stderr)
         return None
 
 
 def _all_envelopes(runs_dir):
-    if not runs_dir.is_dir():
+    try:
+        if not runs_dir.is_dir():
+            return []
+        paths = sorted(runs_dir.iterdir())
+    except OSError as e:
+        print(f"wizlab-board: {runs_dir}: {e}", file=sys.stderr)
         return []
     items = []
-    for p in sorted(runs_dir.iterdir()):
+    for p in paths:
         if p.name.startswith(".") or not p.name.endswith(".json"):
             continue
         try:
             items.append(json.loads(p.read_text()))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"wizlab-board: {p}: {e}", file=sys.stderr)
             continue
     return items
 
@@ -234,10 +243,13 @@ def _execute_run(server, runs_dir, envelope, steps_def):
     for idx, step_def in enumerate(steps_def):
         with server.lock:
             envelope["steps"][idx]["status"] = "running"
+            envelope["steps"][idx]["started_at"] = _utc_now()
             _write_envelope(runs_dir, envelope)
         rc, out, err = _run_step(step_def)
+        now = _utc_now()
         with server.lock:
             _extract_outputs(out, envelope["outputs"])
+            envelope["steps"][idx]["finished_at"] = now
             envelope["steps"][idx]["exit_code"] = rc
             envelope["steps"][idx]["log"] = _tail_64k(out + err)
             if rc != 0:
@@ -246,7 +258,7 @@ def _execute_run(server, runs_dir, envelope, steps_def):
                     rest["status"] = "skipped"
                     rest["exit_code"] = None
                 envelope["status"] = "failed"
-                envelope["finished_at"] = _utc_now()
+                envelope["finished_at"] = now
                 _write_envelope(runs_dir, envelope)
                 return
             envelope["steps"][idx]["status"] = "succeeded"
@@ -418,7 +430,15 @@ def _start_or_conflict(server, board, runs_dir, action_id):
             "finished_at": None,
             "status": "running",
             "steps": [
-                {"title": s["title"], "argv": list(s["argv"]), "status": "pending", "exit_code": None, "log": ""}
+                {
+                    "title": s["title"],
+                    "argv": list(s["argv"]),
+                    "status": "pending",
+                    "started_at": None,
+                    "finished_at": None,
+                    "exit_code": None,
+                    "log": "",
+                }
                 for s in steps_def
             ],
             "outputs": {},
