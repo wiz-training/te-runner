@@ -123,7 +123,7 @@ The tag that first reads each contract; a lab pins at or above the highest row i
 | v0.1.82 | `user reap` releases code-lab slot claims whose commit message is the stem (`WIZ_LABS_GH_APP`) |
 | v0.1.84 | `connector ensure` deletes any foreign `lab-<other>` connector on the account before converging (preserving learner-named connectors); `connector inspect` filters foreign `lab-<other>` connectors out and ranks this session's first |
 | v0.1.85 | `slot claim` evicts claims older than `CLAIM_TTL_S` (7200s); `slot release` and `user reap` close the open `patch/<stem>` PR, delete `refs/heads/patch/<stem>`, and sweep expired claims regardless of session |
-| vNEXT | `sensor\|mcp ensure --out-file <path>`; `credential.ensure` opens `--out-file` with `0o600` (`O_NOFOLLOW`, `fchmod`) |
+| v0.1.92 | `sensor\|mcp ensure --out-file <path>`; `credential.ensure` opens `--out-file` with `0o600` (`O_NOFOLLOW`, `fchmod`) |
 | v0.1.92 | `code-scan ensure`; `patch open` emits `PR_URL` and logs the `Dockerfile` diff on stderr; `wizlab-learner` permits `patch open --repo` and `code-scan ensure` flags |
 
 <!-- verb-floors:begin -->
@@ -151,7 +151,7 @@ The tag that first reads each contract; a lab pins at or above the highest row i
 | mcp | inspect | v0.1.61 |
 | mcp | delete | v0.1.61 |
 | code-scan | inspect | v0.1.34 |
-| code-scan | ensure | vNEXT |
+| code-scan | ensure | v0.1.92 |
 | correlation | inspect | v0.1.77 |
 | pullrequest | inspect | v0.1.77 |
 | slot | claim | v0.1.77 |
