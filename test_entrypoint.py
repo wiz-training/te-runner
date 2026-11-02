@@ -67,7 +67,9 @@ class WizlabGrant(unittest.TestCase):
                 if want_verbs is None:
                     self.assertFalse(verbs.exists())
                 else:
+                    self.assertEqual(stat.S_IMODE(run_lab.stat().st_mode), 0o755)
                     self.assertEqual(verbs.read_text(), want_verbs)
+                    self.assertEqual(stat.S_IMODE(verbs.stat().st_mode), 0o600)
                     wiz_env = run_lab / "wiz.env"
                     self.assertEqual(stat.S_IMODE(wiz_env.stat().st_mode), 0o600)
                     self.assertNotIn("UNRELATED=", wiz_env.read_text())
@@ -75,6 +77,36 @@ class WizlabGrant(unittest.TestCase):
                 if want_rc == 3:
                     self.assertIn("no WIZ_<TENANT>_CLIENT_ID", result.stderr)
                     self.assertNotIn("will exit 3", result.stderr)
+
+    def test_after_wizlab_grant_non_root_can_stat_board_json(self):
+        """`wizlab-board serve` runs as `learner`, while `wizlab-grant` runs as root after boot. If
+        `wizlab-grant` sets `/run/lab` to `0700`, `Path('/run/lab/board.json').is_file()` raises
+        `PermissionError` inside the server handler and drops the connection (`Remote end closed connection
+        without response`). `/run/lab` must remain `0755` (`o+rx`) so non-root can traverse it and stat
+        `board.json` (`0644`), while `wiz.env` and `learner-verbs` stay `0600`."""
+        src = (ROOT / "bin" / "wizlab-grant").read_text()
+        clean = {k: v for k, v in os.environ.items() if not k.startswith("WIZ_")}
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            run_lab = tmp / "run" / "lab"
+            run_lab.mkdir(parents=True)
+            run_lab.chmod(0o700)
+            board_json = run_lab / "board.json"
+            board_json.write_text('{"schema":1}\n')
+            board_json.chmod(0o644)
+            script = tmp / "wizlab-grant"
+            script.write_text(src.replace("/run/lab", str(run_lab)))
+            script.chmod(0o755)
+            r = subprocess.run(["/bin/bash", str(script), "patch open"],
+                               env={**clean, "WIZ_CLIENT_ID": "id"},
+                               capture_output=True, text=True, check=False)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            dir_mode = stat.S_IMODE(run_lab.stat().st_mode)
+            self.assertEqual(dir_mode, 0o755)
+            self.assertTrue(dir_mode & stat.S_IXOTH)
+            self.assertEqual(stat.S_IMODE(board_json.stat().st_mode), 0o644)
+            self.assertEqual(stat.S_IMODE((run_lab / "wiz.env").stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE((run_lab / "learner-verbs").stat().st_mode), 0o600)
 
 
 class CredentialFile(unittest.TestCase):

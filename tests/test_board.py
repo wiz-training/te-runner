@@ -149,6 +149,11 @@ class RouteContract(unittest.TestCase):
         ("unarmed", "POST", "/api/actions/open-fix/runs", 503, None),
         ("unarmed", "GET", "/api/runs/20261102T000000Z-0001", 503, None),
         ("unarmed", "GET", "/api/actions/open-fix/runs/latest", 503, None),
+        ("unreadable", "GET", "/", 200, "Getting ready"),
+        ("unreadable", "GET", "/api/board", 503, None),
+        ("unreadable", "POST", "/api/actions/open-fix/runs", 503, None),
+        ("unreadable", "GET", "/api/runs/20261102T000000Z-0001", 503, None),
+        ("unreadable", "GET", "/api/actions/open-fix/runs/latest", 503, None),
         ("armed_idle", "GET", "/", 200, "Open the fix PR"),
         ("armed_idle", "GET", "/api/board", 200, "Ship the fix"),
         ("armed_idle", "POST", "/api/actions/unknown/runs", 404, None),
@@ -177,12 +182,23 @@ class RouteContract(unittest.TestCase):
                     release_evt.wait(timeout=5)
                 return _proc(0, stdout="PR_URL=https://github.com/org/repo/pull/7\n", stderr="USER root -> USER node\n")
 
-            with mock.patch("board.cli.subprocess.run", side_effect=_fake_run), _live_server(run_lab) as port:
+            err_buf = io.StringIO()
+            with (
+                mock.patch("board.cli.subprocess.run", side_effect=_fake_run),
+                contextlib.redirect_stderr(err_buf),
+                _live_server(run_lab) as port,
+            ):
                 state = "unarmed"
                 active_id = None
                 for row_state, method, path_tmpl, want_status, check in self.ROWS:
                     if row_state != state:
-                        if row_state == "armed_idle":
+                        if state == "unreadable":
+                            run_lab.chmod(0o755)
+                        if row_state == "unreadable":
+                            run_lab.mkdir(parents=True, exist_ok=True)
+                            (run_lab / "board.json").write_text(json.dumps(_manifest()))
+                            run_lab.chmod(0o000)
+                        elif row_state == "armed_idle":
                             run_lab.mkdir(parents=True, exist_ok=True)
                             (run_lab / "learner-verbs").write_text(_GRANTED)
                             env = {
@@ -208,6 +224,8 @@ class RouteContract(unittest.TestCase):
                     with self.subTest(state=row_state, method=method, path=path_tmpl):
                         status, payload = _http(port, method, path)
                         self.assertEqual(status, want_status)
+                        if row_state == "unreadable" and want_status == 503:
+                            self.assertIn("Permission denied", err_buf.getvalue())
                         if check == "active_run_id":
                             self.assertEqual(payload, {"run_id": active_id})
                         elif check == "new_run_id":
@@ -404,6 +422,13 @@ class RunExecutionContract(unittest.TestCase):
                     self.assertIsNotNone(env_data["finished_at"])
                     self.assertEqual([s["status"] for s in env_data["steps"]], want_step_statuses)
                     self.assertEqual([s["exit_code"] for s in env_data["steps"]], want_codes)
+                    for s in env_data["steps"]:
+                        if s["status"] == "skipped":
+                            self.assertIsNone(s["started_at"])
+                            self.assertIsNone(s["finished_at"])
+                        else:
+                            self.assertRegex(s["started_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+                            self.assertRegex(s["finished_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
                     self.assertEqual(env_data["outputs"], want_outputs)
                     if "64 KiB" in label:
                         log_bytes = env_data["steps"][0]["log"].encode("utf-8")
