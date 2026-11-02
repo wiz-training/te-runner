@@ -547,6 +547,17 @@ def _http_json(method, url):
         raise BoardError(3, f"board request to {url} failed: {e}") from e
 
 
+def _report_failed_step(env_data):
+    for step in env_data.get("steps") or []:
+        if step.get("status") == "failed":
+            tail = (step.get("log") or "").strip()[-2048:]
+            msg = f"wizlab-board: step {step.get('title')!r} failed (exit {step.get('exit_code')})"
+            if tail:
+                msg = f"{msg}: {tail}"
+            print(msg, file=sys.stderr)
+            return
+
+
 def _wait_for_run(base, run_id, poll_s):
     while True:
         g_status, env_data = _http_json("GET", f"{base}/api/runs/{run_id}")
@@ -558,6 +569,7 @@ def _wait_for_run(base, run_id, poll_s):
                 print(f"{k}={v}")
             return 0
         if state == "failed":
+            _report_failed_step(env_data)
             return 1
         time.sleep(poll_s)
 

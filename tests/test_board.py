@@ -351,6 +351,20 @@ class RunExecutionContract(unittest.TestCase):
             {},
             0,
         ),
+        (
+            "failed run prints failed step title, exit_code, and log tail to stderr",
+            [
+                _proc(0, stdout="PR_URL=https://github.com/org/repo/pull/9\n", stderr=""),
+                _proc(3, stdout="HEADER-" + ("y" * 3000) + "\n", stderr="ERROR Not authenticated\n"),
+                _proc(0, stdout="", stderr=""),
+            ],
+            "failed",
+            1,
+            ["succeeded", "failed", "skipped"],
+            [0, 3, None],
+            {"PR_URL": "https://github.com/org/repo/pull/9"},
+            2,
+        ),
     )
 
     def test_step_exit_sequence_rows(self):
@@ -406,7 +420,8 @@ class RunExecutionContract(unittest.TestCase):
                         self.assertEqual(st, 202)
                         self.assertTrue(started.wait(timeout=2))
                         threading.Timer(0.05, release.set).start()
-                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    err_buf = io.StringIO()
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err_buf):
                         rc = board.main(["run", action_id, "--wait"], env=run_env)
                     self.assertEqual(rc, want_rc)
                     self.assertEqual(len(calls), want_calls)
@@ -418,6 +433,13 @@ class RunExecutionContract(unittest.TestCase):
                     self.assertEqual(st, 200)
                     if is_409:
                         self.assertEqual(env_data["run_id"], first["run_id"])
+                    if want_status == "failed":
+                        failed_step = next(s for s in env_data["steps"] if s["status"] == "failed")
+                        stderr_out = err_buf.getvalue()
+                        self.assertIn(failed_step["title"], stderr_out)
+                        self.assertIn(f"exit {failed_step['exit_code']}", stderr_out)
+                        self.assertIn(failed_step["log"].strip()[-64:], stderr_out)
+                        self.assertNotIn("HEADER-", stderr_out)
                     self.assertEqual(env_data["status"], want_status)
                     self.assertIsNotNone(env_data["finished_at"])
                     self.assertEqual([s["status"] for s in env_data["steps"]], want_step_statuses)
