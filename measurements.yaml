@@ -292,6 +292,18 @@ planes:
       verify: |
         mutation($input: TriggerThreatAIAnalysisInput!) { triggerThreatAIAnalysis(input: $input) { systemActivityId } }
         issuesV2(filterBy:{type:[THREAT_DETECTION], severity:[HIGH,CRITICAL]}) { nodes { threatDetectionDetails { aiAnalysis { status verdict confidenceLevel analyzedAt } } } }
+
+  code_scan:
+    # Wiz Code CI/CD scans (`cicdScans`), published by `code-scan ensure` (`wizcli scan dir`) and graded
+    # by `code-scan inspect --require published|pass`. Measured on te-code-juice-shop-101 (`TE`/us100).
+    publish:
+      scan_to_published_s: [19.2, 23.1] # `code-scan ensure` wall (~23.1s first call with CLI deployment mint, ~19.2s on reuse); `cicdScans` reaches state SUCCESS <= ~20s after `wizcli scan dir`
+      patch_open_s: 4.0                 # `patch open --repo <org/name>` wall
+      action_wall_s: 46.3               # 3-step `open-fix` board action (`patch open` + 2x `code-scan ensure`)
+      solver_budget_s: 180              # `code-scan inspect --timeout` default
+    verify: |
+      wizlab code-scan ensure --repo <org/name> --ref main --name-suffix main --policy "<policy>" --types Dockerfile
+      wizlab code-scan inspect --require published --tag-value <stem>-main
 # ---------------------------------------------------------------------------------------------------
 # Per entity kind. `external_id` is the column that decides whether an equality test can work at all:
 # it is NOT uniform, and a check that assumes one shape misses silently rather than erroring.
