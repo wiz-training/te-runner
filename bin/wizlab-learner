@@ -41,6 +41,10 @@ for a in "${args[@]:2}"; do
       case "$flag" in --cluster|--enabled) continue ;; esac ;;
     "container inspect")
       case "$flag" in --account-id|--image-contains|--require-image) continue ;; esac ;;
+    "patch open")
+      case "$flag" in --repo) continue ;; esac ;;
+    "code-scan ensure")
+      case "$flag" in --name-suffix|--policy|--ref|--repo|--types) continue ;; esac ;;
     *)
       echo "wizlab: '$pair' has no learner flag allowlist in wizlab-learner; add a row in te-runner before granting flags" >&2
       exit 2 ;;

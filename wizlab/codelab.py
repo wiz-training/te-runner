@@ -390,7 +390,8 @@ def _open_pr(repo, head):
 
 def cmd_patch_open(args):
     """Open the learner's fix on `patch/<stem>`: Dockerfile `USER root` → `USER node`, one PR against main;
-    prints PR_NUMBER. Rerun finds the open PR; a Dockerfile with no `USER root` is 1."""
+    prints PR_NUMBER and PR_URL, and logs the changed line pair on stderr. Rerun finds the open PR; a
+    Dockerfile with no `USER root` is 1."""
     repo, stem = _repo(args), core._stem(args)
     head = f"patch/{stem}"
     number = _open_pr(repo, head)
@@ -415,4 +416,5 @@ def cmd_patch_open(args):
             "title": "Run Juice Shop as a non-root user", "head": head, "base": "main",
             "body": f"Opened by the {stem} lab session: `USER root` → `USER node`."})
         number = pr["number"]
-    core._emit(f"PR_NUMBER={number}\n")
+    print("- USER root\n+ USER node", file=sys.stderr)
+    core._emit(f"PR_NUMBER={number}\nPR_URL=https://github.com/{repo}/pull/{number}\n")

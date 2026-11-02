@@ -1,15 +1,25 @@
 """Wiz Code: CI/CD scans and the IaC scan policy fixture."""
+import contextlib
+import io
+import os
 import re
+import subprocess
 import sys
+import tempfile
 import time
+import types
 
-from . import core
+from . import codelab, core, credential, serviceaccount
 
 # --- Wiz Code CI/CD scan, published by `wizcli scan dir --tags session=<stem>`. A learner check must
 # grade the tenant-side scan, not the CLI exit code: WARN_BY_POLICY exits 0, so only the published
 # verdict tells a blocking finding from a pass. Scoped by the session tag; the latest scan wins.
 # Publish latency is unmeasured, so --require polls to --timeout. ---
 _TAG_OK = re.compile(r"^[A-Za-z0-9._-]+$")
+_REF_OK = re.compile(r"^[A-Za-z0-9._/-]+$")
+_ENSURE_TIMEOUT_S = 180
+_ENSURE_INTERVAL_S = 10
+_ENSURE_POLLS = _ENSURE_TIMEOUT_S // _ENSURE_INTERVAL_S
 
 
 def _cicd_latest(tag_key, tag_value):
@@ -27,6 +37,21 @@ def _cicd_latest(tag_key, tag_value):
     return nodes[0] if nodes else None
 
 
+def _inspect_verdict(node, require, tag_key, tag_value):
+    st = node.get("status") or {}
+    state, verdict = st.get("state"), st.get("verdict")
+    if require == "published":
+        print(f"code-scan: {node['id']} present ({tag_key}={tag_value}) state={state} verdict={verdict}")
+        return True
+    if verdict == "PASSED_BY_POLICY":
+        print(f"code-scan: {node['id']} PASSED_BY_POLICY")
+        return True
+    if verdict in ("FAILED_BY_POLICY", "WARN_BY_POLICY") or state in ("FAILURE", "SKIPPED"):
+        print(f"code-scan: {node['id']} {verdict or state}")
+        sys.exit(1)
+    return False
+
+
 def cmd_codescan_inspect(args):
     """Assert a Wiz CLI scan for this session. --require published (>=1 scan tagged session=<stem>) or
     pass (latest scan verdict PASSED_BY_POLICY). Polls every --interval up to --timeout (default 180s)
@@ -40,24 +65,106 @@ def cmd_codescan_inspect(args):
     deadline = time.monotonic() + timeout
     while True:
         node = _cicd_latest(tag_key, tag_value)
-        if node:
-            st = node.get("status") or {}
-            state, verdict = st.get("state"), st.get("verdict")
-            if require == "published":
-                print(f"code-scan: {node['id']} present ({tag_key}={tag_value}) state={state} verdict={verdict}")
-                return
-            if verdict == "PASSED_BY_POLICY":
-                print(f"code-scan: {node['id']} PASSED_BY_POLICY")
-                return
-            if verdict in ("FAILED_BY_POLICY", "WARN_BY_POLICY") or state in ("FAILURE", "SKIPPED"):
-                print(f"code-scan: {node['id']} {verdict or state}")
-                sys.exit(1)
-            # verdict not yet set (scan still running) — keep polling
+        if node and _inspect_verdict(node, require, tag_key, tag_value):
+            return
         if time.monotonic() >= deadline:
             waited = "passing " if require == "pass" else ""
             print(f"code-scan: no {waited}scan for {tag_key}={tag_value} within {timeout}s")
             sys.exit(1)
         time.sleep(interval)
+
+
+def _codescan_published(scan_name, node):
+    st = (node or {}).get("status") or {}
+    state, verdict = st.get("state"), st.get("verdict")
+    if not node or state in ("IN_PROGRESS", "FAILURE", "SKIPPED") or not (verdict or state):
+        return False
+    core._emit(f"SCAN_NAME={scan_name}\nSCAN_VERDICT={verdict or ''}\n")
+    print(f"code-scan: {node.get('id')} present (session={scan_name}) state={state} verdict={verdict}")
+    return True
+
+
+def _codescan_cli_env(args, stem):
+    """Return the child env for wizcli, reusing `<stem>-cli` when present or minting via
+    `credential.ensure` with stdout/stderr/$EXEC_OUTPUT suppressed so the secret stays in memory."""
+    env = dict(os.environ)
+    if credential.find(serviceaccount.CLI_DEPLOYMENT, f"{stem}-cli"):
+        return env
+    ns = types.SimpleNamespace(session=args.session, name=f"{stem}-cli", out_file=None)
+    buf = io.StringIO()
+    saved = os.environ.pop("EXEC_OUTPUT", None)
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            credential.ensure(serviceaccount.CLI_DEPLOYMENT, ns)
+    finally:
+        if saved is not None:
+            os.environ["EXEC_OUTPUT"] = saved
+    for line in buf.getvalue().splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            env[k] = v
+    return env
+
+
+def _codescan_run(argv, *, cwd=None, env=None, ok_codes=(0,)):
+    try:
+        proc = subprocess.run(
+            argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=core._CLI_TIMEOUT_S,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        core.die(3, f"{argv[0]}: {e}")
+    if proc.returncode not in ok_codes:
+        detail = (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"
+        core.die(3, f"{' '.join(argv[:2])}: {detail}")
+    return proc
+
+
+def _codescan_poll(scan_name):
+    deadline = time.monotonic() + _ENSURE_TIMEOUT_S
+    for attempt in range(_ENSURE_POLLS):
+        node = _cicd_latest("session", scan_name)
+        if _codescan_published(scan_name, node):
+            return
+        if ((node or {}).get("status") or {}).get("state") in ("FAILURE", "SKIPPED"):
+            break
+        if attempt + 1 >= _ENSURE_POLLS or time.monotonic() >= deadline:
+            break
+        time.sleep(_ENSURE_INTERVAL_S)
+    print(f"code-scan: no scan for session={scan_name} within {_ENSURE_TIMEOUT_S}s")
+    sys.exit(1)
+
+
+def cmd_codescan_ensure(args):
+    """Converge a session-tagged Wiz CLI directory scan (`session=<stem>-<name-suffix>`). Short-circuits
+    when a published scan already exists; otherwise reuses or mints `<stem>-cli` (passing credentials
+    only in `wizcli`'s child environment), shallow-clones `--ref` of `https://github.com/<repo>.git`,
+    runs `wizcli auth` + `wizcli scan dir` (tolerating policy-failure exit), and polls to a published
+    verdict."""
+    repo = codelab._repo(args)
+    ref, suffix, policy, types_arg = args.ref, args.name_suffix, args.policy, args.types
+    if not ref or not suffix or not policy:
+        core.die(2, "code-scan ensure requires --ref, --name-suffix, --policy")
+    if not _REF_OK.match(ref) or ref.startswith("-"):
+        core.die(2, f"--ref must match [A-Za-z0-9._/-]+, got {ref!r}")
+    stem = core._stem(args)
+    scan_name = f"{stem}-{suffix}"
+    if not _TAG_OK.match(scan_name):
+        core.die(2, f"--name-suffix must match [A-Za-z0-9._-]+, got {suffix!r}")
+    if _codescan_published(scan_name, _cicd_latest("session", scan_name)):
+        return
+    child_env = _codescan_cli_env(args, stem)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        _codescan_run(
+            ["git", "clone", "--depth", "1", "--branch", ref, f"https://github.com/{repo}.git", tmpdir],
+            env=child_env,
+        )
+        _codescan_run(["wizcli", "auth"], cwd=tmpdir, env=child_env)
+        scan_cmd = ["wizcli", "scan", "dir", "."]
+        if types_arg:
+            scan_cmd += ["--types", types_arg]
+        scan_cmd += ["--policies", policy, "--tags", f"session={scan_name}", "--name", scan_name]
+        _codescan_run(scan_cmd, cwd=tmpdir, env=child_env, ok_codes=(0, 1, 4))
+    _codescan_poll(scan_name)
 
 
 # --- Wiz Code CI/CD scan policy: the BLOCK gate a code-scan lab's `wizcli scan dir --policies <name>`

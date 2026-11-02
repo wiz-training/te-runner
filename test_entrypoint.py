@@ -211,7 +211,7 @@ class LearnerWrapper(unittest.TestCase):
             env = {k: v for k, v in os.environ.items() if not k.startswith("WIZ_")}
             g = subprocess.run(
                 ["/bin/bash", str(grant), "session verify", "connector inspect", "role inspect",
-                 "k8sconnector ensure", "container inspect", "sensor inspect"],
+                 "k8sconnector ensure", "container inspect", "patch open", "code-scan ensure", "sensor inspect"],
                 env={**env, "WIZ_CLIENT_ID": "cid"}, capture_output=True, text=True, check=False,
             )
             self.assertEqual(g.returncode, 0, g.stderr)
@@ -227,6 +227,8 @@ class LearnerWrapper(unittest.TestCase):
                 (["k8sconnector", "ensure", "--name", "lab-other-k8s"], "flag '--name' is not permitted"),
                 (["connector", "inspect", "--session", "other"], "flag '--session' is not permitted"),
                 (["connector", "inspect", "--outpost-id", "o-1"], "flag '--outpost-id' is not permitted"),
+                (["patch", "open", "--session", "other"], "flag '--session' is not permitted"),
+                (["code-scan", "ensure", "--repo", "x/y", "--session", "other"], "flag '--session' is not permitted"),
                 (["--check", "session", "verify", "--session", "other"], "flag '--session' is not permitted"),
                 (["sensor", "inspect", "--require", "active"], "has no learner flag allowlist"),
             ):
@@ -248,6 +250,10 @@ class LearnerWrapper(unittest.TestCase):
                  "--require-image"],
                 ["role", "inspect", "--cloud", "aws", "--account-id", "111111111111",
                  "--role-name", "WizAccess-Role", "--trusts-service", "eks.amazonaws.com"],
+                ["patch", "open", "--repo", "wiz-training/te-code-juice-shop-101-01"],
+                ["code-scan", "ensure", "--repo", "wiz-training/te-code-juice-shop-101-01",
+                 "--ref", "main", "--name-suffix", "main", "--policy", "Default secrets policy",
+                 "--types", "secret,sast,iac"],
             ):
                 with self.subTest(ok_argv=ok_argv):
                     captured.unlink(missing_ok=True)
