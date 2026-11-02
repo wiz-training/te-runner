@@ -87,7 +87,7 @@ def compute_floors(repo):
         for pair in parse_verbs(tag_source(repo, tag)):
             if pair not in first_seen:
                 first_seen[pair] = tag
-    rows = [((noun, verb), first_seen.get((noun, verb), "untagged")) for noun, verb in current_verbs]
+    rows = [((noun, verb), first_seen.get((noun, verb), "vNEXT")) for noun, verb in current_verbs]
     return rows, tags
 
 

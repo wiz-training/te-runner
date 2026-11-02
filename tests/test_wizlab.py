@@ -390,6 +390,7 @@ class EnsureContract(unittest.TestCase):
                                 "allowedRegions": ["us-east-1"], "config": {"roleARN": "a"}}
     NOT_WIZ: typing.ClassVar = {("role", "ensure"): "CSP CLIs",
                                 ("k8sconnector", "ensure"): "aws + kubectl mint the token, K8sConnectorGrading",
+                                ("code-scan", "ensure"): "git + wizcli publish the scan, CodeScanGrading",
                                 ("user", "ensure"): "Okta, OktaContract"}
 
     @classmethod
@@ -819,8 +820,8 @@ class GitHubContract(unittest.TestCase):
     ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "s1", **GH_ENV}
     STEM = "lab-s1"
 
-    def _run(self, fn, argv, gh, out=None, env=None, _gh_call=None):
-        rc = exit_code(fn, argv, env=self.ENV if env is None else env, out=out, _gh_call=_gh_call or gh)
+    def _run(self, fn, argv, gh, out=None, err=None, env=None, _gh_call=None):
+        rc = exit_code(fn, argv, env=self.ENV if env is None else env, out=out, err=err, _gh_call=_gh_call or gh)
         transcript = "\n".join(f"{m} {p} {json.dumps(b)}" for (m, p), b in zip(gh.calls, gh.bodies, strict=True))
         self.assertIsNone(re.search(r"refs/claims/|matching-refs/claims/", transcript))
         return rc
@@ -969,17 +970,22 @@ class GitHubContract(unittest.TestCase):
         self.assertFalse([c for c in gh2.calls if c[0] in ("DELETE", "PATCH")])
 
     def test_patch_open_rewrites_user_root_on_its_own_branch_and_opens_one_pr(self):
-        gh, out = FakeGitHub(), io.StringIO()
+        gh, out, err = FakeGitHub(), io.StringIO(), io.StringIO()
         repo = gh.REPO.split("/repos/", 1)[1]
-        self.assertEqual(self._run(wz.cmd_patch_open, ["--repo", repo], gh, out=out), 0)
+        self.assertEqual(self._run(wz.cmd_patch_open, ["--repo", repo], gh, out=out, err=err), 0)
         self.assertIn("PR_NUMBER=7\n", out.getvalue())
+        self.assertIn(f"PR_URL=https://github.com/{repo}/pull/7\n", out.getvalue())
+        self.assertIn("- USER root\n+ USER node\n", err.getvalue())
         self.assertIn(f"patch/{self.STEM}", gh.branches)
         put = gh.puts[-1]
         body = base64.b64decode(put["content"]).decode()
         self.assertIn("USER node\n", body)
         self.assertNotIn("USER root", body)
         self.assertEqual(put["branch"], f"patch/{self.STEM}")
-        self.assertEqual(self._run(wz.cmd_patch_open, ["--repo", repo], gh, out=out), 0)
+        out2, err2 = io.StringIO(), io.StringIO()
+        self.assertEqual(self._run(wz.cmd_patch_open, ["--repo", repo], gh, out=out2, err=err2), 0)
+        self.assertIn(f"PR_URL=https://github.com/{repo}/pull/7\n", out2.getvalue())
+        self.assertIn("- USER root\n+ USER node\n", err2.getvalue())
         self.assertEqual(len(gh.prs), 1, "a second run finds the PR, never opens another")
 
     def test_patch_open_resets_existing_branch_when_retried_after_dockerfile_put(self):
@@ -1510,6 +1516,16 @@ class ExitCodeContract(unittest.TestCase):
         self.assertNotIn("GOOGLE_REGION", admitted)
         self.assertIn("GOOGLE_REGION", documented)
         self.assertEqual(documented - {"GOOGLE_REGION"}, admitted)
+        learner = (root / "bin" / "wizlab-learner").read_text()
+        pair_rows = {
+            m.group(1): set(m.group(2).split("|"))
+            for m in re.finditer(r'"([a-z0-9-]+ [a-z0-9-]+)"\)\s*case "\$flag" in ([^)]+)\)', learner)
+        }
+        spec_rows = {
+            m.group(1): set(re.findall(r"--[a-z0-9-]+", m.group(2)))
+            for m in re.finditer(r"^\|\s*`([a-z0-9-]+ [a-z0-9-]+)`\s*\|\s*([^|]+)\|", section, re.MULTILINE)
+        }
+        self.assertEqual(pair_rows, spec_rows)
 
     def test_every_verb_fits_the_grammar_or_is_excepted(self):
         """SPEC.md §Grammar locks the six verb kinds plus the deliberate exceptions table; a verb outside
@@ -2126,6 +2142,7 @@ class ConnectorAndReaperSafety(unittest.TestCase):
         ("workflow", "ensure"): "AutomationWorkflow",
         ("outpost", "ensure"): "Outpost",
         ("workflow-run", "ensure"): None,   # a test run, not a resource
+        ("code-scan", "ensure"): None,      # CICDScan has no delete mutation; CLI deployment is ServiceAccount
         ("policy", "ensure"): None,         # shared persistent fixture, never session-scoped
         ("role", "ensure"): None,           # AWS IAM in the lease account, which dies with the lease
         ("user", "ensure"): None,           # Okta; `user delete` is the inverse the reaper calls
@@ -4231,9 +4248,101 @@ class CodeScanGrading(unittest.TestCase):
                 slept.assert_not_called()
                 self.assertEqual(len(wiz.calls), 1)
 
+    ENSURE_ARGV: typing.ClassVar = [
+        "--repo", InspectContract.SLOT_REPO, "--ref", "main", "--name-suffix", "main",
+        "--policy", "Default secrets policy", "--types", "secret,sast,iac",
+    ]
+    ENSURE_ROWS: typing.ClassVar = (
+        ("already-published", ENSURE_ARGV,
+         [{"id": "c1", "status": {"state": "DONE", "verdict": "FAILED_BY_POLICY"}}],
+         False, True, (0, 0, 0), 0, [], None, "SCAN_NAME=lab-x-main\nSCAN_VERDICT=FAILED_BY_POLICY\n"),
+        ("file-and-live-no-mint", ENSURE_ARGV,
+         [None, {"id": "c1", "status": {"state": "IN_PROGRESS", "verdict": None}},
+          {"id": "c1", "status": {"state": "DONE", "verdict": "PASSED_BY_POLICY"}}],
+         True, True, (0, 0, 4), 0, [], ("cached-cid-val", "cached-secret-val"),
+         "SCAN_NAME=lab-x-main\nSCAN_VERDICT=PASSED_BY_POLICY\n"),
+        ("file-and-absent-mints", ENSURE_ARGV,
+         [None, {"id": "c1", "status": {"state": "DONE", "verdict": "PASSED_BY_POLICY"}}],
+         True, False, (0, 0, 0), 0, ["createCliDeployment"], ("minted-cid-val", "minted-secret-val"),
+         "SCAN_NAME=lab-x-main\nSCAN_VERDICT=PASSED_BY_POLICY\n"),
+        ("no-file-and-absent-mints", ENSURE_ARGV,
+         [None, {"id": "c1", "status": {"state": "DONE", "verdict": "WARN_BY_POLICY"}}],
+         False, False, (0, 0, 0), 0, ["createCliDeployment"], ("minted-cid-val", "minted-secret-val"),
+         "SCAN_NAME=lab-x-main\nSCAN_VERDICT=WARN_BY_POLICY\n"),
+        ("timeout", ENSURE_ARGV, [None] * 25, True, True, (0, 0, 0), 1, [], None, ""),
+        ("terminal-failure", ENSURE_ARGV,
+         [None, {"id": "c1", "status": {"state": "FAILURE", "verdict": None}}],
+         True, True, (0, 0, 0), 1, [], None, ""),
+        ("clone-fault", ENSURE_ARGV, [None], True, True, (128, 0, 0), 3, [], None, ""),
+        ("auth-fault", ENSURE_ARGV, [None], True, True, (0, 1, 0), 3, [], None, ""),
+        ("scan-fault", ENSURE_ARGV, [None], True, True, (0, 0, 2), 3, [], None, ""),
+        ("cli-oserror", ENSURE_ARGV, [None], True, True, FileNotFoundError("no git"), 3, [], None, ""),
+        ("bad-flags", ["--repo", InspectContract.SLOT_REPO, "--ref", "main"], [], True, True, (0, 0, 0), 2, [],
+         None, ""),
+    )
+
     def test_pass_polls_a_running_scan_to_its_verdict(self):
         seq = [self._node(state="IN_PROGRESS"), self._node(verdict="PASSED_BY_POLICY")]
         self.assertEqual(self._exit(["--require", "pass", "--interval", "0"], self._wiz(seq)), 0)
+        for case, argv, scan_seq, has_file, has_cli, procs, want, want_mut, want_creds, want_out in self.ENSURE_ROWS:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as run_dir:
+                exec_f = pathlib.Path(run_dir) / "exec.out"
+                cli_file = pathlib.Path(run_dir) / "cli-lab-x.env"
+                if has_file:
+                    cli_file.write_text("WIZ_CLIENT_ID=cached-cid-val\nWIZ_CLIENT_SECRET=cached-secret-val\n")
+                    cli_file.chmod(0o600)
+                it = iter(scan_seq)
+                wiz = FakeWiz(
+                    cicdScans=lambda _v, it=it: (
+                        {"nodes": [n] if (n := next(it, None)) else [], "totalCount": 1 if n else 0}
+                    ),
+                    deployments=_conn(InspectContract.DEPLOYMENT) if has_cli else _conn(),
+                    createCliDeployment={
+                        "clientSecret": "minted-secret-val",
+                        "deployment": {
+                            "id": "dep2", "name": "lab-x-cli", "type": "WIZ_CLI",
+                            "object": {"serviceAccount": {"clientId": "minted-cid-val"}},
+                        },
+                    },
+                )
+                sub_calls = []
+
+                def fake_run(cmd, *, procs=procs, sub_calls=sub_calls, **kw):
+                    sub_calls.append((list(cmd), dict(kw.get("env") or {})))
+                    if isinstance(procs, Exception):
+                        raise procs
+                    rc = procs[min(len(sub_calls) - 1, len(procs) - 1)]
+                    return _proc(rc, "", "boom" if rc else "")
+
+                out, err = io.StringIO(), io.StringIO()
+                env = {**self.ENV, "EXEC_OUTPUT": str(exec_f), "RUN_LAB_DIR": run_dir}
+                with mock.patch.object(wz.time, "sleep", lambda *_: None), \
+                     mock.patch.object(wz.subprocess, "run", side_effect=fake_run):
+                    code = exit_code(wz.cmd_codescan_ensure, argv, wiz=wiz, env=env, out=out, err=err)
+                self.assertEqual(code, want)
+                self.assertEqual(_mutations(wiz), want_mut)
+                if want_out:
+                    self.assertIn(want_out, out.getvalue())
+                    self.assertEqual(exec_f.read_text(), want_out)
+                for leak in ("minted-secret-val", "minted-cid-val", "cached-secret-val", "cached-cid-val"):
+                    self.assertNotIn(leak, out.getvalue() + err.getvalue())
+                if case == "already-published":
+                    self.assertEqual(sub_calls, [])
+                if want_creds:
+                    self.assertEqual(cli_file.stat().st_mode & 0o777, 0o600)
+                    self.assertEqual(len(sub_calls), 3)
+                    self.assertEqual(sub_calls[0][0][:6],
+                                     ["git", "clone", "--depth", "1", "--branch", "main"])
+                    self.assertEqual(sub_calls[1][0], ["wizcli", "auth"])
+                    self.assertEqual(sub_calls[2][0], [
+                        "wizcli", "scan", "dir", ".", "--types", "secret,sast,iac",
+                        "--policies", "Default secrets policy",
+                        "--tags", "session=lab-x-main", "--name", "lab-x-main",
+                    ])
+                    self.assertEqual(sub_calls[1][1].get("WIZ_CLIENT_ID"), want_creds[0])
+                    self.assertEqual(sub_calls[1][1].get("WIZ_CLIENT_SECRET"), want_creds[1])
+                    self.assertEqual(sub_calls[2][1].get("WIZ_CLIENT_ID"), want_creds[0])
+                    self.assertEqual(sub_calls[2][1].get("WIZ_CLIENT_SECRET"), want_creds[1])
 
 
 class PolicyGrading(unittest.TestCase):

@@ -64,6 +64,7 @@ verb cannot make that true it exits 3 naming the difference and mutates nothing.
 | connector (gcp, azure) | any | delete any foreign `lab-<other>` connector on the account first; an existing non-foreign one is left as found, exit 0: nothing in it can drift |
 | policy | flags differ from the live params | exit 3, no mutation: a shared tenant fixture other labs grade against changes deliberately |
 | outpost | `--role-arn`/`--region` differ | exit 3, no mutation: a role change is a knowing delete-and-recreate |
+| code-scan | published scan for `session=<stem>-<name-suffix>` | emit `SCAN_NAME` and `SCAN_VERDICT`, exit 0 without running `wizcli` |
 
 ### Credential nouns
 `sensor` (its service account), `apiaccount`, `serviceaccount` and `mcp` are each a `credential.Credential`
@@ -123,6 +124,7 @@ The tag that first reads each contract; a lab pins at or above the highest row i
 | v0.1.84 | `connector ensure` deletes any foreign `lab-<other>` connector on the account before converging (preserving learner-named connectors); `connector inspect` filters foreign `lab-<other>` connectors out and ranks this session's first |
 | v0.1.85 | `slot claim` evicts claims older than `CLAIM_TTL_S` (7200s); `slot release` and `user reap` close the open `patch/<stem>` PR, delete `refs/heads/patch/<stem>`, and sweep expired claims regardless of session |
 | vNEXT | `sensor\|mcp ensure --out-file <path>`; `credential.ensure` opens `--out-file` with `0o600` (`O_NOFOLLOW`, `fchmod`) |
+| v0.1.92 | `code-scan ensure`; `patch open` emits `PR_URL` and logs the `Dockerfile` diff on stderr; `wizlab-learner` permits `patch open --repo` and `code-scan ensure` flags |
 
 <!-- verb-floors:begin -->
 | noun | verb | first tag |
@@ -149,6 +151,7 @@ The tag that first reads each contract; a lab pins at or above the highest row i
 | mcp | inspect | v0.1.61 |
 | mcp | delete | v0.1.61 |
 | code-scan | inspect | v0.1.34 |
+| code-scan | ensure | vNEXT |
 | correlation | inspect | v0.1.77 |
 | pullrequest | inspect | v0.1.77 |
 | slot | claim | v0.1.77 |
@@ -207,6 +210,8 @@ files (`te-aws-connector-auth-break-201/scripts/grant_learner.sh`,
 | `role inspect` | `--account-id`, `--cloud`, `--role-name`, `--trusts-service` |
 | `k8sconnector ensure` | `--cluster`, `--enabled` |
 | `container inspect` | `--account-id`, `--image-contains`, `--require-image` |
+| `patch open` | `--repo` |
+| `code-scan ensure` | `--name-suffix`, `--policy`, `--ref`, `--repo`, `--types` |
 
 Any other flag on a granted verb (including `--session`, `--cluster-arn`, `--out-file`, `--definition`,
 `--id`, `--outpost-id`, `--email`, `--name`, `--domain`) or any flag on a pair with no row in
@@ -442,15 +447,16 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   the App through the one JSON secret `WIZ_LABS_GH_APP` (`app_id`, `install_id`, base64 PEM `key`); absent
   is 3 before any request.
 - `patch open --repo <org/name> [--session <sid>]` — the learner's fix as a PR: branch `patch/<stem>` from `main`,
-  Dockerfile `USER root` → `USER node`, one PR against `main`; emits `PR_NUMBER`. A rerun finds the open
+  Dockerfile `USER root` → `USER node`, one PR against `main`; emits `PR_NUMBER` and `PR_URL`, and prints the changed `Dockerfile` line pair on stderr. A rerun finds the open
   PR on that head; a Dockerfile with no `USER root` is 1.
-- `code-scan inspect --require published|pass [--session <sid>] [--tag-key session] [--tag-value <stem>] [--timeout 180] [--interval 10]` — asserts a Wiz Code CI/CD scan for this session,
-  scoped by the `session` tag (`--tag-key`/`--tag-value`, default value the session stem), latest scan
-  wins. `published` = ≥1 scan exists; `pass` = latest `status.verdict == PASSED_BY_POLICY`
+- `code-scan inspect|ensure [--session <sid>]` — a Wiz Code CI/CD scan for this session (`cicdScans`), scoped by the `session` tag.
+  `inspect --require published|pass [--tag-key session] [--tag-value <stem>] [--timeout 180] [--interval 10]` asserts a scan, latest wins.
+  `published` = ≥1 scan exists; `pass` = latest `status.verdict == PASSED_BY_POLICY`
   (`FAILED_BY_POLICY` exits 1 at once). Grades the TENANT verdict, not the CLI exit code, because
   `WARN_BY_POLICY` exits 0 — only a blocking policy distinguishes a finding from a pass. Polls every
   `--interval` to `--timeout` (default 180s) since publish latency is unmeasured. `WARN_BY_POLICY` and
   terminal non-running states (`FAILURE`, `SKIPPED`) also exit 1 on the first poll.
+  `ensure --repo <org/name> --ref <branch> --name-suffix <s> --policy <name> [--types secret,sast,iac]` converges a scan tagged `session=<stem>-<s>`: if a published scan exists, emits `SCAN_NAME` and `SCAN_VERDICT` and exits 0; otherwise reuses `$RUN_LAB_DIR/cli-<stem>.env` when `credential.find` still shows `<stem>-cli` or mints it via `credential.ensure --out-file` (`0600`, `O_NOFOLLOW`, passing the pair only in `wizcli`'s child environment), shallow-clones `--ref` of `https://github.com/<repo>.git`, runs `wizcli auth` and `wizcli scan dir` (tolerating policy-failure exit), and polls to a published verdict (1 on timeout, 3 on clone/auth/transport fault).
 
 ## What may be added
 A change qualifies only if ALL hold:
