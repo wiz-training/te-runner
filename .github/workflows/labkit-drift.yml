@@ -1,0 +1,37 @@
+name: labkit-drift
+# Non-required by design: a red run means te-runner's wizlab/core.py moved ahead of te-labkit-v2's
+# wizops/core.py and needs a sync PR. Separate from lint.yml because build.yml calls lint.yml without
+# WIZ_LABS_GH_APP and main branch protection requires only `lint`.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  labkit-drift:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: checkout te-runner
+        uses: actions/checkout@v5
+        with:
+          path: work/te-runner
+      - name: app token
+        id: app
+        uses: ./work/te-runner/.github/actions/app-token
+        with:
+          app: ${{ secrets.WIZ_LABS_GH_APP }}
+      - name: checkout te-labkit-v2
+        uses: actions/checkout@v5
+        with:
+          repository: wiz-training/te-labkit-v2
+          token: ${{ steps.app.outputs.token }}
+          path: work/te-labkit-v2
+      - name: setup python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: run CoreDrift
+        working-directory: work/te-labkit-v2
+        run: python -m unittest tests.test_wizops.CoreDrift.test_shared_transport_is_the_same_text_as_the_runners
