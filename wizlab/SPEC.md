@@ -456,7 +456,7 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   `WARN_BY_POLICY` exits 0 — only a blocking policy distinguishes a finding from a pass. Polls every
   `--interval` to `--timeout` (default 180s) since publish latency is unmeasured. `WARN_BY_POLICY` and
   terminal non-running states (`FAILURE`, `SKIPPED`) also exit 1 on the first poll.
-  `ensure --repo <org/name> --ref <branch> --name-suffix <s> --policy <name> [--types secret,sast,iac]` converges a scan tagged `session=<stem>-<s>`: if a published scan exists, emits `SCAN_NAME` and `SCAN_VERDICT` and exits 0; otherwise reuses `$RUN_LAB_DIR/cli-<stem>.env` when `credential.find` still shows `<stem>-cli` or mints it via `credential.ensure --out-file` (`0600`, `O_NOFOLLOW`, passing the pair only in `wizcli`'s child environment), shallow-clones `--ref` of `https://github.com/<repo>.git`, runs `wizcli auth` and `wizcli scan dir` (tolerating policy-failure exit), and polls to a published verdict (1 on timeout, 3 on clone/auth/transport fault).
+  `ensure --repo <org/name> --ref <branch> --name-suffix <s> --policy <name> [--types secret,sast,iac]` converges a scan tagged `session=<stem>-<s>`: if a published scan exists, emits `SCAN_NAME` and `SCAN_VERDICT` and exits 0; otherwise reuses `$RUN_LAB_DIR/cli-<stem>.env` when `credential.find` still shows `<stem>-cli` or mints it via `credential.ensure --out-file` (`0600`, `O_NOFOLLOW`, passing the pair only in `wizcli`'s child environment), shallow-clones `--ref` of `https://github.com/<repo>.git`, runs `wizcli scan dir` (tolerating policy-failure exit), and polls to a published verdict (1 on timeout, 3 on clone/auth/transport fault).
 
 ## What may be added
 A change qualifies only if ALL hold:

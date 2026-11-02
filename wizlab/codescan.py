@@ -135,8 +135,7 @@ def cmd_codescan_ensure(args):
     """Converge a session-tagged Wiz CLI directory scan (`session=<stem>-<name-suffix>`). Short-circuits
     when a published scan already exists; otherwise reuses or mints `<stem>-cli` (passing credentials
     only in `wizcli`'s child environment), shallow-clones `--ref` of `https://github.com/<repo>.git`,
-    runs `wizcli auth` + `wizcli scan dir` (tolerating policy-failure exit), and polls to a published
-    verdict."""
+    runs `wizcli scan dir` (tolerating policy-failure exit), and polls to a published verdict."""
     repo = codelab._repo(args)
     ref, suffix, policy, types_arg = args.ref, args.name_suffix, args.policy, args.types
     if not ref or not suffix or not policy:
@@ -155,7 +154,6 @@ def cmd_codescan_ensure(args):
             ["git", "clone", "--depth", "1", "--branch", ref, f"https://github.com/{repo}.git", tmpdir],
             env=child_env,
         )
-        _codescan_run(["wizcli", "auth"], cwd=tmpdir, env=child_env)
         scan_cmd = ["wizcli", "scan", "dir", "."]
         if types_arg:
             scan_cmd += ["--types", types_arg]
