@@ -455,9 +455,11 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
 ## What may be added
 A change qualifies only if ALL hold:
 1. **General** — reused across labs, not bespoke to one scenario.
-2. **API-level** — a Wiz or CSP read/assert/mutation (`api()` / `_aws`) a lab runs. Not a third cloud,
-   and not an operator credential: what needs `TAILSCALE_API_KEY` or `INSTRUQT_API` lives in
-   `te-labkit-v2/wizops`.
+2. **API-level** — a Wiz or CSP read/assert/mutation (`api()` / `_aws`) a lab runs, or a run of a
+   Wiz-shipped binary the image already pins (`wizcli`) whose result the tenant publishes. Not a third
+   cloud, and not an operator credential: what needs `TAILSCALE_API_KEY` or `INSTRUQT_API` lives in
+   `te-labkit-v2/wizops`. Operator decision, 2026-11-02, forced by `code-scan ensure`: the board runs
+   granted verbs only, and no verb could publish a scan.
 3. **Fits the grammar** — a noun + one of the verbs above, at that verb's meaning.
 
 ## What may NOT
