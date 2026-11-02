@@ -4255,29 +4255,29 @@ class CodeScanGrading(unittest.TestCase):
     ENSURE_ROWS: typing.ClassVar = (
         ("already-published", ENSURE_ARGV,
          [{"id": "c1", "status": {"state": "DONE", "verdict": "FAILED_BY_POLICY"}}],
-         False, True, (0, 0, 0), 0, [], None, "SCAN_NAME=lab-x-main\nSCAN_VERDICT=FAILED_BY_POLICY\n"),
+         False, True, (0, 0), 0, [], None, "SCAN_NAME=lab-x-main\nSCAN_VERDICT=FAILED_BY_POLICY\n"),
         ("file-and-live-no-mint", ENSURE_ARGV,
          [None, {"id": "c1", "status": {"state": "IN_PROGRESS", "verdict": None}},
           {"id": "c1", "status": {"state": "DONE", "verdict": "PASSED_BY_POLICY"}}],
-         True, True, (0, 0, 4), 0, [], ("cached-cid-val", "cached-secret-val"),
+         True, True, (0, 4), 0, [], ("cached-cid-val", "cached-secret-val"),
          "SCAN_NAME=lab-x-main\nSCAN_VERDICT=PASSED_BY_POLICY\n"),
         ("file-and-absent-mints", ENSURE_ARGV,
          [None, {"id": "c1", "status": {"state": "DONE", "verdict": "PASSED_BY_POLICY"}}],
-         True, False, (0, 0, 0), 0, ["createCliDeployment"], ("minted-cid-val", "minted-secret-val"),
+         True, False, (0, 0), 0, ["createCliDeployment"], ("minted-cid-val", "minted-secret-val"),
          "SCAN_NAME=lab-x-main\nSCAN_VERDICT=PASSED_BY_POLICY\n"),
         ("no-file-and-absent-mints", ENSURE_ARGV,
          [None, {"id": "c1", "status": {"state": "DONE", "verdict": "WARN_BY_POLICY"}}],
-         False, False, (0, 0, 0), 0, ["createCliDeployment"], ("minted-cid-val", "minted-secret-val"),
+         False, False, (0, 0), 0, ["createCliDeployment"], ("minted-cid-val", "minted-secret-val"),
          "SCAN_NAME=lab-x-main\nSCAN_VERDICT=WARN_BY_POLICY\n"),
-        ("timeout", ENSURE_ARGV, [None] * 25, True, True, (0, 0, 0), 1, [], None, ""),
+        ("timeout", ENSURE_ARGV, [None] * 25, True, True, (0, 0), 1, [], None, ""),
         ("terminal-failure", ENSURE_ARGV,
          [None, {"id": "c1", "status": {"state": "FAILURE", "verdict": None}}],
-         True, True, (0, 0, 0), 1, [], None, ""),
-        ("clone-fault", ENSURE_ARGV, [None], True, True, (128, 0, 0), 3, [], None, ""),
-        ("auth-fault", ENSURE_ARGV, [None], True, True, (0, 1, 0), 3, [], None, ""),
-        ("scan-fault", ENSURE_ARGV, [None], True, True, (0, 0, 2), 3, [], None, ""),
+         True, True, (0, 0), 1, [], None, ""),
+        ("clone-fault", ENSURE_ARGV, [None], True, True, (128, 0), 3, [], None, ""),
+        ("auth-fault", ENSURE_ARGV, [None], True, True, (0, 3), 3, [], None, ""),
+        ("scan-fault", ENSURE_ARGV, [None], True, True, (0, 2), 3, [], None, ""),
         ("cli-oserror", ENSURE_ARGV, [None], True, True, FileNotFoundError("no git"), 3, [], None, ""),
-        ("bad-flags", ["--repo", InspectContract.SLOT_REPO, "--ref", "main"], [], True, True, (0, 0, 0), 2, [],
+        ("bad-flags", ["--repo", InspectContract.SLOT_REPO, "--ref", "main"], [], True, True, (0, 0), 2, [],
          None, ""),
     )
 
@@ -4330,19 +4330,16 @@ class CodeScanGrading(unittest.TestCase):
                     self.assertEqual(sub_calls, [])
                 if want_creds:
                     self.assertEqual(cli_file.stat().st_mode & 0o777, 0o600)
-                    self.assertEqual(len(sub_calls), 3)
+                    self.assertEqual(len(sub_calls), 2)
                     self.assertEqual(sub_calls[0][0][:6],
                                      ["git", "clone", "--depth", "1", "--branch", "main"])
-                    self.assertEqual(sub_calls[1][0], ["wizcli", "auth"])
-                    self.assertEqual(sub_calls[2][0], [
+                    self.assertEqual(sub_calls[1][0], [
                         "wizcli", "scan", "dir", ".", "--types", "secret,sast,iac",
                         "--policies", "Default secrets policy",
                         "--tags", "session=lab-x-main", "--name", "lab-x-main",
                     ])
                     self.assertEqual(sub_calls[1][1].get("WIZ_CLIENT_ID"), want_creds[0])
                     self.assertEqual(sub_calls[1][1].get("WIZ_CLIENT_SECRET"), want_creds[1])
-                    self.assertEqual(sub_calls[2][1].get("WIZ_CLIENT_ID"), want_creds[0])
-                    self.assertEqual(sub_calls[2][1].get("WIZ_CLIENT_SECRET"), want_creds[1])
 
 
 class PolicyGrading(unittest.TestCase):
