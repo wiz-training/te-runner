@@ -53,6 +53,7 @@ RUN curl -sSf https://packages.cloud.google.com/apt/doc/apt-key.gpg -o /usr/shar
     apt-get update && apt-get install -y --no-install-recommends google-cloud-cli=588.0.0-0 && \
     rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir azure-cli==2.91.0
+RUN pip install --no-cache-dir jsonschema==4.10.3
 
 # Tailscale static binaries (dev-only mesh; entrypoint starts it only when TS_AUTHKEY is injected on
 # a dev track). tgz names amd64/arm64 → dpkg --print-architecture.
@@ -96,11 +97,12 @@ LABEL org.opencontainers.image.version=${TE_RUNNER_TAG} \
       org.opencontainers.image.revision=${TE_RUNNER_REV} \
       org.opencontainers.image.source=https://github.com/wiz-training/te-runner
 
-COPY bin/wizlab bin/wizlab-learner bin/wizlab-grant /usr/local/bin/
+COPY bin/wizlab bin/wizlab-learner bin/wizlab-grant bin/wizlab-board /usr/local/bin/
 COPY wizlab/*.py /usr/local/lib/python3.12/site-packages/wizlab/
+COPY board/*.py board/manifest.schema.json /usr/local/lib/python3.12/site-packages/board/
 COPY reaper/reap_orphans.py /opt/reaper/reap_orphans.py
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod 755 /usr/local/bin/wizlab /usr/local/bin/wizlab-learner /usr/local/bin/wizlab-grant /entrypoint.sh
+RUN chmod 755 /usr/local/bin/wizlab /usr/local/bin/wizlab-learner /usr/local/bin/wizlab-grant /usr/local/bin/wizlab-board /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["sleep", "infinity"]
