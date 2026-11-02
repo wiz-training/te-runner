@@ -92,4 +92,10 @@ if [ -n "$az_ran" ] && [ "$root_home" != /home/learner ] && [ -d "$root_home/.az
   chown -R learner:learner /home/learner/.azure
 fi
 
+if [ -n "${TE_BOARD_PORT:-}" ]; then
+  install -d -o learner -g learner /run/lab/board/runs
+  su -s /bin/sh learner -c "exec env -i PATH=$PATH TE_BOARD_PORT=$TE_BOARD_PORT wizlab-board serve" \
+    >/var/log/wizlab-board.log 2>&1 &
+fi
+
 exec "$@"
