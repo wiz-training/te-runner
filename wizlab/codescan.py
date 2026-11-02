@@ -2,6 +2,7 @@
 import contextlib
 import io
 import os
+import pathlib
 import re
 import subprocess
 import sys
@@ -85,25 +86,21 @@ def _codescan_published(scan_name, node):
 
 
 def _codescan_cli_env(args, stem):
-    """Return the child env for wizcli, reusing `<stem>-cli` when present or minting via
-    `credential.ensure` with stdout/stderr/$EXEC_OUTPUT suppressed so the secret stays in memory."""
-    env = dict(os.environ)
-    if credential.find(serviceaccount.CLI_DEPLOYMENT, f"{stem}-cli"):
-        return env
-    ns = types.SimpleNamespace(session=args.session, name=f"{stem}-cli", out_file=None)
-    buf = io.StringIO()
-    saved = os.environ.pop("EXEC_OUTPUT", None)
-    try:
-        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+    """Return the child env for wizcli with WIZ_CLIENT_ID/SECRET from $RUN_LAB_DIR/cli-<stem>.env.
+    Reuses the 0600 file only when `credential.find` still shows the deployment; otherwise mints via
+    `credential.ensure --out-file` (0600, O_NOFOLLOW) with stdout/stderr suppressed."""
+    run_dir = pathlib.Path(os.environ.get("RUN_LAB_DIR") or "/run/lab")
+    cli_file = run_dir / f"cli-{stem}.env"
+    name = f"{stem}-cli"
+    if not (cli_file.is_file() and credential.find(serviceaccount.CLI_DEPLOYMENT, name)):
+        run_dir.mkdir(parents=True, exist_ok=True)
+        ns = types.SimpleNamespace(session=args.session, name=name, out_file=str(cli_file))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             credential.ensure(serviceaccount.CLI_DEPLOYMENT, ns)
-    finally:
-        if saved is not None:
-            os.environ["EXEC_OUTPUT"] = saved
-    for line in buf.getvalue().splitlines():
-        if "=" in line:
-            k, v = line.split("=", 1)
-            env[k] = v
-    return env
+    pair = dict(ln.split("=", 1) for ln in cli_file.read_text().splitlines() if "=" in ln)
+    if not (pair.get("WIZ_CLIENT_ID") and pair.get("WIZ_CLIENT_SECRET")):
+        core.die(3, f"{cli_file}: missing WIZ_CLIENT_ID or WIZ_CLIENT_SECRET")
+    return {**os.environ, **pair}
 
 
 def _codescan_run(argv, *, cwd=None, env=None, ok_codes=(0,)):
