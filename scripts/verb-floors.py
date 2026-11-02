@@ -7,6 +7,11 @@ Walks `git tag --list 'v*'` in version order, reads `wizlab/cli.py` (or `wizlab/
 v0.1.48 package split) at each tag via `git show`, parses `VERBS`, and records the first tag each
 `(noun, verb)` in `wizlab/cli.py` appears in.
 
+A verb in no tag renders as `vNEXT`. `--check` also accepts `vNEXT` for a verb whose first tag is the
+newest tag, so the commit that adds a verb passes CI before its tag exists and still passes once the tag
+points at it; `--write` after the release replaces `vNEXT` with the tag, and a later tag makes a leftover
+`vNEXT` a diff again.
+
 Exit codes: 0 in sync / written / self-test pass · 1 SPEC block differs (`--check`) or self-test
 failure · 2 usage error or missing markers in SPEC · 3 git error or clone has no `v*` tags.
 """
@@ -19,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 
+NEXT = "vNEXT"
 BEGIN_MARKER = "<!-- verb-floors:begin -->"
 END_MARKER = "<!-- verb-floors:end -->"
 RUNNER_PATHS = ("wizlab/cli.py", "wizlab/wizlab")
@@ -87,8 +93,19 @@ def compute_floors(repo):
         for pair in parse_verbs(tag_source(repo, tag)):
             if pair not in first_seen:
                 first_seen[pair] = tag
-    rows = [((noun, verb), first_seen.get((noun, verb), "untagged")) for noun, verb in current_verbs]
+    rows = [((noun, verb), first_seen.get((noun, verb), NEXT)) for noun, verb in current_verbs]
     return rows, tags
+
+
+def accepted_block(actual, rows, newest_tag):
+    """The computed block with `vNEXT` kept wherever SPEC says `vNEXT` and the verb's first tag is the newest."""
+    spec_next = {
+        (m.group(1), m.group(2))
+        for m in re.finditer(r"^\|\s*([a-z0-9-]+)\s*\|\s*([a-z0-9-]+)\s*\|\s*" + NEXT + r"\s*\|$", actual, re.M)
+    }
+    return render_block([
+        (pair, NEXT if tag == newest_tag and pair in spec_next else tag) for pair, tag in rows
+    ])
 
 
 def render_block(rows):
@@ -115,7 +132,7 @@ def check_spec(repo, spec_path):
     spec_text = pathlib.Path(spec_path).read_text(encoding="utf-8")
     actual, _, _ = extract_block(spec_text)
     rows, tags = compute_floors(repo)
-    expected = render_block(rows)
+    expected = accepted_block(actual, rows, tags[-1])
     if actual != expected:
         diff = difflib.unified_diff(
             actual.splitlines(),
@@ -203,7 +220,37 @@ def self_test():
             print("self-test FAIL: expected --write then --check to exit 0", file=sys.stderr)
             return 1
 
-    print("self-test: ok (2 tags, 2 verbs)")
+        # Release flow: a verb added after the newest tag is vNEXT; the row stays valid when the next tag
+        # lands on it, and goes stale once a newer tag exists.
+        cli.write_text(
+            'VERBS = {\n    ("session", "verify"): cmd_v,\n    ("sensor", "inspect"): cmd_s,\n'
+            '    ("policy", "ensure"): cmd_p,\n}\n',
+            encoding="utf-8",
+        )
+        git("add", "wizlab/cli.py")
+        git("commit", "-q", "-m", "add policy ensure")
+        with contextlib.redirect_stdout(io.StringIO()):
+            write_spec(repo, spec)
+        if f"| policy | ensure | {NEXT} |" not in spec.read_text(encoding="utf-8"):
+            print("self-test FAIL: expected --write to render an untagged verb as vNEXT", file=sys.stderr)
+            return 1
+        expect = ((None, 0), ("v0.1.2", 0), ("v0.1.3", 1))
+        for tag, want_rc in expect:
+            if tag:
+                git("tag", tag)
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = check_spec(repo, spec)
+            if rc != want_rc:
+                print(f"self-test FAIL: vNEXT row with tag={tag}: --check exit {rc}, want {want_rc}", file=sys.stderr)
+                return 1
+        with contextlib.redirect_stdout(io.StringIO()):
+            write_spec(repo, spec)
+            rc = check_spec(repo, spec)
+        if rc != 0 or "| policy | ensure | v0.1.2 |" not in spec.read_text(encoding="utf-8"):
+            print("self-test FAIL: expected --write to pin vNEXT to v0.1.2", file=sys.stderr)
+            return 1
+
+    print("self-test: ok (4 tags, 3 verbs, vNEXT release flow)")
     return 0
 
 
