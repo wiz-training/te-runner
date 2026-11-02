@@ -9,6 +9,8 @@ Actions publish the **public** `ghcr.io/wiz-training/te-runner:<tag>` that labs
 pin (Instruqt pulls anonymously; there is no registry-credential path for GHCR).
 The build lints the tagged sha, smoke-tests and pushes the versioned image,
 and then advances `ghcr.io/wiz-training/te-runner:reap` (which `reap.yml` pins). Never `latest`.
+A new verb lands with `vNEXT` in `wizlab/SPEC.md` §Verb floors; after the tag, `scripts/verb-floors.py
+--write` pins it, and the next tag turns a leftover `vNEXT` into a lint failure.
 The package must stay **Public** and list this repo under "Manage Actions
 access" with Write — both live in the package settings, not the workflow, and
 losing either shows up as `manifest unknown`/401 on pull or
