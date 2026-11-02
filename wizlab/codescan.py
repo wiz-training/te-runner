@@ -15,7 +15,7 @@ from . import codelab, core, credential, serviceaccount
 # --- Wiz Code CI/CD scan, published by `wizcli scan dir --tags session=<stem>`. A learner check must
 # grade the tenant-side scan, not the CLI exit code: WARN_BY_POLICY exits 0, so only the published
 # verdict tells a blocking finding from a pass. Scoped by the session tag; the latest scan wins.
-# Publish latency is unmeasured, so --require polls to --timeout. ---
+# Published state SUCCESS lands <= ~20s after `wizcli scan dir` (measurements.yaml `planes.code_scan.publish`). ---
 _TAG_OK = re.compile(r"^[A-Za-z0-9._-]+$")
 _REF_OK = re.compile(r"^[A-Za-z0-9._/-]+$")
 _ENSURE_TIMEOUT_S = 180
@@ -55,8 +55,8 @@ def _inspect_verdict(node, require, tag_key, tag_value):
 
 def cmd_codescan_inspect(args):
     """Assert a Wiz CLI scan for this session. --require published (>=1 scan tagged session=<stem>) or
-    pass (latest scan verdict PASSED_BY_POLICY). Polls every --interval up to --timeout (default 180s)
-    because publish latency is unmeasured; a definitive FAILED_BY_POLICY exits 1 without waiting.
+    pass (latest scan verdict PASSED_BY_POLICY). Polls every --interval up to --timeout (default 180s;
+    measurements.yaml `planes.code_scan.publish`); a definitive FAILED_BY_POLICY exits 1 without waiting.
     WARN_BY_POLICY and terminal non-running states (FAILURE, SKIPPED) likewise exit 1 on the first poll."""
     require = args.require
     tag_key = args.tag_key
