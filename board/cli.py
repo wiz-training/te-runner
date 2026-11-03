@@ -1,6 +1,5 @@
 """Action board: `arm` validates and resolves a manifest; `serve` runs the HTTP board; `run` triggers an action."""
 import datetime
-import html
 import http.server
 import json
 import os
@@ -12,6 +11,8 @@ import threading
 import time
 import urllib.error
 import urllib.request
+
+from board import page as _page
 
 _SCHEMA_PATH = pathlib.Path(__file__).resolve().parent / "manifest.schema.json"
 # Credential nouns (wizlab/SPEC.md §Credential nouns) and `user` emit secrets on stdout.
@@ -286,112 +287,6 @@ def _public_board(board):
     return {"schema": board["schema"], "title": board["title"], "actions": actions}
 
 
-def _render_show_rows(action, latest):
-    outputs = (latest or {}).get("outputs") or {}
-    parts = []
-    for item in action.get("show") or []:
-        key, label, kind = item["key"], html.escape(item["label"]), item["as"]
-        val = outputs.get(key)
-        if not val:
-            continue
-        esc_val = html.escape(val)
-        if kind == "link":
-            parts.append(f'<div class="show-row"><strong>{label}:</strong> '
-                         f'<a href="{esc_val}" target="_blank" rel="noopener noreferrer">{esc_val}</a></div>')
-        else:
-            parts.append(f'<div class="show-row"><strong>{label}:</strong> <span>{esc_val}</span></div>')
-    return "".join(parts)
-
-
-def _render_steps(latest):
-    if not latest:
-        return '<div class="empty">No runs yet.</div>'
-    parts = [f'<div class="run-status status-{html.escape(latest["status"])}">'
-             f'Run {html.escape(latest["run_id"])}: {html.escape(latest["status"])}</div>']
-    for s in latest.get("steps") or []:
-        cmd = html.escape("wizlab " + " ".join(s.get("argv") or []))
-        rc = "" if s.get("exit_code") is None else f" (exit {s['exit_code']})"
-        log = html.escape(s.get("log") or "")
-        parts.append(
-            f'<div class="step step-{html.escape(s["status"])}">'
-            f'<div class="step-hdr"><strong>{html.escape(s["title"])}</strong> '
-            f'<code>{cmd}</code> — <span class="badge">{html.escape(s["status"])}{rc}</span></div>'
-            f'<pre class="step-log">{log}</pre></div>'
-        )
-    return "".join(parts)
-
-
-_PAGE_SCRIPT = """
-async function triggerAction(btn) {
-  const id = btn.dataset.action;
-  const confirmMsg = btn.dataset.confirm;
-  if (confirmMsg && !window.confirm(confirmMsg)) return;
-  btn.disabled = true;
-  await fetch('/api/actions/' + encodeURIComponent(id) + '/runs', {method: 'POST'});
-  window.location.reload();
-}
-setInterval(async () => {
-  const root = document.getElementById('board-root');
-  if (root && root.dataset.armed === 'false') {
-    const r = await fetch('/api/board');
-    if (r.ok) window.location.reload();
-    return;
-  }
-  if (root && root.dataset.running === 'true') {
-    window.location.reload();
-  }
-}, 2000);
-"""
-
-_PAGE_STYLE = """
-body { font-family: system-ui, sans-serif; margin: 2rem; color: #111827; background: #f9fafb; }
-.card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
-button { background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 0.5rem 1rem; cursor: pointer; }
-button:disabled { opacity: 0.6; cursor: not-allowed; }
-pre.step-log { background: #111827; color: #f3f4f6; padding: 0.75rem; border-radius: 6px; overflow-x: auto; }
-.show-row { margin: 0.5rem 0; }
-"""
-
-
-def _render_card(action, latest):
-    aid = action["id"]
-    desc = f"<p>{html.escape(action['description'])}</p>" if action.get("description") else ""
-    confirm_attr = html.escape(action.get("confirm") or "", quote=True)
-    hint = ""
-    if latest and latest.get("status") == "failed" and action.get("failure_hint"):
-        hint = f'<div class="failure-hint">{html.escape(action["failure_hint"])}</div>'
-    return (
-        f'<div class="card" data-action-id="{html.escape(aid)}">'
-        f"{desc}"
-        f'<button data-action="{html.escape(aid)}" data-confirm="{confirm_attr}" '
-        f'onclick="triggerAction(this)">{html.escape(action["label"])}</button>'
-        f"{_render_show_rows(action, latest)}{hint}{_render_steps(latest)}</div>"
-    )
-
-
-def _render_page(board, runs_dir):
-    if board is None:
-        return (
-            "<!doctype html><html><head><meta charset='utf-8'><title>Getting ready</title>"
-            f"<style>{_PAGE_STYLE}</style></head><body>"
-            "<div id='board-root' data-armed='false' data-running='false'>"
-            "<h1>Getting ready</h1><p>Waiting for the lab environment to finish arming the action board…</p>"
-            f"</div><script>{_PAGE_SCRIPT}</script></body></html>"
-        )
-    pairs = [(a, _latest_for_action(runs_dir, a["id"])) for a in board["actions"]]
-    any_running = any(lat and lat.get("status") == "running" for _, lat in pairs)
-    cards = [_render_card(a, lat) for a, lat in pairs]
-    title = html.escape(board["title"])
-    running_flag = "true" if any_running else "false"
-    return (
-        f"<!doctype html><html><head><meta charset='utf-8'><title>{title}</title>"
-        f"<style>{_PAGE_STYLE}</style></head><body>"
-        f"<div id='board-root' data-armed='true' data-running='{running_flag}'>"
-        f"<h1>{title}</h1>{''.join(cards)}</div>"
-        f"<script>{_PAGE_SCRIPT}</script></body></html>"
-    )
-
-
 class BoardServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -489,7 +384,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         runs_dir = _runs_dir(run_lab)
         board = _load_board(run_lab)
         if self.path == "/":
-            self._send(200, _render_page(board, runs_dir), "text/html; charset=utf-8")
+            self._send(200, _page.render_page(board, lambda aid: _latest_for_action(runs_dir, aid)),
+                       "text/html; charset=utf-8")
             return
         if board is None:
             self._send(503, {"error": "board is not armed"})
