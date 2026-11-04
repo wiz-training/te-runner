@@ -157,8 +157,8 @@ The tag that first reads each contract; a lab pins at or above the highest row i
 | code-scan | ensure | v0.1.92 |
 | correlation | inspect | v0.1.77 |
 | pullrequest | inspect | v0.1.77 |
-| pullrequest | comment | vNEXT |
-| branch | push | vNEXT |
+| pullrequest | comment | v0.1.96 |
+| branch | push | v0.1.96 |
 | slot | claim | v0.1.77 |
 | slot | release | v0.1.77 |
 | patch | open | v0.1.77 |
