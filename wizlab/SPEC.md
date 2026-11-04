@@ -458,6 +458,7 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   PR on that head; a Dockerfile with no `USER root` is 1.
 - `code-scan inspect|ensure [--session <sid>]` — a Wiz Code CI/CD scan for this session (`cicdScans`), scoped by the `session` tag.
   `inspect --require published|pass [--tag-key session] [--tag-value <stem>] [--timeout 180] [--interval 10]` asserts a scan, latest wins.
+  Wiz SAST skips test directories (identical code under tests/ is not reported; tools/ is).
   `published` = ≥1 scan exists; `pass` = latest `status.verdict == PASSED_BY_POLICY`
   (`FAILED_BY_POLICY` exits 1 at once). Grades the TENANT verdict, not the CLI exit code, because
   `WARN_BY_POLICY` exits 0 — only a blocking policy distinguishes a finding from a pass. Polls every

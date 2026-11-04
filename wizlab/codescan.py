@@ -39,34 +39,38 @@ def _cicd_latest(tag_key, tag_value):
     return nodes[0] if nodes else None
 
 
+def _check_sast_findings(node, require, rule_ids_str):
+    try:
+        expected_count = int(require.split("=")[1])
+    except ValueError:
+        core.die(2, "--require sast-findings=<n> must specify an integer")
+    st = node.get("status") or {}
+    state, verdict = st.get("state"), st.get("verdict")
+    if state in ("IN_PROGRESS", "PENDING"):
+        return False
+    if not (verdict or state in ("FAILURE", "SKIPPED", "SUCCESS")):
+        return False
+    res = node.get("result") or {}
+    sast_findings = res.get("sast") or []
+    if rule_ids_str:
+        rids = set(r.strip() for r in rule_ids_str.split(","))
+        sast_findings = [
+            f for f in sast_findings
+            if (f.get("rule") or {}).get("id") in rids or (f.get("rule") or {}).get("externalId") in rids
+        ]
+    if len(sast_findings) == expected_count:
+        core._emit(f"SAST_FINDINGS={len(sast_findings)}\n")
+        print(f"code-scan: {node['id']} sast-findings={len(sast_findings)}")
+        return True
+    print(f"code-scan: {node['id']} sast-findings={len(sast_findings)} (expected {expected_count})")
+    import sys
+    sys.exit(1)
+
 def _inspect_verdict(node, require, tag_key, tag_value, rule_ids_str):
     st = node.get("status") or {}
     state, verdict = st.get("state"), st.get("verdict")
-
     if require.startswith("sast-findings="):
-        try:
-            expected_count = int(require.split("=")[1])
-        except ValueError:
-            core.die(2, "--require sast-findings=<n> must specify an integer")
-        if state in ("IN_PROGRESS", "PENDING"):
-            return False
-        # Wait until the scan completes before validating findings.
-        if not (verdict or state in ("FAILURE", "SKIPPED", "SUCCESS")):
-            return False
-
-        res = node.get("result") or {}
-        sast_findings = res.get("sast") or []
-        if rule_ids_str:
-            rids = set(r.strip() for r in rule_ids_str.split(","))
-            sast_findings = [f for f in sast_findings if (f.get("rule") or {}).get("id") in rids or \
-                         (f.get("rule") or {}).get("externalId") in rids]
-        if len(sast_findings) == expected_count:
-            core._emit(f"SAST_FINDINGS={len(sast_findings)}\n")
-            print(f"code-scan: {node['id']} sast-findings={len(sast_findings)}")
-            return True
-        print(f"code-scan: {node['id']} sast-findings={len(sast_findings)} (expected {expected_count})")
-        sys.exit(1)
-
+        return _check_sast_findings(node, require, rule_ids_str)
     if require == "published":
         print(f"code-scan: {node['id']} present ({tag_key}={tag_value}) state={state} verdict={verdict}")
         return True
@@ -76,15 +80,16 @@ def _inspect_verdict(node, require, tag_key, tag_value, rule_ids_str):
             return True
         if verdict in ("FAILED_BY_POLICY", "WARN_BY_POLICY") or state in ("FAILURE", "SKIPPED"):
             print(f"code-scan: {node['id']} {verdict or state}")
+            import sys
             sys.exit(1)
         return False
-
     core.die(2, f"unrecognized --require {require}")
 
 
 def cmd_codescan_inspect(args):
     """Assert a Wiz CLI scan for this session. --require published (>=1 scan tagged session=<stem>) or
     pass (latest scan verdict PASSED_BY_POLICY) or sast-findings=<n>.
+    Wiz SAST skips test directories (identical code under tests/ is not reported; tools/ is).
     Polls every --interval up to --timeout (default 180s;
     measurements.yaml `planes.code_scan.publish`); a definitive FAILED_BY_POLICY exits 1 without waiting.
     WARN_BY_POLICY and terminal non-running states (FAILURE, SKIPPED) likewise exit 1 on the first poll."""
@@ -228,11 +233,13 @@ def _policy_name(args):
     return args.name or core.die(2, "policy needs --name <policy-name>")
 
 
-def _find_policy(name, ptype="IAC"):
-    """The IaC CI/CD scan policy whose name matches exactly (names filter is a contains, so ==)."""
-    nodes = core._all_nodes(CICD_POLICIES_Q, {"f": {"type": [ptype.upper()], "names": [name]}}, "cicdScanPolicies")
+def _find_policy(name, ptype=None):
+    """The CI/CD scan policy whose name matches exactly."""
+    f = {"names": [name]}
+    if ptype:
+        f["type"] = [ptype.upper()]
+    nodes = core._all_nodes(CICD_POLICIES_Q, {"f": f}, "cicdScanPolicies")
     return core._exact(nodes, name)
-
 
 def _resolve_dockerfile_control(search):
     """Resolve the builtin Dockerfile control live — its id is tenant-specific, never hard-coded. The
@@ -268,69 +275,73 @@ def _resolve_sast_rules(rule_ids):
         resolved.append(exact[0])
     return resolved
 
+def _drift_iac(name, existing, live, args):
+    rule_id = args.rule_id
+    core._drift(f"cicd scan policy {name} ({existing['id']})", [
+        ("severityThreshold", live.get("severityThreshold"), args.severity),
+        ("countThreshold", live.get("countThreshold"), args.count_threshold),
+        ("cloudConfigurationRules", sorted(r["id"] for r in live.get("cloudConfigurationRules") or []),
+         [rule_id] if rule_id else None),
+    ])
+
+def _drift_sast(name, existing, live, args):
+    rule_ids = _resolve_sast_rules([r.strip() for r in args.rule_ids.split(",")]) \
+        if getattr(args, "rule_ids", None) else []
+    scope = live.get("findingScope") or {}
+    live_rules = scope.get("rules") or []
+    core._drift(f"cicd scan policy {name} ({existing['id']})", [
+        ("sastSeverityThreshold", live.get("sastSeverityThreshold"), args.severity),
+        ("countThreshold", live.get("countThreshold"), args.count_threshold),
+        ("findingScope.rules", sorted(live_rules), sorted(rule_ids) if rule_ids else None),
+    ])
+
+def _ensure_iac(args, inp):
+    rule_id = args.rule_id
+    if not rule_id:
+        ctl = _resolve_dockerfile_control(args.control_search)
+        if not ctl:
+            core.die(3, f"no DOCKER_FILE control matching {ROOT_DOCKERFILE_CONTROL!r} in this tenant")
+        rule_id = ctl["id"]
+    inp["lifecycleTargets"] = ["DEPLOY", "BUILD", "CODE"]
+    inp["iacParams"] = {
+        "severityThreshold": args.severity or "HIGH",
+        "countThreshold": args.count_threshold or 1,
+        "cloudConfigurationRules": [rule_id],
+    }
+    return f"scoped to control {rule_id}"
+
+def _ensure_sast(args, inp):
+    inp["lifecycleTargets"] = ["BUILD", "CODE"]
+    rule_ids = _resolve_sast_rules([r.strip() for r in args.rule_ids.split(",")]) \
+        if getattr(args, "rule_ids", None) else []
+    inp["sastParams"] = {
+        "sastSeverityThreshold": args.severity or "HIGH",
+        "countThreshold": args.count_threshold or 1,
+        "findingScope": {"rules": rule_ids},
+    }
+    return f"scoped to SAST rules {','.join(rule_ids)}"
+
 def cmd_policy_ensure(args):
     """Ensure the BLOCK CI/CD scan policy named --name exists."""
     name = _policy_name(args)
     ptype = getattr(args, "type", "iac")
     existing = _find_policy(name, ptype)
-
     lifecycles = getattr(args, "lifecycles", "CLI") or "CLI"
     lcs = [lc.strip() for lc in lifecycles.split(",")]
-
     if existing:
         live = existing.get("params") or {}
         if ptype == "iac":
-            rule_id = args.rule_id
-            core._drift(f"cicd scan policy {name} ({existing['id']})", [
-                ("severityThreshold", live.get("severityThreshold"), args.severity),
-                ("countThreshold", live.get("countThreshold"), args.count_threshold),
-                ("cloudConfigurationRules", sorted(r["id"] for r in live.get("cloudConfigurationRules") or []),
-                 [rule_id] if rule_id else None),
-            ])
+            _drift_iac(name, existing, live, args)
         elif ptype == "sast":
-            rule_ids = _resolve_sast_rules([r.strip() for r in args.rule_ids.split(",")]) \
-                if getattr(args, "rule_ids", None) else []
-            scope = live.get("findingScope") or {}
-            live_rules = scope.get("rules") or []
-            core._drift(f"cicd scan policy {name} ({existing['id']})", [
-                ("sastSeverityThreshold", live.get("sastSeverityThreshold"), args.severity),
-                ("countThreshold", live.get("countThreshold"), args.count_threshold),
-                ("findingScope.rules", sorted(live_rules), sorted(rule_ids) if rule_ids else None),
-            ])
+            _drift_sast(name, existing, live, args)
         print(f"cicd scan policy {name} exists ({existing['id']})")
         return
-
     inp = {
         "name": name,
         "default": False,
         "policyLifecycleEnforcements": [{"enforcementMethod": "BLOCK", "deploymentLifecycle": lc} for lc in lcs],
     }
-
-    if ptype == "iac":
-        rule_id = args.rule_id
-        if not rule_id:
-            ctl = _resolve_dockerfile_control(args.control_search)
-            if not ctl:
-                core.die(3, f"no DOCKER_FILE control matching {ROOT_DOCKERFILE_CONTROL!r} in this tenant")
-            rule_id = ctl["id"]
-        inp["lifecycleTargets"] = ["DEPLOY", "BUILD", "CODE"]
-        inp["iacParams"] = {
-            "severityThreshold": args.severity or "HIGH",
-            "countThreshold": args.count_threshold or 1,
-            "cloudConfigurationRules": [rule_id],
-        }
-        msg = f"scoped to control {rule_id}"
-    elif ptype == "sast":
-        inp["lifecycleTargets"] = ["BUILD", "CODE"]
-        rule_ids = _resolve_sast_rules([r.strip() for r in args.rule_ids.split(",")]) \
-                if getattr(args, "rule_ids", None) else []
-        inp["sastParams"] = {
-            "sastSeverityThreshold": args.severity or "HIGH",
-            "countThreshold": args.count_threshold or 1,
-            "findingScope": {"rules": rule_ids},
-        }
-        msg = f"scoped to SAST rules {','.join(rule_ids)}"
-
+    msg = _ensure_iac(args, inp) if ptype == "iac" else _ensure_sast(args, inp)
     data, _ = core.api(CREATE_CICD_POLICY, {"input": inp})
     pol = core._created(data, "createCICDScanPolicy", "scanPolicy")
     print(f"created cicd scan policy {name} ({pol['id']}) {msg}")
@@ -338,8 +349,7 @@ def cmd_policy_ensure(args):
 def cmd_policy_inspect(args):
     """Assert the CI/CD scan policy named --name exists (--require exists) — setup verification."""
     name = _policy_name(args)
-    ptype = getattr(args, "type", "iac")
-    node = _find_policy(name, ptype)
+    node = _find_policy(name)
     if not node:
         print(f"no cicd scan policy named {name}")
         sys.exit(1)
@@ -349,8 +359,7 @@ def cmd_policy_inspect(args):
 def cmd_policy_delete(args):
     """Delete the CI/CD scan policy named --name."""
     name = _policy_name(args)
-    ptype = getattr(args, "type", "iac")
-    node = _find_policy(name, ptype)
+    node = _find_policy(name)
     if not node:
         print(f"no cicd scan policy named {name}; nothing to delete")
         return
