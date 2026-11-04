@@ -4497,16 +4497,18 @@ class RunnerFloor(unittest.TestCase):
         self.assertIn("runner=unknown", out)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 
 class PullRequestVerbs(unittest.TestCase):
+    def test_branch_push_no_dir(self):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), exits() as cm:
+            call(wz.cmd_branch_push, ["--repo", "org/repo", "--branch", "foo"])
+        self.assertEqual(cm.code, 2)
+
     def test_branch_push(self):
-        with mock.patch("subprocess.run") as run, \
+        with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0, stderr="")) as run, \
              mock.patch("wizlab.codelab._gh_token", return_value="tok"), \
              contextlib.redirect_stdout(io.StringIO()), exits() as cm:
-            call(wz.cmd_branch_push, ["--repo", "org/repo", "--branch", "foo"])
+            call(wz.cmd_branch_push, ["--repo", "org/repo", "--branch", "foo", "--dir", "/tmp"])
         self.assertEqual(cm.code, 0)
         run.assert_called_once()
 
@@ -4515,3 +4517,6 @@ class PullRequestVerbs(unittest.TestCase):
              contextlib.redirect_stdout(io.StringIO()), exits() as cm:
             call(wz.cmd_pullrequest_comment, ["--repo", "org/repo", "--number", "1", "--add", "test"])
         self.assertEqual(cm.code, 0)
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

@@ -32,7 +32,7 @@ def _cicd_latest(tag_key, tag_value):
         'query { cicdScans(first: 1, filterBy: { tag: { key: "' + tag_key + '", value: "' + tag_value + '" } }, '
         "orderBy: { field: CREATED_AT, direction: DESC }) "
         "{ nodes { id status { state verdict } result { ... on CICDDiskScanResult { "
-        "sast { id rule { id } } } } } totalCount } }"
+        "sast { id rule { id externalId } } } } } totalCount } }"
     )
     data, _ = core.api(qy, {})
     nodes = (data.get("cicdScans") or {}).get("nodes") or []
@@ -58,7 +58,8 @@ def _inspect_verdict(node, require, tag_key, tag_value, rule_ids_str):
         sast_findings = res.get("sast") or []
         if rule_ids_str:
             rids = set(r.strip() for r in rule_ids_str.split(","))
-            sast_findings = [f for f in sast_findings if (f.get("rule") or {}).get("id") in rids]
+            sast_findings = [f for f in sast_findings if (f.get("rule") or {}).get("id") in rids or \
+                         (f.get("rule") or {}).get("externalId") in rids]
         if len(sast_findings) == expected_count:
             core._emit(f"SAST_FINDINGS={len(sast_findings)}\n")
             print(f"code-scan: {node['id']} sast-findings={len(sast_findings)}")
@@ -247,6 +248,26 @@ def _resolve_dockerfile_control(search):
     return exact[0] if exact else None
 
 
+
+def _resolve_sast_rules(rule_ids):
+    """Given a list of SAST rule ids (UUIDs or externalIds like WS-...), resolve them to UUIDs."""
+    resolved = []
+    for rid in rule_ids:
+        if re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", rid, re.I):
+            resolved.append(rid)
+            continue
+        data, _ = core.api(
+                       'query SASTRules($s: String!) { sastRules(first: 100, filterBy: {search: $s}) \
+                { nodes { id externalId } } }',
+            {"s": rid}
+        )
+        nodes = (data.get("sastRules") or {}).get("nodes") or []
+        exact = [n["id"] for n in nodes if n.get("externalId") == rid]
+        if not exact:
+            core.die(3, f"SAST rule not found for externalId {rid!r}")
+        resolved.append(exact[0])
+    return resolved
+
 def cmd_policy_ensure(args):
     """Ensure the BLOCK CI/CD scan policy named --name exists."""
     name = _policy_name(args)
@@ -267,7 +288,8 @@ def cmd_policy_ensure(args):
                  [rule_id] if rule_id else None),
             ])
         elif ptype == "sast":
-            rule_ids = [r.strip() for r in args.rule_ids.split(",")] if getattr(args, "rule_ids", None) else []
+            rule_ids = _resolve_sast_rules([r.strip() for r in args.rule_ids.split(",")]) \
+                if getattr(args, "rule_ids", None) else []
             scope = live.get("findingScope") or {}
             live_rules = scope.get("rules") or []
             core._drift(f"cicd scan policy {name} ({existing['id']})", [
@@ -300,7 +322,8 @@ def cmd_policy_ensure(args):
         msg = f"scoped to control {rule_id}"
     elif ptype == "sast":
         inp["lifecycleTargets"] = ["BUILD", "CODE"]
-        rule_ids = [r.strip() for r in args.rule_ids.split(",")] if getattr(args, "rule_ids", None) else []
+        rule_ids = _resolve_sast_rules([r.strip() for r in args.rule_ids.split(",")]) \
+                if getattr(args, "rule_ids", None) else []
         inp["sastParams"] = {
             "sastSeverityThreshold": args.severity or "HIGH",
             "countThreshold": args.count_threshold or 1,

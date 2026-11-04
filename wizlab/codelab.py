@@ -16,6 +16,7 @@ import json
 import os
 import pathlib
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -430,16 +431,23 @@ def cmd_branch_push(args):
     """Push local branch and optionally open PR."""
     repo = _repo(args)
     branch = args.branch or core.die(2, "--branch is required")
-    directory = getattr(args, "dir", ".") or "."
+    directory = getattr(args, "dir", None)
+    if not directory:
+        core.die(2, "--dir <path> is required")
     tok = _gh_token()
 
-    # Run git push
-    import subprocess
-    cmd = ["git", "push", f"https://x-access-token:{tok}@github.com/{repo}.git", f"HEAD:refs/heads/{branch}"]
-    try:
-        subprocess.run(cmd, cwd=directory, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except subprocess.CalledProcessError:
-        core.die(3, f"git push failed for branch {branch}")
+    b64tok = base64.b64encode(f"x-access-token:{tok}".encode()).decode()
+    env = dict(os.environ)
+    env.update({
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+        "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {b64tok}",
+    })
+
+    cmd = ["git", "push", f"https://github.com/{repo}.git", f"refs/heads/{branch}:refs/heads/{branch}"]
+    res = subprocess.run(cmd, cwd=directory, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if res.returncode != 0:
+        core.die(3, f"git push failed for branch {branch}: {res.stderr}")
 
     if getattr(args, "open_pr", False):
         number = _open_pr(repo, branch)
@@ -459,37 +467,23 @@ def cmd_pullrequest_comment(args):
     if not add_text:
         core.die(2, "--add is required")
 
-    _gh("POST", f"/repos/{repo}/issues/{number}/comments", {"body": add_text})
+    _, created_c = _gh("POST", f"/repos/{repo}/issues/{number}/comments", {"body": add_text})
 
     reply = getattr(args, "require_reply", None)
     if reply:
-        import time
         timeout = getattr(args, "timeout", 600) or 600
         interval = getattr(args, "interval", 15) or 15
         deadline = time.monotonic() + timeout
-
-        # We need to know who we are to ignore our own comments.
-        # GET /app gives the app slug, but issues/comments returns user.type="Bot".
-        # Let's just say author != app or something, or just wait for the text.
-        # Actually, "comment by a different author" means we need to know the bot's username.
-
-        # We can just check the first comment we posted and get its user login.
+        my_login = (created_c.get("user") or {}).get("login")
+        if not my_login:
+            core.die(3, "could not determine own GitHub login from comment creation")
 
         while True:
-            _, comments = _gh("GET", f"/repos/{repo}/issues/{number}/comments")
-
-            # Find the user who posted `add_text` (us)
-            my_login = None
+            _status, comments = _gh("GET", f"/repos/{repo}/issues/{number}/comments")
             for c in comments:
-                if c["body"] == add_text:
-                    my_login = c["user"]["login"]
-                    break
-
-            if my_login:
-                for c in comments:
-                    if c["user"]["login"] != my_login and reply in c["body"]:
-                        core._emit(f"REPLY_URL={c['html_url']}\n")
-                        return
+                if c.get("user", {}).get("login") != my_login and reply in c.get("body", ""):
+                    core._emit(f"REPLY_URL={c.get('html_url', '')}\n")
+                    return
 
             if time.monotonic() >= deadline:
                 core.die(1, f"No reply containing {reply!r} found within {timeout}s")
