@@ -30,6 +30,8 @@ Deliberate exceptions (never renamed; shipped labs call them):
 | `slot release` | drops the session's claimed pool slot refs; inverse of `slot claim` |
 | `patch open` | branches `patch/<stem>` and opens a Dockerfile PR on GitHub, not a converged resource |
 | `user login-url` | read-only author tool that prints a tenant's SAML sign-in URL without grading |
+| `pullrequest comment` | leaves a comment on a GitHub PR and optionally polls for a reply |
+| `branch push` | pushes a local Git branch to the remote slot repository |
 
 ### What `user reap` exit 0 promises
 One outcome per resource; `failed` outranks `operator`, which outranks `deferred` (`_reap_exit`).
@@ -125,6 +127,7 @@ The tag that first reads each contract; a lab pins at or above the highest row i
 | v0.1.85 | `slot claim` evicts claims older than `CLAIM_TTL_S` (7200s); `slot release` and `user reap` close the open `patch/<stem>` PR, delete `refs/heads/patch/<stem>`, and sweep expired claims regardless of session |
 | v0.1.92 | `sensor\|mcp ensure --out-file <path>`; `credential.ensure` opens `--out-file` with `0o600` (`O_NOFOLLOW`, `fchmod`) |
 | v0.1.92 | `code-scan ensure`; `patch open` emits `PR_URL` and logs the `Dockerfile` diff on stderr; `wizlab-learner` permits `patch open --repo` and `code-scan ensure` flags |
+| vNEXT | `policy ensure --type iac|sast`, `code-scan inspect --require sast-findings=<n>`, `pullrequest inspect --require failed`, `branch push`, `pullrequest comment` |
 
 <!-- verb-floors:begin -->
 | noun | verb | first tag |
@@ -154,6 +157,8 @@ The tag that first reads each contract; a lab pins at or above the highest row i
 | code-scan | ensure | v0.1.92 |
 | correlation | inspect | v0.1.77 |
 | pullrequest | inspect | v0.1.77 |
+| pullrequest | comment | vNEXT |
+| branch | push | vNEXT |
 | slot | claim | v0.1.77 |
 | slot | release | v0.1.77 |
 | patch | open | v0.1.77 |
@@ -220,7 +225,7 @@ Any other flag on a granted verb (including `--session`, `--cluster-arn`, `--out
 ## Nouns
 `session`, `connector`, `role`, `instance`, `user`, `wiz`, `outpost`, for Kubernetes labs `k8sconnector`
 and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`, for Wiz Code labs
-`serviceaccount`, `code-scan`, `policy`, `correlation`, `pullrequest`, `slot` and `patch`, for agent labs
+`serviceaccount`, `code-scan`, `policy`, `correlation`, `pullrequest`, `slot` and `patch`, `branch`, for agent labs
 `apiaccount` and `mcp`, and for Workflows labs `workflow` and `workflow-run`:
 - `session verify [--min-runner vX.Y.Z] [--cloud aws|gcp|azure] [--account-id <id>]` — env/session health, optional CSP identity check, and runner floor check; see §Runner identity, and the floor `session verify` enforces.
 - `role inspect|ensure` — lease-account IAM role trust grading (`inspect`) and AWS trust creation/repair (`ensure`); see §What `ensure` promises and §Credential nouns.
@@ -446,6 +451,8 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   `WIZ_LABS_GH_APP`; absent = not swept, said once). GitHub is reached as
   the App through the one JSON secret `WIZ_LABS_GH_APP` (`app_id`, `install_id`, base64 PEM `key`); absent
   is 3 before any request.
+- `branch push --repo <org/name> --branch <name> [--dir <path>] [--open-pr] [--title T] [--base main]` — push local branch to slot repo, optionally open PR.
+- `pullrequest comment --repo <org/name> --number <n> --add "<text>" [--require-reply "<substring>"] [--timeout <s>] [--interval <s>]` — comment on PR and optionally wait for reply.
 - `patch open --repo <org/name> [--session <sid>]` — the learner's fix as a PR: branch `patch/<stem>` from `main`,
   Dockerfile `USER root` → `USER node`, one PR against `main`; emits `PR_NUMBER` and `PR_URL`, and prints the changed `Dockerfile` line pair on stderr. A rerun finds the open
   PR on that head; a Dockerfile with no `USER root` is 1.

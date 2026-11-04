@@ -163,6 +163,8 @@ def cmd_pullrequest_inspect(args):
         sys.exit(1)
     if args.require == "passed" and verdict not in PASSING_VERDICTS:
         sys.exit(1)
+    if args.require == "failed" and verdict != "FAILED_BY_POLICY":
+        sys.exit(1)
 
 
 # --- GitHub as the App ---
@@ -412,9 +414,84 @@ def cmd_patch_open(args):
         _gh("PUT", f"/repos/{repo}/contents/Dockerfile", {
             "message": f"{stem}: run Juice Shop as node, not root", "branch": head, "sha": f["sha"],
             "content": base64.b64encode(text.replace("USER root", "USER node").encode()).decode()})
-        _, pr = _gh("POST", f"/repos/{repo}/pulls", {
-            "title": "Run Juice Shop as a non-root user", "head": head, "base": "main",
-            "body": f"Opened by the {stem} lab session: `USER root` → `USER node`."})
-        number = pr["number"]
+        number = _create_pr(repo, "Run Juice Shop as a non-root user", head, "main",
+                            f"Opened by the {stem} lab session: `USER root` → `USER node`.")
     print("- USER root\n+ USER node", file=sys.stderr)
     core._emit(f"PR_NUMBER={number}\nPR_URL=https://github.com/{repo}/pull/{number}\n")
+
+
+def _create_pr(repo, title, head, base, body):
+    _, pr = _gh("POST", f"/repos/{repo}/pulls", {
+        "title": title, "head": head, "base": base, "body": body
+    })
+    return pr["number"]
+
+def cmd_branch_push(args):
+    """Push local branch and optionally open PR."""
+    repo = _repo(args)
+    branch = args.branch or core.die(2, "--branch is required")
+    directory = getattr(args, "dir", ".") or "."
+    tok = _gh_token()
+
+    # Run git push
+    import subprocess
+    cmd = ["git", "push", f"https://x-access-token:{tok}@github.com/{repo}.git", f"HEAD:refs/heads/{branch}"]
+    try:
+        subprocess.run(cmd, cwd=directory, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        core.die(3, f"git push failed for branch {branch}")
+
+    if getattr(args, "open_pr", False):
+        number = _open_pr(repo, branch)
+        if number is None:
+            title = getattr(args, "title", f"Update {branch}") or f"Update {branch}"
+            base = getattr(args, "base", "main") or "main"
+            number = _create_pr(repo, title, branch, base, "Opened by branch push")
+        core._emit(f"PR_NUMBER={number}\nPR_URL=https://github.com/{repo}/pull/{number}\n")
+
+def cmd_pullrequest_comment(args):
+    """Add a comment to a PR and optionally wait for reply."""
+    repo = _repo(args)
+    number = args.number
+    if not number:
+        core.die(2, "--number is required")
+    add_text = args.add
+    if not add_text:
+        core.die(2, "--add is required")
+
+    _gh("POST", f"/repos/{repo}/issues/{number}/comments", {"body": add_text})
+
+    reply = getattr(args, "require_reply", None)
+    if reply:
+        import time
+        timeout = getattr(args, "timeout", 600) or 600
+        interval = getattr(args, "interval", 15) or 15
+        deadline = time.monotonic() + timeout
+
+        # We need to know who we are to ignore our own comments.
+        # GET /app gives the app slug, but issues/comments returns user.type="Bot".
+        # Let's just say author != app or something, or just wait for the text.
+        # Actually, "comment by a different author" means we need to know the bot's username.
+
+        # We can just check the first comment we posted and get its user login.
+
+        while True:
+            _, comments = _gh("GET", f"/repos/{repo}/issues/{number}/comments")
+
+            # Find the user who posted `add_text` (us)
+            my_login = None
+            for c in comments:
+                if c["body"] == add_text:
+                    my_login = c["user"]["login"]
+                    break
+
+            if my_login:
+                for c in comments:
+                    if c["user"]["login"] != my_login and reply in c["body"]:
+                        core._emit(f"REPLY_URL={c['html_url']}\n")
+                        return
+
+            if time.monotonic() >= deadline:
+                core.die(1, f"No reply containing {reply!r} found within {timeout}s")
+
+            time.sleep(interval)

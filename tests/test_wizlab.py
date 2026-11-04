@@ -299,7 +299,7 @@ class InspectContract(unittest.TestCase):
         # follows first use — `--require active` on a healthy fresh integration is MCPGrading's row.
         ("mcp", "inspect"): {"argv": ["--name", "lab-x-mcp"],
                              "present": {"integrations": _conn(MCP)}, "absent": [{"integrations": _conn()}]},
-        ("code-scan", "inspect"): {"argv": ["--timeout", "0"],
+        ("code-scan", "inspect"): {"argv": ["--timeout", "0", "--require", "published"],
                                    "present": {"cicdScans": _conn(SCAN)}, "absent": [{"cicdScans": _conn()}],
                                    "invalid": [["--tag-value", "bad value!"]]},
         ("policy", "inspect"): {"argv": ["--name", "block-root"],
@@ -1295,7 +1295,7 @@ class FlagParsing(unittest.TestCase):
     """`parse` is the one reader of argv: a flag's default, set and type live in FLAGS, not in handlers."""
 
     def test_present_absent_and_the_table_default(self):
-        args = wz.parse(("code-scan", "inspect"), ["--tag-value", "v", "--timeout", "5"])
+        args = wz.parse(("code-scan", "inspect"), ["--tag-value", "v", "--timeout", "5", "--require", "published"])
         self.assertEqual((args.tag_value, args.timeout, args.interval, args.require, args.session),
                          ("v", 5, 10, "published", None))
 
@@ -4499,3 +4499,19 @@ class RunnerFloor(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class PullRequestVerbs(unittest.TestCase):
+    def test_branch_push(self):
+        with mock.patch("subprocess.run") as run, \
+             mock.patch("wizlab.codelab._gh_token", return_value="tok"), \
+             contextlib.redirect_stdout(io.StringIO()), exits() as cm:
+            call(wz.cmd_branch_push, ["--repo", "org/repo", "--branch", "foo"])
+        self.assertEqual(cm.code, 0)
+        run.assert_called_once()
+
+    def test_pullrequest_comment(self):
+        with mock.patch("wizlab.codelab._gh", side_effect=[(201, {})]), \
+             contextlib.redirect_stdout(io.StringIO()), exits() as cm:
+            call(wz.cmd_pullrequest_comment, ["--repo", "org/repo", "--number", "1", "--add", "test"])
+        self.assertEqual(cm.code, 0)
