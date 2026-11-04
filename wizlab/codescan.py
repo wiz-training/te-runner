@@ -209,7 +209,10 @@ CICD_POLICIES_Q = """query CicdPolicies($f: CICDScanPolicyFilters, $after: Strin
   cicdScanPolicies(first: 50, after: $after, filterBy: $f) {
     nodes {
       id name
-      params { ... on CICDScanPolicyParamsIAC { severityThreshold countThreshold cloudConfigurationRules { id } } }
+      params {
+        ... on CICDScanPolicyParamsIAC { severityThreshold countThreshold cloudConfigurationRules { id } }
+        ... on CICDScanPolicyParamsSAST { sastSeverityThreshold countThreshold findingScope { rules { id } } }
+      }
     }
     pageInfo { hasNextPage endCursor }
   }
@@ -288,7 +291,7 @@ def _drift_sast(name, existing, live, args):
     rule_ids = _resolve_sast_rules([r.strip() for r in args.rule_ids.split(",")]) \
         if getattr(args, "rule_ids", None) else []
     scope = live.get("findingScope") or {}
-    live_rules = scope.get("rules") or []
+    live_rules = [r["id"] for r in scope.get("rules") or []]
     core._drift(f"cicd scan policy {name} ({existing['id']})", [
         ("sastSeverityThreshold", live.get("sastSeverityThreshold"), args.severity),
         ("countThreshold", live.get("countThreshold"), args.count_threshold),
