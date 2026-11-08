@@ -1,30 +1,33 @@
-/* Scoped to the player's page container: a page <style> applies to the whole player while the page is mounted. */
+/* Scoped to the player's page container: a page stylesheet applies to the whole player while the page is mounted. */
 /* Colours are the player's theme tokens, so a light theme inherits them. */
+/* Quiz and task widgets render as direct-child <div>s of the same container (the quiz question is an
+   <h1 class="m-0! text-lg …">), so block rules exclude that subtree. A class is no test: the player puts
+   class="pl-4" on markdown <ol>s. An author <div> wrapper falls outside the block rules too. */
 .prose-lab-agent-page {
   /* ch is the width of "0", wider than average Libre Franklin text: 40rem holds ~75 characters, 72ch held ~94. */
   max-width: 40rem;
   margin-inline: auto;
   line-height: 1.8;
 }
-.prose-lab-agent-page p { text-wrap: pretty; margin-block: 1.1em; }
-.prose-lab-agent-page :is(h1, h2, h3) { text-wrap: balance; letter-spacing: -0.012em; }
-.prose-lab-agent-page h1 { font-size: 1.875rem; line-height: 1.25; margin-bottom: 0.75em; }
-.prose-lab-agent-page h2 { font-size: 1.375rem; line-height: 1.35; margin-top: 2.25em; margin-bottom: 0.75em; }
-.prose-lab-agent-page h3 { font-size: 1.125rem; line-height: 1.4; margin-top: 1.75em; }
-.prose-lab-agent-page h1 + p { font-size: 1.0625rem; color: var(--tw-prose-headings); }
-.prose-lab-agent-page hr { margin-block: 2.5em; border-color: var(--lab-agent-border-subtle); }
-.prose-lab-agent-page hr + h2 { margin-top: 0; }
+.prose-lab-agent-page p:not(:where(.prose-lab-agent-page > div) *) { text-wrap: pretty; margin-block: 1.1em; }
+.prose-lab-agent-page :is(h1, h2, h3):not(:where(.prose-lab-agent-page > div) *) { text-wrap: balance; letter-spacing: -0.012em; }
+.prose-lab-agent-page h1:not(:where(.prose-lab-agent-page > div) *) { font-size: 1.875rem; line-height: 1.25; margin-bottom: 0.75em; }
+.prose-lab-agent-page h2:not(:where(.prose-lab-agent-page > div) *) { font-size: 1.375rem; line-height: 1.35; margin-top: 2.25em; margin-bottom: 0.75em; }
+.prose-lab-agent-page h3:not(:where(.prose-lab-agent-page > div) *) { font-size: 1.125rem; line-height: 1.4; margin-top: 1.75em; }
+.prose-lab-agent-page h1:not(:where(.prose-lab-agent-page > div) *) + p { font-size: 1.0625rem; color: var(--tw-prose-headings); }
+.prose-lab-agent-page hr:not(:where(.prose-lab-agent-page > div) *) { margin-block: 2.5em; border-color: var(--lab-agent-border-subtle); }
+.prose-lab-agent-page hr:not(:where(.prose-lab-agent-page > div) *) + h2 { margin-top: 0; }
 
 /* Steps: one action per item, so the gap between items carries the rhythm. */
-.prose-lab-agent-page ol > li { margin-block: 1.5em; padding-inline-start: 0.4em; }
-.prose-lab-agent-page ol > li::marker {
+.prose-lab-agent-page ol > li:not(:where(.prose-lab-agent-page > div) *) { margin-block: 1.5em; padding-inline-start: 0.4em; }
+.prose-lab-agent-page ol > li:not(:where(.prose-lab-agent-page > div) *)::marker {
   color: var(--lab-agent-primary-text);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
-.prose-lab-agent-page li > p { margin-block: 0.6em; }
+.prose-lab-agent-page li > p:not(:where(.prose-lab-agent-page > div) *) { margin-block: 0.6em; }
 /* foreground-subtle fails 4.5:1 on the page surface; explanations keep body colour and the action line goes brighter. */
-.prose-lab-agent-page li > p:first-child { color: var(--tw-prose-headings); }
+.prose-lab-agent-page li > p:not(:where(.prose-lab-agent-page > div) *):first-child { color: var(--tw-prose-headings); }
 .prose-lab-agent-page strong { color: var(--tw-prose-headings); font-weight: 600; }
 
 /* Amber, not the theme's purple: links and step numbers already use primary. */
@@ -63,16 +66,16 @@
 .prose-lab-agent-page aside.yellow { border-color: var(--lab-agent-warning-border); border-inline-start-color: var(--lab-agent-warning); background: var(--lab-agent-warning-subtle); }
 .prose-lab-agent-page aside.red    { border-color: var(--lab-agent-danger-border);  border-inline-start-color: var(--lab-agent-danger);  background: var(--lab-agent-danger-subtle); color: var(--lab-agent-danger-text); }
 
-.prose-lab-agent-page details {
+.prose-lab-agent-page details:not(:where(.prose-lab-agent-page > div) *) {
   margin-block: 1.5em;
   padding: 0.6em 1em;
   border: 1px solid var(--lab-agent-border-subtle);
   border-radius: 0.5rem;
 }
-.prose-lab-agent-page details[open] { padding-bottom: 0.25em; }
-.prose-lab-agent-page summary { cursor: pointer; font-weight: 600; color: var(--tw-prose-headings); }
-.prose-lab-agent-page details > :not(summary) { font-size: 0.9375rem; }
+.prose-lab-agent-page details:not(:where(.prose-lab-agent-page > div) *)[open] { padding-bottom: 0.25em; }
+.prose-lab-agent-page details > summary:not(:where(.prose-lab-agent-page > div) *) { cursor: pointer; font-weight: 600; color: var(--tw-prose-headings); }
+.prose-lab-agent-page details:not(:where(.prose-lab-agent-page > div) *) > :not(summary) { font-size: 0.9375rem; }
 
-.prose-lab-agent-page figcaption { text-align: center; color: var(--tw-prose-body); }
-.prose-lab-agent-page table { font-variant-numeric: tabular-nums; }
+.prose-lab-agent-page figcaption:not(:where(.prose-lab-agent-page > div) *) { text-align: center; color: var(--tw-prose-body); }
+.prose-lab-agent-page table:not(:where(.prose-lab-agent-page > div) *) { font-variant-numeric: tabular-nums; }
 .prose-lab-agent-page section.footnotes { font-size: 0.875rem; color: var(--tw-prose-body); }
