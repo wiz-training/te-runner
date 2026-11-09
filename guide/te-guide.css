@@ -8,6 +8,9 @@
   max-width: 40rem;
   margin-inline: auto;
   line-height: 1.8;
+  /* The player sets overflow: hidden here, which makes this box the sticky and scroll() container for its
+     ::after; clip clips the same without becoming one. */
+  overflow: clip;
 }
 .prose-lab-agent-page p:not(:where(.prose-lab-agent-page > div) *) { text-wrap: pretty; margin-block: 1.1em; }
 .prose-lab-agent-page :is(h1, h2, h3):not(:where(.prose-lab-agent-page > div) *) { text-wrap: balance; letter-spacing: -0.012em; }
@@ -79,3 +82,32 @@
 .prose-lab-agent-page figcaption:not(:where(.prose-lab-agent-page > div) *) { text-align: center; color: var(--tw-prose-body); }
 .prose-lab-agent-page table:not(:where(.prose-lab-agent-page > div) *) { font-variant-numeric: tabular-nums; }
 .prose-lab-agent-page section.footnotes { font-size: 0.875rem; color: var(--tw-prose-body); }
+
+/* "More below" pill: the column's own scroll shadow is too faint to read on a narrow (20%) instructions column, so
+   a page that ends below the fold looks complete. Driven by the scroller's scroll timeline: an inactive timeline
+   (the page fits) and the last 6rem leave the base opacity 0. Without scroll-timeline support nothing renders. */
+@supports (animation-timeline: scroll()) {
+  .prose-lab-agent-page::after {
+    content: "More below \2193";
+    position: sticky;
+    bottom: 0.75rem;
+    z-index: 1;
+    display: block;
+    width: max-content;
+    margin: -2.25rem auto 0;
+    padding: 0.3em 0.9em;
+    border-radius: 999px;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    line-height: 1.4;
+    color: var(--lab-agent-primary-foreground);
+    background: var(--lab-agent-primary);
+    box-shadow: 0 2px 10px rgb(0 0 0 / 0.45);
+    pointer-events: none;
+    opacity: 0;
+    animation: te-guide-more linear none;
+    animation-timeline: scroll(nearest block);
+    animation-range: 0% calc(100% - 6rem);
+  }
+  @keyframes te-guide-more { from, to { opacity: 1; } }
+}
