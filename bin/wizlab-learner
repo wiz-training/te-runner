@@ -48,7 +48,7 @@ for a in "${args[@]:2}"; do
     "branch push")
       case "$flag" in --repo|--branch|--dir|--open-pr|--title|--base) continue ;; esac ;;
     "pullrequest inspect")
-      case "$flag" in --repo|--number|--require) continue ;; esac ;;
+      case "$flag" in --repo|--number|--require|--wait|--interval) continue ;; esac ;;
     "pullrequest comment")
       case "$flag" in --repo|--number|--add|--require-reply|--timeout|--interval) continue ;; esac ;;
     *)

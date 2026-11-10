@@ -804,6 +804,32 @@ class PullRequestGrading(unittest.TestCase):
         sent = wiz.sent("cloudEvents")[0]["f"]
         self.assertEqual(sent["timestamp"], {"inLast": {"amount": 7, "unit": "DurationFilterValueUnitDays"}})
 
+    def test_wait_re_reads_until_the_scan_lands(self):
+        """php2shell-201's Action Board ran this seconds after opening the PR: one read saw no row and failed
+        the run. --wait keeps reading on the interval; a 3 stops it at once; the deadline returns 1."""
+        clock, reads = {"t": 1000.0}, []
+
+        def events(_vars):
+            reads.append(clock["t"])
+            if clock["t"] - 1000.0 < 30:
+                return _conn()
+            return _conn(self._row("SUCCESS", "FAILED_BY_POLICY"))
+
+        def run(argv, field):
+            with mock.patch.object(wz.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s)), \
+                 mock.patch.object(wz.time, "monotonic", lambda: clock["t"]):
+                return exit_code(wz.cmd_pullrequest_inspect, ["--repo", "x/y", "--number", "7", *argv],
+                                 wiz=FakeWiz(cloudEvents=field), env=self.ENV)
+
+        self.assertEqual(run(["--require", "failed", "--wait", "120"], events), 0)
+        self.assertEqual(len(reads), 3)
+        clock["t"], reads[:] = 1000.0, []
+        self.assertEqual(run(["--require", "failed", "--wait", "10"], events), 1)
+        clock["t"] = 1000.0
+        self.assertEqual(run(["--require", "scanned", "--wait", "120"],
+                             lambda _v: _conn(self._row("SKIPPED", None))), 3)
+        self.assertEqual(run(["--require", "failed"], events), 1)
+
     def test_the_newest_row_for_the_pr_wins(self):
         old = self._row("PENDING", None, ts="2026-10-18T18:00:03Z")
         new = self._row("SUCCESS", "PASSED_BY_POLICY", ts="2026-10-18T18:04:00Z")
