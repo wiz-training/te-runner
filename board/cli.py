@@ -90,6 +90,30 @@ def _check_granted_verbs(manifest, run_lab):
                 raise BoardError(3, f"step '{pair}' is not listed in {verbs_file}")
 
 
+# Every step runs through `sudo wizlab-learner`, which exits 2 on a flag its per-verb row does not list; arm reads
+# the same rows so a board that would fail at the learner's click fails here instead.
+_LEARNER_ROW_RE = re.compile(r'^\s*"([a-z0-9-]+ [a-z0-9-]+)"\)\s*\n\s*case "\$flag" in ([^)]*)\)', re.M)
+
+
+def _learner_flag_rows(env):
+    path = pathlib.Path(env.get("WIZLAB_LEARNER") or "/usr/local/bin/wizlab-learner")
+    if not path.is_file():
+        path = pathlib.Path(__file__).resolve().parent.parent / "bin" / "wizlab-learner"
+    return {pair: set(flags.split("|")) for pair, flags in _LEARNER_ROW_RE.findall(path.read_text())}
+
+
+def _check_learner_flags(manifest, env):
+    rows = _learner_flag_rows(env)
+    for action in manifest["actions"]:
+        for step in action["steps"]:
+            pair = f"{step['argv'][0]} {step['argv'][1]}"
+            for flag in (a.split("=", 1)[0] for a in step["argv"][2:] if a.startswith("-")):
+                if pair not in rows:
+                    raise BoardError(3, f"step '{pair}' passes {flag} but wizlab-learner has no flag row for it")
+                if flag not in rows[pair]:
+                    raise BoardError(3, f"step '{pair}': wizlab-learner does not allow {flag}")
+
+
 def _import_jsonschema():
     try:
         import jsonschema
@@ -125,6 +149,7 @@ def arm(env=None):
     _validate_and_resolve(manifest, env)
     run_lab = _run_lab_dir(env)
     _check_granted_verbs(manifest, run_lab)
+    _check_learner_flags(manifest, env)
     run_lab.mkdir(parents=True, exist_ok=True)
     run_lab.chmod(0o755)
     out = run_lab / "board.json"

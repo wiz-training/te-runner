@@ -80,7 +80,8 @@ class ArmContract(unittest.TestCase):
     """`wizlab-board arm` exit-code table (`board/SPEC.md` §Manifest):
     0 armed (writes 0644 board.json with {NAME} and {STEM} resolved);
     2 schema violation, unresolved {NAME}/{STEM}, or credential/secret noun;
-    3 missing learner-verbs grant or ungranted `<noun> <verb>` step."""
+    3 missing learner-verbs grant, ungranted `<noun> <verb>` step, or a step flag its
+    `wizlab-learner` row does not allow."""
 
     # (case, manifest_obj_or_raw, extra_env, learner_verbs_content, want_exit)
     ROWS: typing.ClassVar = (
@@ -112,6 +113,24 @@ class ArmContract(unittest.TestCase):
         ),
         ("no learner-verbs grant file", _manifest(), _VALID_ENV, None, 3),
         ("step verb pair absent from learner-verbs", _manifest(), _VALID_ENV, "patch open\n", 3),
+        # php2shell-201's Action Board: `branch push` granted but no wizlab-learner flag row, so every click failed.
+        ("granted step whose flags have no wizlab-learner row", _manifest(actions=[{
+            "id": "open-pr", "label": "Run",
+            "steps": [{"title": "Push", "argv": ["slot", "claim", "--lab", "x"], "timeout_s": 60}],
+        }]), _VALID_ENV, "slot claim\n", 3),
+        ("granted step with a flag its wizlab-learner row omits", _manifest(actions=[{
+            "id": "open-fix", "label": "Run",
+            "steps": [{"title": "Open", "argv": ["patch", "open", "--branch", "x"], "timeout_s": 60}],
+        }]), _VALID_ENV, _GRANTED, 3),
+        ("code-lab verbs with their learner flags arm", _manifest(actions=[{
+            "id": "open-pr", "label": "Run",
+            "steps": [
+                {"title": "Push", "argv": ["branch", "push", "--repo", "{REPO}", "--branch", "b", "--dir", "/srv/r.git",
+                                           "--open-pr"], "timeout_s": 120},
+                {"title": "Wait", "argv": ["pullrequest", "inspect", "--repo", "{REPO}", "--require", "failed"],
+                 "timeout_s": 900},
+            ],
+        }]), _VALID_ENV, "branch push\npullrequest inspect\n", 0),
     )
 
     def test_arm_contract_rows(self):
@@ -131,10 +150,10 @@ class ArmContract(unittest.TestCase):
                     self.assertTrue(board_json.is_file())
                     self.assertEqual(stat.S_IMODE(board_json.stat().st_mode), 0o644)
                     written = json.loads(board_json.read_text())
-                    steps = written["actions"][0]["steps"]
-                    want_s0 = ["patch", "open", "--repo", "wiz-training/te-code-juice-shop-01"]
-                    self.assertEqual(steps[0]["argv"], want_s0)
-                    self.assertEqual(steps[1]["argv"], ["code-scan", "ensure", "--ref", "patch/lab-abc123def456"])
+                    subs = {"{REPO}": extra_env["BOARD_VAR_REPO"], "{STEM}": "lab-abc123def456"}
+                    want = [[subs.get(a, a).replace("{STEM}", subs["{STEM}"]) for a in st["argv"]]
+                            for st in mf["actions"][0]["steps"]]
+                    self.assertEqual([st["argv"] for st in written["actions"][0]["steps"]], want)
                 else:
                     self.assertFalse(board_json.exists())
 

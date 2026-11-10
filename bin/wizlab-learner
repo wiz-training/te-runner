@@ -45,6 +45,12 @@ for a in "${args[@]:2}"; do
       case "$flag" in --repo) continue ;; esac ;;
     "code-scan ensure")
       case "$flag" in --name-suffix|--policy|--ref|--repo|--types) continue ;; esac ;;
+    "branch push")
+      case "$flag" in --repo|--branch|--dir|--open-pr|--title|--base) continue ;; esac ;;
+    "pullrequest inspect")
+      case "$flag" in --repo|--number|--require) continue ;; esac ;;
+    "pullrequest comment")
+      case "$flag" in --repo|--number|--add|--require-reply|--timeout|--interval) continue ;; esac ;;
     *)
       echo "wizlab: '$pair' has no learner flag allowlist in wizlab-learner; add a row in te-runner before granting flags" >&2
       exit 2 ;;

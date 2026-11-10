@@ -55,7 +55,7 @@ Contract: `manifest.schema.json`. The lab passes `BOARD_MANIFEST = file("board.j
 |---|---|
 | 0 | armed |
 | 2 | schema violation, unresolved `{NAME}`, or a step on a credential noun (`wizlab/SPEC.md` §Credential nouns) or `user`: they print secrets |
-| 3 | no grant, or a step's `<noun> <verb>` absent from `learner-verbs` |
+| 3 | no grant, a step's `<noun> <verb>` absent from `learner-verbs`, or a step flag absent from that verb's `bin/wizlab-learner` row (the learner click would exit 2) |
 
 ### HTTP API
 
