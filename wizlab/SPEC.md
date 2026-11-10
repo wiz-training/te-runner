@@ -217,6 +217,9 @@ files (`te-aws-connector-auth-break-201/scripts/grant_learner.sh`,
 | `container inspect` | `--account-id`, `--image-contains`, `--require-image` |
 | `patch open` | `--repo` |
 | `code-scan ensure` | `--name-suffix`, `--policy`, `--ref`, `--repo`, `--types` |
+| `branch push` | `--repo`, `--branch`, `--dir`, `--open-pr`, `--title`, `--base` |
+| `pullrequest inspect` | `--repo`, `--number`, `--require` |
+| `pullrequest comment` | `--repo`, `--number`, `--add`, `--require-reply`, `--timeout`, `--interval` |
 
 Any other flag on a granted verb (including `--session`, `--cluster-arn`, `--out-file`, `--definition`,
 `--id`, `--outpost-id`, `--email`, `--name`, `--domain`) or any flag on a pair with no row in
