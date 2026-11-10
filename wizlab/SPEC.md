@@ -127,7 +127,7 @@ The tag that first reads each contract; a lab pins at or above the highest row i
 | v0.1.85 | `slot claim` evicts claims older than `CLAIM_TTL_S` (7200s); `slot release` and `user reap` close the open `patch/<stem>` PR, delete `refs/heads/patch/<stem>`, and sweep expired claims regardless of session |
 | v0.1.92 | `sensor\|mcp ensure --out-file <path>`; `credential.ensure` opens `--out-file` with `0o600` (`O_NOFOLLOW`, `fchmod`) |
 | v0.1.92 | `code-scan ensure`; `patch open` emits `PR_URL` and logs the `Dockerfile` diff on stderr; `wizlab-learner` permits `patch open --repo` and `code-scan ensure` flags |
-| vNEXT | `policy ensure --type iac|sast`, `code-scan inspect --require sast-findings=<n>`, `pullrequest inspect --require failed`, `branch push`, `pullrequest comment` |
+| vNEXT | `policy ensure --type iac|sast`, `code-scan inspect --require sast-findings=<n>`, `pullrequest inspect --require failed`, `pullrequest inspect --wait`, `branch push`, `pullrequest comment` |
 
 <!-- verb-floors:begin -->
 | noun | verb | first tag |
@@ -218,7 +218,7 @@ files (`te-aws-connector-auth-break-201/scripts/grant_learner.sh`,
 | `patch open` | `--repo` |
 | `code-scan ensure` | `--name-suffix`, `--policy`, `--ref`, `--repo`, `--types` |
 | `branch push` | `--repo`, `--branch`, `--dir`, `--open-pr`, `--title`, `--base` |
-| `pullrequest inspect` | `--repo`, `--number`, `--require` |
+| `pullrequest inspect` | `--repo`, `--number`, `--require`, `--wait`, `--interval` |
 | `pullrequest comment` | `--repo`, `--number`, `--add`, `--require-reply`, `--timeout`, `--interval` |
 
 Any other flag on a granted verb (including `--session`, `--cluster-arn`, `--out-file`, `--definition`,
@@ -431,7 +431,7 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   rebuilt while `createdAt` stays fixed — measured 2026-10-27 on TE: slot-01 `createdAt 2026-10-16T22:21:24Z`,
   `updatedAt 2026-10-26T21:53:26Z` after a solve play, and neither slot-01 nor slot-02 `updatedAt` moved during
   no-solve play `mwgvp4n6aj5j`).
-- `pullrequest inspect --repo <org/name> [--number N] [--session <sid>] --require scanned|passed` — *(author/legacy-only: 0 lab-script callers, kept in `VERBS` for verb-floor compatibility)* the Patch PR's scan (no
+- `pullrequest inspect --repo <org/name> [--number N] [--session <sid>] --require scanned|passed|failed [--wait N [--interval S]]` — the Patch PR's scan (no
   `--number`: the open PR on head `patch/<stem>`, read from GitHub, never opened): a
   `cloudEvents` row (`kind CI_CD_SCAN`, `cicdScan.trigger PULL_REQUEST`, `resource.subjectResourceExternalId
   github.com##<org>/<name>`) matched client-side on `codeAnalyzerDetails.pullRequest.id` (no server-side PR
@@ -439,7 +439,9 @@ and `container`, for connectorless Runtime-Sensor labs `sensor` and `detection`,
   SUCCESS`; `passed` = SUCCESS and verdict `PASSED_BY_POLICY` or `WARN_BY_POLICY` — the default
   vulnerabilities policy warns on every Juice Shop slot's npm tree and the PR plane carries no Dockerfile
   finding, so the verdict grades a completed scan, never the fix. No row or PENDING is 1; FAILURE or
-  SKIPPED (the scan did not run) is 3. Emits `PR_SCAN_STATE`, `PR_SCAN_VERDICT`, `PR_SCAN_FINDINGS`.
+  SKIPPED (the scan did not run) is 3; `failed` = SUCCESS and verdict `FAILED_BY_POLICY`. `--wait N` re-reads every
+  `--interval` (15 s) while the answer is 1, for up to N seconds, overshooting by at most one interval: a board
+  step runs seconds after it opens the PR. Emits `PR_SCAN_STATE`, `PR_SCAN_VERDICT`, `PR_SCAN_FINDINGS`.
 - `slot claim|release --lab <name> [--session <sid>]` — the learner-repo pool (te-code-labs `scripts/pool.py` seeds and
   resets it): `claim` takes the first free `te-code-<lab>-NN` by creating `refs/heads/claims/<lab>/slot-NN` in
   te-code-labs on an empty commit whose message is the session stem (atomic, so two graders cannot share

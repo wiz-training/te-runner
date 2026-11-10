@@ -134,15 +134,31 @@ def cmd_pullrequest_inspect(args):
     GitHub. scanned = state SUCCESS; passed = SUCCESS and a verdict in
     PASSING_VERDICTS — WARN_BY_POLICY counts because the default vulnerabilities policy warns on every
     Juice Shop slot's npm tree and the PR plane carries no Dockerfile finding. PENDING or no row is 1; a
-    scan that did not run (FAILURE, SKIPPED) is 3."""
+    scan that did not run (FAILURE, SKIPPED) is 3. --wait N re-reads every --interval seconds while the answer
+    is 1, up to N seconds: a board step runs seconds after it opens the PR and the scan lands minutes later."""
     repo = _repo(args)
+    deadline = time.monotonic() + (args.wait or 0)
+    while True:
+        rc, msg = _pullrequest_verdict(args, repo)
+        if rc != 1 or time.monotonic() >= deadline:
+            break
+        time.sleep(args.interval or 15)
+    if rc == 3:
+        core.die(3, msg)
+    if msg:
+        print(msg)
+    if rc:
+        sys.exit(rc)
+
+
+def _pullrequest_verdict(args, repo):
+    """One read of the PR scan: (0, ""), (1, why) while it is absent, pending or the wrong verdict, (3, why)."""
     number = args.number
     if number is None:
         # A check must find the learner's PR without opening one: the head is deterministic.
         number = _open_pr(repo, f"patch/{core._stem(args)}")
         if number is None:
-            print(f"no open PR on {repo} head patch/{core._stem(args)}")
-            sys.exit(1)
+            return 1, f"no open PR on {repo} head patch/{core._stem(args)}"
     # cloudEvents answers inside a default window when none is sent; a session is hours, not days.
     filters = {"f": {"kind": {"equals": ["CI_CD_SCAN"]},
                      "cicdScan": {"trigger": {"equals": ["PULL_REQUEST"]}},
@@ -151,22 +167,21 @@ def cmd_pullrequest_inspect(args):
     nodes = core._all_nodes(PR_SCANS_Q, filters, "cloudEvents")
     rows = [n for n in nodes if _pr_id(n) == str(number)]
     if not rows:
-        print(f"no PR-triggered scan for {repo}#{number}")
-        sys.exit(1)
+        return 1, f"no PR-triggered scan for {repo}#{number}"
     row = max(rows, key=lambda n: n.get("timestamp") or "")
     details = row.get("extraDetails") or {}
     state, verdict = (details.get("status") or {}).get("state"), (details.get("status") or {}).get("verdict")
     findings = details.get("totalMatches")
     core._emit(f"PR_SCAN_STATE={state}\nPR_SCAN_VERDICT={verdict}\nPR_SCAN_FINDINGS={findings}\n")
     if state in ("FAILURE", "SKIPPED"):
-        core.die(3, f"{repo}#{number}: the PR scan did not run ({state})")
+        return 3, f"{repo}#{number}: the PR scan did not run ({state})"
     if state != "SUCCESS":
-        sys.exit(1)
+        return 1, ""
     if args.require == "passed" and verdict not in PASSING_VERDICTS:
-        sys.exit(1)
+        return 1, ""
     if args.require == "failed" and verdict != "FAILED_BY_POLICY":
-        sys.exit(1)
-
+        return 1, ""
+    return 0, ""
 
 # --- GitHub as the App ---
 def _app():
