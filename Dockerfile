@@ -99,6 +99,7 @@ LABEL org.opencontainers.image.version=${TE_RUNNER_TAG} \
 
 COPY bin/wizlab bin/wizlab-learner bin/wizlab-grant bin/wizlab-board /usr/local/bin/
 COPY wizlab/*.py /usr/local/lib/python3.12/site-packages/wizlab/
+COPY wizlab/idp/*.py /usr/local/lib/python3.12/site-packages/wizlab/idp/
 COPY board/*.py board/manifest.schema.json /usr/local/lib/python3.12/site-packages/board/
 COPY reaper/reap_orphans.py /opt/reaper/reap_orphans.py
 COPY entrypoint.sh /entrypoint.sh

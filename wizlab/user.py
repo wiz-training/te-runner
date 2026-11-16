@@ -5,28 +5,11 @@ import string
 import sys
 import urllib.parse
 
-from . import core
-
-
-# --- lab user (Okta via Workflows Router): backs Wiz SSO for a learner. ---
-def _okta_env():
-    def need(k):
-        return os.getenv(k) or core.die(3, f"{k} not in environment (Okta Workflows secret; not wired?)")
-    return need("OKTA_WF_INVOKE_URL"), need("OKTA_WF_CLIENT_TOKEN")
-
-
-def _okta_call(invoke_url, token, body):
-    """POST body to the Okta Workflows Router; returns the parsed response. `inspect` is a read and retries
-    once (`attempts=2`, 61s worst-case at `_post`'s 30s timeout + 1s backoff so two `user inspect` calls fit
-    inside `canary.sh`'s 300s window); mutations submit once because the router creates the user before
-    answering."""
-    headers = {"x-api-client-token": token, "Content-Type": "application/json", "Accept": "application/json"}
-    attempts = 2 if body.get("action") == "inspect" else 1
-    return core._post(invoke_url, body, headers, attempts=attempts)
+from . import core, idp
 
 
 def _okta_login(args):
-    """Session stem as the Okta login: lab-<session_id>. The router appends the domain."""
+    """Session stem as the IdP login: lab-<session_id>. The router appends the domain."""
     return core._stem(args)
 
 
@@ -142,24 +125,16 @@ def _wiz_login_url(domain):
 
 
 def cmd_user_ensure(args):
-    """Create the per-lease Okta user backing Wiz SSO and publish WIZ_USER/WIZ_PWD."""
-    invoke_url, token = _okta_env()
+    """Create the per-lease SSO user backing Wiz SSO and publish WIZ_USER/WIZ_PWD."""
+    adapter = idp.for_tenant(core._tenant())
+    adapter.check_env()
     login = _okta_login(args)
     profile = args.profile or os.getenv("LAB_PROFILE")
     if not profile:
         core.die(2, "--profile or LAB_PROFILE required")
     pwd = _gen_password()
     participant = os.getenv("INSTRUQT_PARTICIPANT_ID", "manual")
-    res = _okta_call(invoke_url, token, {
-        "action": "create",
-        "profile": profile,
-        "login": login,
-        "password": pwd,
-        "participant_id": participant,
-    })
-    # The router appends the tenant's email domain; what it returns as `login` is what the learner
-    # signs in with. A router that returns nothing leaves the stem, which is still the reap key.
-    user = res.get("login") or login
+    user = adapter.create(login, profile, pwd, participant)
     # secret: nothing parses this verb's stdout — the sign-in note reads $EXEC_OUTPUT — and the
     # password was readable in `instruqt lab logs` for the whole life of every play.
     core._emit(f"WIZ_USER={user}\nWIZ_PWD={pwd}\n", secret=True)
@@ -167,17 +142,17 @@ def cmd_user_ensure(args):
 
 
 def cmd_user_inspect(args):
-    """Two reads of one login, exit 0 present and 1 absent. Default: Okta, through the router — the login
+    """Two reads of one login, exit 0 present and 1 absent. Default: the tenant's IdP — the login
     `user ensure` created, which Okta expires on its own schedule. `--wiz`: the tenant's own `users` record
     the first SSO sign-in minted and `user delete` removes; it outlives the Okta login, so only this read
     confirms the delete. `--wiz` needs the tenant pair alone, never OKTA_WF_*."""
     if args.wiz:
         return _inspect_wiz_user(args)
     core._unused(args, "Okta (pass --wiz)", "--domain")
-    invoke_url, token = _okta_env()
+    adapter = idp.for_tenant(core._tenant())
+    adapter.check_env()
     login = _okta_login(args)
-    res = _okta_call(invoke_url, token, {"action": "inspect", "login": login})
-    if not res.get("okta_user_id"):
+    if not adapter.inspect(login):
         print(f"no Okta user for {login}")
         sys.exit(1)
     print(f"user {login} exists")
