@@ -1458,6 +1458,19 @@ class ExitCodeContract(unittest.TestCase):
         self.assertEqual(cm.code, 3)
         self.assertEqual(op.call_count, 1)  # 4xx is not transient — no retry
 
+    def test_post_errors_never_print_the_query_string(self):
+        url = "https://router.example/api/flo/abc/invoke?clientToken=s3cr3t"
+        for side in (urllib.error.HTTPError(url, 400, "bad", None, io.BytesIO(b"nope")),
+                     urllib.error.HTTPError(url, 503, "busy", None, io.BytesIO(b"later")),
+                     urllib.error.URLError("boom")):
+            op = mock.MagicMock(side_effect=side)
+            with self.subTest(side=type(side).__name__), mock.patch.object(wz.urllib.request, "urlopen", op), \
+                 mock.patch.object(wz.time, "sleep"), self.assertRaises(wz.WizlabError) as cm:
+                wz._post(url, {"action": "create"}, {}, attempts=1)
+            self.assertIn("https://router.example/api/flo/abc/invoke", str(cm.exception))
+            self.assertNotIn("s3cr3t", str(cm.exception))
+            self.assertNotIn("clientToken", str(cm.exception))
+
     def test_post_guards_unreadable_error_body_and_non_dict_json_as_3(self):
         for status, want_calls in ((400, 1), (503, 3)):
             fp = mock.MagicMock()
