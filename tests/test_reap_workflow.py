@@ -13,11 +13,26 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from test_build_workflow import REAP_YML, _image_steps, _live, _run_block
+from test_build_workflow import REAP_YML, ROOT, _image_steps, _live, _run_block
 
 
 def _report_steps(text):
     return _image_steps(text[text.index("\n  report:\n") :])
+
+
+def _all_job_steps(text):
+    """Return `[(job_name, [(label, body)])]` for every job in a workflow file."""
+    live = _live(text)
+    jobs_idx = live.index("\njobs:\n") + len("\njobs:\n")
+    body = live[jobs_idx:]
+    matches = list(re.finditer(r"(?m)^  ([A-Za-z0-9_-]+):\s*$", body))
+    out = []
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+        chunk = body[m.start() : end]
+        if "\n    steps:\n" in chunk:
+            out.append((m.group(1), _image_steps(chunk)))
+    return out
 
 
 def _parse_github_output(text):
@@ -77,7 +92,23 @@ class ReapWorkflowTests(unittest.TestCase):
         )
         self.assertIn("GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}", report_section)
         report_steps = _report_steps(text)
-        self.assertEqual([label for label, _ in report_steps], ["report issue"])
+        self.assertEqual([label for label, _ in report_steps], ["checkout te-runner", "report issue"])
+        self.assertIn("actions/checkout@v5", dict(report_steps)["checkout te-runner"])
+
+    def test_every_job_running_gh_checks_out_repo_first(self):
+        """`gh` infers the target repository from the checked-out git repo; a job calling `gh` without
+        an earlier `actions/checkout` fails on a fresh runner even though shimmed `gh` tests pass."""
+        checked = 0
+        for wf in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+            for job, steps in _all_job_steps(wf.read_text()):
+                gh_idxs = [i for i, (_, body) in enumerate(steps) if re.search(r"(?m)(?:^|\s)gh\s+", _run_block(body))]
+                if not gh_idxs:
+                    continue
+                checked += 1
+                checkout_idxs = [i for i, (_, body) in enumerate(steps) if "uses: actions/checkout@" in body]
+                self.assertTrue(checkout_idxs, f"{wf.name}:{job} runs gh without actions/checkout")
+                self.assertLess(checkout_idxs[0], gh_idxs[0], f"{wf.name}:{job} runs gh before actions/checkout")
+        self.assertGreaterEqual(checked, 3)
 
     def _run_reap_job(self, tmp, env_overrides, py_rc=0, py_stdout="", py_stderr=""):
         steps = dict(_image_steps(REAP_YML.read_text()))

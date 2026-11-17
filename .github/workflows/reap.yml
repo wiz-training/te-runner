@@ -118,6 +118,8 @@ jobs:
     if: failure() && needs.reap.outputs.failed == 'true'
     runs-on: ubuntu-24.04
     steps:
+      - name: checkout te-runner
+        uses: actions/checkout@v5
       - name: report issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
