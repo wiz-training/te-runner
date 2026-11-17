@@ -27,20 +27,55 @@ on:
         description: "Tenant the manual sessions are reaped under (a REAP_TENANTS key; empty = the first)"
         type: string
         default: ""
+      confirm:
+        description: "Target tenant key to confirm deleting manual sessions (required when sessions is non-empty and commit is true)"
+        type: string
+        default: ""
+permissions:
+  contents: read
+  issues: write
 jobs:
   reap:
     runs-on: ubuntu-24.04
     # Floating tag: build.yml advances :reap only after the versioned image is smoke-tested and pushed,
     # so the reaper never names an unbuilt tag; rollback = pin vX.Y.Z on this line for one cycle.
     container: ghcr.io/wiz-training/te-runner:reap
+    outputs:
+      failed: ${{ steps.reap.outputs.failed }}
+      summary: ${{ steps.reap.outputs.summary }}
+    env:
+      # One line and one secret pair per tenant; the tag swept is tid:<key lower-cased>.
+      REAP_TENANTS: TBCMP,TE
     steps:
+      - name: check confirm
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_COMMIT: ${{ inputs.commit }}
+          REAP_SESSIONS: ${{ inputs.sessions }}
+          REAP_SESSIONS_TENANT: ${{ inputs.tenant }}
+          REAP_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$INPUT_COMMIT" = "true" ]; then
+            trimmed=$(printf '%s' "$REAP_SESSIONS" | tr -d '[:space:],')
+            if [ -n "$trimmed" ]; then
+              target="$REAP_SESSIONS_TENANT"
+              if [ -z "$target" ]; then
+                target=$(printf '%s' "$REAP_TENANTS" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -m1 '.' | tr '[:lower:]' '[:upper:]' || true)
+                target="${target:-TBCMP}"
+              fi
+              if [ "$REAP_CONFIRM" != "$target" ]; then
+                echo "::error::manual dispatch with non-empty sessions and commit=true requires confirm equal to the resolved target tenant (tenant input, or first REAP_TENANTS key when empty); nothing was reaped"
+                exit 1
+              fi
+            fi
+          fi
       - name: reap orphans
+        id: reap
+        shell: bash
         env:
           INSTRUQT_TOKEN: ${{ secrets.INSTRUQT_TOKEN }}
           # Code-lab pool claims live in te-code-labs; without the App secret, stopped code-lab plays leak slots.
           WIZ_LABS_GH_APP: ${{ secrets.WIZ_LABS_GH_APP }}
-          # One line and one secret pair per tenant; the tag swept is tid:<key lower-cased>.
-          REAP_TENANTS: TBCMP,TE
           # A lab never runs 24 h, so anything older is residue.
           REAP_TENANT_MIN_AGE_H: "24"
           WIZ_TBCMP_CLIENT_ID: ${{ secrets.WIZ_TBCMP_CLIENT_ID }}
@@ -49,8 +84,62 @@ jobs:
           WIZ_TE_CLIENT_SECRET: ${{ secrets.WIZ_TE_CLIENT_SECRET }}
           REAP_SESSIONS: ${{ inputs.sessions }}
           REAP_SESSIONS_TENANT: ${{ inputs.tenant }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_COMMIT: ${{ inputs.commit }}
+          REAP_COMMIT: ${{ vars.REAP_COMMIT }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then MODE="${{ inputs.commit }}"; else MODE="${{ vars.REAP_COMMIT }}"; fi
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then MODE="$INPUT_COMMIT"; else MODE="$REAP_COMMIT"; fi
           COMMIT=""; [ "$MODE" = "true" ] && COMMIT="--commit"
-          echo "commit mode: ${COMMIT:-dry-run} (from ${{ github.event_name }})"
-          python /opt/reaper/reap_orphans.py $COMMIT
+          echo "commit mode: ${COMMIT:-dry-run} (from $EVENT_NAME)"
+          log=$(mktemp)
+          trap 'rm -f "$log"' EXIT
+          set +e
+          python /opt/reaper/reap_orphans.py $COMMIT 2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            lines=$(grep -iE '^(OPERATOR|FAILED)\b|^reap_orphans:' "$log" | head -n 60 | head -c 4000 || true)
+            if [ -z "$lines" ]; then
+              lines="reap_orphans exited $rc"
+            fi
+            if [ -n "${GITHUB_OUTPUT:-}" ]; then
+              eof="EOF_REAP_SUMMARY_$(date +%s)_$$"
+              {
+                echo "failed=true"
+                echo "summary<<$eof"
+                printf '%s\n' "$lines"
+                echo "$eof"
+              } >> "$GITHUB_OUTPUT"
+            fi
+          fi
+          exit "$rc"
+  report:
+    needs: reap
+    if: failure() && needs.reap.outputs.failed == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: checkout te-runner
+        uses: actions/checkout@v5
+      - name: report issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REAP_SUMMARY: ${{ needs.reap.outputs.summary }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          mkdir -p "$RUNNER_TEMP"
+          body="$RUNNER_TEMP/reaper-residue.md"
+          {
+            printf 'Run: %s\n\n' "$RUN_URL"
+            if [ -n "$REAP_SUMMARY" ]; then
+              printf '```\n%s\n```\n' "$REAP_SUMMARY"
+            else
+              printf 'Reaper exited non-zero; no summary output was passed (no matching lines or output dropped). See run log above.\n'
+            fi
+          } > "$body"
+          gh label create reaper --description "Nightly reaper failure" --color d93f0b 2>/dev/null || true
+          existing=$(gh issue list --state open --label reaper --search "\"reaper residue\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$body"
+          else
+            gh issue create --label reaper --title "reaper residue" --body-file "$body"
+          fi
