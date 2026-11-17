@@ -23,12 +23,14 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import wizlab as wz
 
+_MODULES = (*wz.MODULES, wz.idp, wz.idp.okta)
+
 
 def _owner(name):
     """The module that defines `name`. Code inside the package addresses another module's name as
     `module.name`, so patching the owner reaches every caller; patching the package would reach none.
     Each name is defined in exactly one module and never imported by name into another."""
-    return next(m for m in wz.MODULES if name in vars(m))
+    return next(m for m in _MODULES if name in vars(m))
 
 def _proc(returncode=0, stdout="", stderr=""):
     return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
@@ -134,15 +136,25 @@ class FakeWiz:
 
 
 class FakeOkta:
-    """An Okta Workflows Router behind _okta_call. `users` are records with {login, okta_user_id}.
+    """An Okta Workflows Router behind _okta_call. `users` are logins or {login, okta_user_id} records.
     `fail` makes every call raise a WizlabError(3). `calls` holds each request body."""
+    SEAM = "_okta_call"
+    DOMAIN = "x.io"
     ENV: typing.ClassVar = {
         "OKTA_WF_INVOKE_URL": "https://okta.wf/invoke",
         "OKTA_WF_CLIENT_TOKEN": "tok123",
     }
 
     def __init__(self, users=(), fail=None):
-        self.users, self.fail, self.calls = [dict(u) for u in users], fail, []
+        self.users = [
+            {"login": u, "okta_user_id": f"oid-{i}"} if isinstance(u, str) else dict(u)
+            for i, u in enumerate(users, 1)
+        ]
+        self.fail, self.calls = fail, []
+
+    @property
+    def logins(self):
+        return [u["login"] for u in self.users]
 
     def __call__(self, invoke_url, token, body):
         self.calls.append(dict(body))
@@ -153,7 +165,7 @@ class FakeOkta:
         if action == "create":
             uid = f"oid-{len(self.users) + 1}"
             self.users.append({"login": login, "okta_user_id": uid})
-            return {"login": f"{login}@x.io", "okta_user_id": uid, "wiz_login_url": "https://wiz.io/login",
+            return {"login": f"{login}@{self.DOMAIN}", "okta_user_id": uid, "wiz_login_url": "https://wiz.io/login",
                     "expires_at": "2099-01-01"}
         if action == "inspect":
             u = next((u for u in self.users if u["login"] == login), None)
@@ -1084,106 +1096,135 @@ class GitHubContract(unittest.TestCase):
         self.assertEqual(gh.calls, [])
 
 
-class OktaContract(unittest.TestCase):
-    """The user verbs against the Okta Workflows Router: ensure creates and publishes credentials;
-    inspect grades existence; any router error is 3. delete reaches Wiz only (DeleteContract)."""
+class IdpContract(unittest.TestCase):
+    """The `user` verbs against the per-tenant IdP adapter (`wizlab.idp`): ensure creates and publishes
+    credentials; inspect grades existence; missing IdP env or transport failure is 3; `inspect --wiz` and
+    `delete` reach Wiz only without IdP secrets. Adding a second IdP appends its fake to `FAKES`."""
 
-    ENV: typing.ClassVar = {"INSTRUQT_SESSION_ID": "s1", **FakeOkta.ENV}
+    FAKES: typing.ClassVar = (FakeOkta,)
+    SESSION = "s1"
     LOGIN = "lab-s1"
+    WIZ_EMAIL = "lab-s1@wizlabs.cloudseclabs.io"
+    WIZ_USER: typing.ClassVar = dict(InspectContract.USER, email=WIZ_EMAIL)
 
-    def _run(self, fn, argv, okta, out=None):
-        return exit_code(fn, argv, wiz=FakeWiz(), env=self.ENV, out=out, _okta_call=okta)
+    # (case, verb, argv, seeded_users, fail, idp_env, extra_env, wiz_users, want_code, want_logins,
+    #  want_idp_calls, want_published)
+    ROWS: typing.ClassVar = (
+        ("ensure creates and publishes credentials", ("user", "ensure"), ["--profile", "wiz-global-reader"],
+         (), False, "full", {}, (), 0, [LOGIN], 1, True),
+        ("ensure accepts LAB_PROFILE env", ("user", "ensure"), [],
+         (), False, "full", {"LAB_PROFILE": "wiz-global-reader"}, (), 0, [LOGIN], 1, True),
+        ("ensure requires profile", ("user", "ensure"), [],
+         (), False, "full", {}, (), 2, [], 0, False),
+        ("ensure missing IdP env is 3", ("user", "ensure"), ["--profile", "wiz-global-reader"],
+         (), False, "each_missing", {}, (), 3, [], 0, False),
+        ("ensure missing both IdP env and profile/session is 3", ("user", "ensure"), [],
+         (), False, "no_session_or_idp", {}, (), 3, [], 0, False),
+        ("inspect present is 0", ("user", "inspect"), [],
+         (LOGIN,), False, "full", {}, (), 0, [LOGIN], 1, False),
+        ("inspect absent is 1", ("user", "inspect"), [],
+         (), False, "full", {}, (), 1, [], 1, False),
+        ("inspect missing IdP env is 3", ("user", "inspect"), [],
+         (LOGIN,), False, "each_missing", {}, (), 3, [LOGIN], 0, False),
+        ("inspect missing both IdP env and session is 3", ("user", "inspect"), [],
+         (), False, "no_session_or_idp", {}, (), 3, [], 0, False),
+        ("ensure transport error is 3", ("user", "ensure"), ["--profile", "wiz-global-reader"],
+         (), True, "full", {}, (), 3, [], 1, False),
+        ("inspect transport error is 3", ("user", "inspect"), [],
+         (), True, "full", {}, (), 3, [], 1, False),
+        # Okta expires its own lab users; reap.sh and reap.yml run `user delete` and `user inspect --wiz`
+        # with the tenant pair only, without OKTA_WF_* in the environment.
+        ("delete never reaches IdP and needs no IdP env", ("user", "delete"), [],
+         (LOGIN,), False, "none", {}, (), 0, [LOGIN], 0, False),
+        ("inspect --wiz reads Wiz users without IdP env", ("user", "inspect"), ["--wiz"],
+         (LOGIN,), False, "none", {}, (WIZ_USER,), 0, [LOGIN], 0, False),
+    )
 
-    def test_ensure_creates_and_publishes_credentials(self):
-        okta = FakeOkta()
-        out = io.StringIO()
-        self.assertEqual(self._run(wz.cmd_user_ensure, ["--profile", "wiz-global-reader"], okta, out=out), 0)
-        self.assertEqual(len(okta.users), 1)
-        self.assertEqual(okta.users[0]["login"], self.LOGIN)
-        # The published user is the email the router composed, not the stem wizlab sent.
-        self.assertIn("WIZ_USER=" + self.LOGIN + "@x.io", out.getvalue())
-        self.assertRegex(out.getvalue(), r"WIZ_PWD=\S{8,}")
+    def _envs(self, fake_cls, mode, extra_env):
+        tenant = {"WIZ_TENANT": fake_cls.TENANT} if getattr(fake_cls, "TENANT", None) else {}
+        base = {"INSTRUQT_SESSION_ID": self.SESSION, **tenant, **extra_env}
+        if mode == "full":
+            return [{**base, **fake_cls.ENV}]
+        if mode == "none":
+            return [base]
+        if mode == "no_session_or_idp":
+            return [{**tenant, **extra_env}]
+        if mode == "each_missing":
+            return [{**base, **{k: v for k, v in fake_cls.ENV.items() if k != drop}} for drop in fake_cls.ENV]
+        raise AssertionError(f"unknown idp_env mode {mode!r}")
+
+    def test_contract_rows(self):
+        self.assertIsInstance(wz.idp.for_tenant("TBCMP"), wz.idp.okta.OktaAdapter)
+        for fake_cls in self.FAKES:
+            for (case, verb, argv, seeded, fail, idp_env, extra_env, wiz_users,
+                 want_code, want_logins, want_calls, want_published) in self.ROWS:
+                for env in self._envs(fake_cls, idp_env, extra_env):
+                    with self.subTest(fake=fake_cls.__name__, case=case, env=sorted(env)):
+                        fake = fake_cls(seeded, fail=fail)
+                        wiz = FakeWiz(users=_conn(*wiz_users))
+                        out = io.StringIO()
+                        code = exit_code(wz.VERBS[verb], argv, wiz=wiz, env=env, out=out, **{fake_cls.SEAM: fake})
+                        self.assertEqual(code, want_code)
+                        self.assertEqual(fake.logins, want_logins)
+                        self.assertEqual(len(fake.calls), want_calls)
+                        if want_published:
+                            # The published user is the email the IdP composed, not the stem wizlab sent.
+                            self.assertIn(f"WIZ_USER={self.LOGIN}@{fake_cls.DOMAIN}", out.getvalue())
+                            self.assertRegex(out.getvalue(), r"WIZ_PWD=\S{8,}")
+                        if argv == ["--wiz"]:
+                            self.assertEqual(wiz.sent("users")[0]["search"], self.WIZ_EMAIL)
 
     def test_the_password_never_reaches_stdout_under_an_exec(self):
         """The platform captures an exec's stdout into `instruqt lab logs`, so every play of
         te-code-juice-shop-101 published the learner's password there, readable for the life of the
         lab (session xb6gwe13tmrn, `provision_user: WIZ_PWD=...` at INFO). The note reads
         $EXEC_OUTPUT, so the value belongs only in the file."""
-        okta, out = FakeOkta(), io.StringIO()
-        with tempfile.NamedTemporaryFile("r+") as f:
-            env = {**self.ENV, "EXEC_OUTPUT": f.name}
-            self.assertEqual(
-                exit_code(wz.cmd_user_ensure, ["--profile", "wiz-global-reader"],
-                          wiz=FakeWiz(), env=env, out=out, _okta_call=okta), 0)
-            written = f.read()
-        self.assertRegex(written, r"WIZ_PWD=\S{8,}")          # the note still gets it
-        self.assertNotIn(written.split("WIZ_PWD=")[1].strip(), out.getvalue())
-        self.assertIn("WIZ_PWD=<redacted>", out.getvalue())   # the key still shows the verb ran
-
-    def test_ensure_requires_profile(self):
-        # No --profile and no LAB_PROFILE → invocation error 2
-        okta = FakeOkta()
-        env = {k: v for k, v in self.ENV.items() if k != "LAB_PROFILE"}
-        self.assertEqual(exit_code(wz.cmd_user_ensure, [], _okta_call=okta, env=env), 2)
-
-    def test_ensure_accepts_lab_profile_env(self):
-        okta = FakeOkta()
-        env = {**self.ENV, "LAB_PROFILE": "wiz-global-reader"}
-        self.assertEqual(exit_code(wz.cmd_user_ensure, [], _okta_call=okta, env=env, wiz=FakeWiz()), 0)
-
-    def test_inspect_grades_existence(self):
-        existing = [{"login": self.LOGIN, "okta_user_id": "oid-1"}]
-        for users, want in [(existing, 0), ([], 1)]:
-            with self.subTest(users=users):
-                self.assertEqual(self._run(wz.cmd_user_inspect, [], FakeOkta(users)), want)
-
-    def test_delete_never_reaches_the_router(self):
-        # Okta expires its own lab users; the reaper runs this without OKTA_WF_* in its env.
-        okta = FakeOkta([{"login": self.LOGIN, "okta_user_id": "oid-1"}])
-        env = {"INSTRUQT_SESSION_ID": "s1"}
-        self.assertEqual(exit_code(wz.cmd_user_delete, [], env=env, wiz=FakeWiz(users=_conn()), _okta_call=okta), 0)
-        self.assertEqual(okta.calls, [])
-
-    def test_a_router_error_is_environment_3(self):
-        for fn, argv in (
-            (wz.cmd_user_ensure, ["--profile", "wiz-global-reader"]),
-            (wz.cmd_user_inspect, []),
-        ):
-            with self.subTest(fn=fn.__name__):
-                self.assertEqual(self._run(fn, argv, FakeOkta(fail=True)), 3)
-
-    def test_the_wiz_read_never_reaches_the_router(self):
-        """`reap.sh` runs `user delete` with the tenant pair only, and the Okta login outlives the Wiz record
-        it removes, so the read that confirms the delete must answer from `users` without OKTA_WF_*."""
-        okta = FakeOkta([{"login": self.LOGIN, "okta_user_id": "oid-1"}])
-        env = {"INSTRUQT_SESSION_ID": "s1"}
-        wiz = FakeWiz(users=_conn(dict(InspectContract.USER, email="lab-s1@wizlabs.cloudseclabs.io")))
-        self.assertEqual(exit_code(wz.cmd_user_inspect, ["--wiz"], env=env, wiz=wiz, _okta_call=okta), 0)
-        self.assertEqual(okta.calls, [])
-        self.assertEqual(wiz.sent("users")[0]["search"], "lab-s1@wizlabs.cloudseclabs.io")
+        for fake_cls in self.FAKES:
+            with self.subTest(fake=fake_cls.__name__), tempfile.NamedTemporaryFile("r+") as f:
+                fake, out = fake_cls(), io.StringIO()
+                tenant = {"WIZ_TENANT": fake_cls.TENANT} if getattr(fake_cls, "TENANT", None) else {}
+                env = {"INSTRUQT_SESSION_ID": self.SESSION, **tenant, **fake_cls.ENV, "EXEC_OUTPUT": f.name}
+                self.assertEqual(
+                    exit_code(wz.cmd_user_ensure, ["--profile", "wiz-global-reader"],
+                              wiz=FakeWiz(), env=env, out=out, **{fake_cls.SEAM: fake}), 0)
+                written = f.read()
+                self.assertRegex(written, r"WIZ_PWD=\S{8,}")          # the note still gets it
+                self.assertNotIn(written.split("WIZ_PWD=")[1].strip(), out.getvalue())
+                self.assertIn("WIZ_PWD=<redacted>", out.getvalue())   # the key still shows the verb ran
 
     def test_inspect_retries_transient_router_fault_while_ensure_submits_once(self):
+        env = {"INSTRUQT_SESSION_ID": self.SESSION, **FakeOkta.ENV}
         ok_cm = mock.MagicMock()
         ok_cm.__enter__.return_value.read.return_value = b'{"okta_user_id": "oid-1"}'
         e1 = urllib.error.HTTPError("https://okta.wf/invoke", 503, "boom", None, io.BytesIO(b"busy"))
         op_read = mock.MagicMock(side_effect=[e1, ok_cm])
         with mock.patch.object(wz.urllib.request, "urlopen", op_read), mock.patch.object(wz.time, "sleep"):
-            self.assertEqual(exit_code(wz.cmd_user_inspect, [], env=self.ENV), 0)
+            self.assertEqual(exit_code(wz.cmd_user_inspect, [], env=env), 0)
         self.assertEqual(op_read.call_count, 2)
+        req_read = op_read.call_args[0][0]
+        self.assertEqual(json.loads(req_read.data), {"action": "inspect", "login": self.LOGIN})
+        self.assertEqual(req_read.get_header("X-api-client-token"), FakeOkta.ENV["OKTA_WF_CLIENT_TOKEN"])
 
         e_fail1 = urllib.error.HTTPError("https://okta.wf/invoke", 503, "boom", None, io.BytesIO(b"busy"))
         e_fail2 = urllib.error.HTTPError("https://okta.wf/invoke", 503, "boom", None, io.BytesIO(b"busy"))
         e_fail3 = urllib.error.HTTPError("https://okta.wf/invoke", 503, "boom", None, io.BytesIO(b"busy"))
         op_exhaust = mock.MagicMock(side_effect=[e_fail1, e_fail2, e_fail3])
         with mock.patch.object(wz.urllib.request, "urlopen", op_exhaust), mock.patch.object(wz.time, "sleep"):
-            self.assertEqual(exit_code(wz.cmd_user_inspect, [], env=self.ENV), 3)
+            self.assertEqual(exit_code(wz.cmd_user_inspect, [], env=env), 3)
         self.assertEqual(op_exhaust.call_count, 2)
 
         e_mut = urllib.error.HTTPError("https://okta.wf/invoke", 503, "boom", None, io.BytesIO(b"busy"))
         op_mut, err = mock.MagicMock(side_effect=e_mut), io.StringIO()
         with mock.patch.object(wz.urllib.request, "urlopen", op_mut), mock.patch.object(wz.time, "sleep"):
-            code = exit_code(wz.cmd_user_ensure, ["--profile", "wiz-global-reader"], env=self.ENV, err=err)
+            code = exit_code(wz.cmd_user_ensure, ["--profile", "wiz-global-reader"], env=env, err=err)
         self.assertEqual((code, op_mut.call_count), (3, 1))
+        req_mut = op_mut.call_args[0][0]
+        mut_body = json.loads(req_mut.data)
+        self.assertEqual(set(mut_body), {"action", "profile", "login", "password", "participant_id"})
+        self.assertEqual(
+            {k: mut_body[k] for k in ("action", "profile", "login", "participant_id")},
+            {"action": "create", "profile": "wiz-global-reader", "login": self.LOGIN, "participant_id": "manual"},
+        )
         self.assertIn("not resubmitted", err.getvalue())
         self.assertNotIn("re-run the same ensure", err.getvalue())
 
@@ -1499,7 +1540,7 @@ class ExitCodeContract(unittest.TestCase):
 
     def test_every_verb_declares_its_flags_and_every_flag_read_is_declared(self):
         self.assertEqual(set(wz.FLAGS), set(wz.VERBS))
-        src = "".join(pathlib.Path(m.__file__).read_text() for m in wz.MODULES)
+        src = "".join(pathlib.Path(m.__file__).read_text() for m in _MODULES)
         read = {"--" + a.replace("_", "-") for a in re.findall(r"\bargs\.([a-z_]+)", src)}
         declared = set().union(*wz.FLAGS.values())
         self.assertEqual(read - declared, set())
@@ -1508,7 +1549,7 @@ class ExitCodeContract(unittest.TestCase):
         """wizlab.__init__ flattens MODULES into package globals and _owner assumes each non-module
         symbol has a single defining module."""
         seen, collisions = {}, {}
-        for m in wz.MODULES:
+        for m in _MODULES:
             for k, v in vars(m).items():
                 if k.startswith("__") or isinstance(v, types.ModuleType):
                     continue
