@@ -1635,3 +1635,16 @@ code_lab_pool:
       gh api -X PATCH repos/wiz-training/te-code-labs/git/refs/heads/claims/_probe/slot-00 -F force=false -f sha=<B_child_of_A>      # -> 200
       gh api -X PATCH repos/wiz-training/te-code-labs/git/refs/heads/claims/_probe/slot-00 -F force=false -f sha=<C_sibling_of_B>    # -> 422 Update is not a fast forward
       gh api -X DELETE repos/wiz-training/te-code-labs/git/refs/heads/claims/_probe/slot-00
+
+# ---------------------------------------------------------------------------------------------------
+# Instruqt play boot. Not a Wiz plane: the time from the Start click to `Enter lab` (sandbox
+# SANDBOX_STATUS_PROVISIONED). No lab sets a budget on it yet; it bounds how long `validate-run.py`'s
+# PLAY leg and a dev-lease boot wait before an INCONCLUSIVE.
+# ---------------------------------------------------------------------------------------------------
+instruqt_play:
+  cloudless_walkthrough:
+    # One `network` resource, no container, no lease, no secrets beyond the feedback module's.
+    boot_s: 183
+    attempts: 1
+    verify: |
+      python3 scripts/validate-run.py --lab <cloudless walkthrough lab> --ref main --json | jq '.measured[] | select(.metric=="play_boot_s")'
