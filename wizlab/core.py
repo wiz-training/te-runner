@@ -137,6 +137,9 @@ def _post(url, data, headers, attempts=3):
     # exiting 3 mid-setup. 4xx (auth/bad request) is not transient — fail fast. The default suits the
     # token mints, which allocate no resource; GraphQL callers pass _submissions(query).
     payload = data.encode() if isinstance(data, str) else json.dumps(data).encode()
+    # The Okta router's invoke URL carries its client token in the query string, and every message
+    # below lands in a learner's terminal and in `instruqt lab logs`.
+    shown = url.split("?", 1)[0]
     last = ""
     for i in range(attempts):
         req = urllib.request.Request(url, data=payload, headers=headers)  # fresh per attempt
@@ -149,10 +152,10 @@ def _post(url, data, headers, attempts=3):
         except urllib.error.HTTPError as e:
             body = _err_body(e)
             if e.code < 500 and e.code != 429:
-                die(3, f"HTTP {e.code} from {url}: {body}")
-            last = f"HTTP {e.code} from {url}: {body}"
+                die(3, f"HTTP {e.code} from {shown}: {body}")
+            last = f"HTTP {e.code} from {shown}: {body}"
         except Exception as e:
-            last = f"transport failure to {url}: {type(e).__name__}: {e}"
+            last = f"transport failure to {shown}: {type(e).__name__}: {e}"
         if i < attempts - 1:
             time.sleep(2**i)  # 1s, 2s
     if attempts == 1:
